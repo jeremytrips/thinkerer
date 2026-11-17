@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "name": "Thinkerer",
+  "components": [
+    "website"
+  ],
+  "target": "electron",
+  "website": {
+    "devCommand": "npm run dev",
+    "previewUrl": "http://localhost:5173"
+  },
+  "agent": {
+    "provider": "auto",
+    "enabledMcpServers": []
+  },
+  "marketing": {
+    "enabled": true
+  }
+}

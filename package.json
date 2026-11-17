@@ -1,0 +1,33 @@
+{
+  "name": "thinkerer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Project-first AI creation environment (desktop).",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:live:claude": "THINKERER_LIVE_CLAUDE=1 vitest run tests/agents.live.test.ts",
+    "test:live:codex": "THINKERER_LIVE_CODEX=1 vitest run tests/agents.live.test.ts",
+    "test:e2e": "electron-vite build && playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "electron": "^45.3.3",
+    "electron-vite": "^6.0.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.0"
+  },
+  "dependencies": {
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  }
+}
