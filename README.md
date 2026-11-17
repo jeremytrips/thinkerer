@@ -1,61 +1,97 @@
 # Thinkerer
 
 A project-first AI creation environment, as a desktop app (Electron + React + TypeScript + Vite).
-Each project is a real folder on disk. You describe changes in the Agent tab. A local coding-agent
-CLI makes them. You inspect the result. Thinkerer has no source editor.
+Each project is a real folder on disk. You describe changes in the Agent tab, and a local
+coding-agent CLI (Claude Code or Codex) makes them. You review the diff, test in the browser, and
+roll back if needed. Thinkerer has no source editor.
 
-This is the **Phase 0** bootstrap, plus the second provider from Phase 1, of [`docs/THINKERER_MVP_v0.1.md`](docs/THINKERER_MVP_v0.1.md).
-Thinkerer can open its own repository and have an agent modify it from inside the app.
+This implements the MVP in [`docs/THINKERER_MVP_v0.1.md`](docs/THINKERER_MVP_v0.1.md) (Phases 0 and 1).
+Thinkerer opens its own repository as a project and develops itself from inside the app.
 
 ## Requirements
 
-- Node.js 20+ (developed on Node 26) and npm
-- Git
+- Node.js 20+ (developed on Node 26), npm, and Git
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) on your `PATH`, logged in (run `claude` once in a terminal).
-  Thinkerer never asks for or stores CLI tokens; it uses the CLI's own login.
+  Thinkerer never asks for or stores CLI tokens; it uses each CLI's own login.
 - Optional: the [Codex CLI](https://github.com/openai/codex), logged in with `codex login`. Auto mode
   uses it when Claude Code is unavailable or cooling down after a rate limit.
+- For the agent's browser checks: `npm run setup:browsers` (one-time Chromium download for Playwright MCP, ~100 MB).
 
 ## Run it
 
 ```sh
 npm install
+npm run setup:browsers   # once
 npm run dev
 ```
 
 `npm run dev` starts the app from source:
 
 - **Renderer (`src/`) changes hot-reload** in the running window.
-- **Main/preload/engine changes (`electron/`, `engine/`, `shared/`) do not auto-restart.** An agent
-  editing them can't kill its own supervisor mid-run. Click **Restart app** (sidebar or top bar) when
-  you want them loaded. The dev launcher (`scripts/dev.mjs`) rebuilds and relaunches. Restart is
-  refused while an agent run is active.
+- **Main/preload/engine changes (`electron/`, `engine/`, `shared/`, `mcp/`) do not auto-restart.** An
+  agent editing them can't kill its own supervisor mid-run. Click **Restart app** when you want them
+  loaded. The dev launcher (`scripts/dev.mjs`) rebuilds and relaunches. Restart is refused while an
+  agent run is active.
 
-App state (project registry, run history) lives outside the repo, in the OS app-data folder
-(`~/Library/Application Support/Thinkerer` on macOS). It survives reloads and restarts. Set
-`THINKERER_APP_DATA=/some/dir` to use a different folder.
+App state (project registry, MCP registry, encrypted secrets, approved dev commands, run history and
+screenshots) lives outside the repo, in the OS app-data folder (`~/Library/Application
+Support/Thinkerer` on macOS). Set `THINKERER_APP_DATA=/some/dir` to use a different folder.
 
-## Import this repository as Thinkerer's first project
+## The self-development journey
 
 1. `npm run dev`
-2. On **Projects**, click **Import folder…** and choose this repository's folder.
-   Thinkerer reads the committed `.thinkerer/project.json` (name, `components: ["website"]`,
-   `target: "electron"`, dev command, preview URL). It writes that file only if it's missing.
-3. Open the project. The Overview shows a banner confirming it is the source of the running app.
-4. Go to **Agent**, leave the provider on **Auto** (or pick Claude Code or Codex), and enter something like:
-   > Add a visible About Thinkerer dialog, and test that it opens.
-5. Watch progress stream in. **Stop run** cancels and kills the agent's whole process tree.
-6. When the run finishes, the run summary shows the agent's summary, any commands denied by policy,
-   and the files whose Git status changed. Renderer edits already show in the window. If main or
-   engine code changed, a **Restart now** button appears.
-7. **Files** shows the read-only tree, a file preview, and uncommitted changes.
+2. **Projects → Import folder…**, then choose this repository. The committed `.thinkerer/project.json`
+   says this is a `website` component with an `electron` target. Its dev command is `npm run dev:web`,
+   a renderer-only Vite server on http://localhost:5174. Playwright and health MCP servers are enabled.
+3. **Website → Start dev server.** The first time, a native dialog asks you to approve the command. The
+   preview then shows Thinkerer's UI in "browser preview" mode, without desktop features.
+4. **Agent**: enter “Add a visible About Thinkerer dialog, and test that it opens.” and run it.
+   - A **Git checkpoint** of the whole folder is saved first, including your uncommitted work.
+   - The CLI streams its progress. **Stop run** kills its whole process tree.
+   - The agent can drive a headless Chromium (Playwright MCP) against the preview. Its actions and
+     screenshots appear in the run, and under **Website → Agent browser checks**.
+5. Review **Changes made by this run** (per-file diffs). Renderer changes have already hot-reloaded
+   into the window. If main, preload or engine code changed, use **Restart now**.
+6. Not happy? **Restore checkpoint…** shows exactly which files will be reverted, deleted or recreated,
+   and asks for confirmation. Your current state is checkpointed first, so a restore can be undone too.
 
-## What the agent is allowed to do
+Verified on 2026-11-17. Thinkerer ran this exact journey on its own repo, with Auto selecting Claude
+Code. The agent added the dialog and an e2e test, and checked it in the Playwright browser on :5174
+(PASSED, with a screenshot). The change hot-reloaded into the running window, where the dialog opened.
+The result is commit `8438cfd`; typecheck, unit and e2e tests passed when re-run independently.
 
-Each run starts one provider CLI non-interactively, with the project folder as its working directory.
-The prompt goes in on stdin. Both providers get the same instructions: stay in the project; never
-push, deploy, publish or purchase. The two CLIs enforce limits differently, and the app shows each
-policy under **Providers → What runs may do**.
+## What's in the app
+
+| Tab | What it does |
+|---|---|
+| Overview | Component cards, Git state, providers, recent runs |
+| Agent | Auto / Claude / Codex, task link, the project's MCP tools, live run log, changes with diffs, restore, retry, screenshots |
+| Website | Approved dev command runner with logs. Sandboxed embedded preview (Electron `WebContentsView`), locked to the preview origin, with other origins only after approval. Preview console. The agent's browser checks |
+| Tasks | To do / In progress / Done board in `.thinkerer/tasks.json`; runs attach to tasks |
+| Files | Read-only tree and preview, uncommitted changes with diffs, checkpoints with restore |
+| MCP | Global server registry (built-in + your own stdio servers, Keychain-encrypted secrets), per-project enable, and the tools each provider will actually get |
+| Settings | Name, components, target, dev command, preview URL, default provider, agent permissions |
+| Marketing | Placeholder (post-MVP) |
+
+The embedded preview and the agent's Playwright browser are **separate browser sessions** that visit
+the same dev server. They don't share cookies or login state; per the spec, a shared live session is
+post-MVP.
+
+## Safety model
+
+**Checkpoints.** Before each run, Thinkerer commits a snapshot of the full working tree through a
+temporary index. That includes modified and untracked files; ignored files are excluded. The snapshot
+goes to `refs/thinkerer/checkpoints/<run>`, and the end state to `refs/thinkerer/after/<run>`. Your
+HEAD, branch, staging area and files are never touched. These local refs are not pushed by default.
+The newest 50 are kept. Agents run only in Git repositories; the Agent tab offers to initialize one.
+
+**Commands you configure.** The dev command lives in `.thinkerer/project.json`, which an agent could
+edit, so it runs only after you approve that exact text in a native dialog. Adding an MCP server also
+confirms the command in a native dialog. A compromised renderer cannot fake these dialogs.
+
+**Agent limits.** Both providers get the same instructions: stay in the project, and never push,
+deploy, publish or purchase. Each CLI enforces limits its own way, and the app shows each policy under
+**Providers → What runs may do**.
 
 | | Claude Code (`claude -p --restricted …`) | Codex (`codex exec --sandbox workspace-write …`) |
 |---|---|---|
@@ -63,79 +99,77 @@ policy under **Providers → What runs may do**.
 | File reads | project folder only | **not confined** by the sandbox |
 | Shell | only `npm run *`, `npm test*`, `npx tsc/vitest/playwright test`, `git status/diff/log`; anything else denied | any command, inside the sandbox |
 | Network from shell | denied unless an allowed command does it | off |
-| Approvals | none in Phase 0; prompts are auto-denied | `approval_policy="never"`; no escalation |
-| MCP / extras | none (`--strict-mcp-config`, empty) | none: `--ignore-user-config`, `--ignore-rules`; connectors, plugins, browser/computer use, image generation, hooks and web search disabled |
+| Approvals | none; prompts are auto-denied and listed in the run | `approval_policy="never"`; no escalation |
+| MCP | only the project's enabled servers (`--strict-mcp-config`) | only the project's enabled servers; connectors, plugins, built-in browser/computer use, image generation, hooks and web search disabled |
 | User config | Claude settings files not loaded | `~/.codex/config.toml` and rules not loaded (login still used) |
 
-The Codex read gap is real. A Codex run can read files outside the project, such as other repos or
-dotfiles, and their contents go to the model. Shell network access is off, but prefer Claude for
-sensitive machines until Phase 1 adds read confinement (Codex permission profiles). npm scripts run
-with your user permissions under either provider. Only use agents on projects whose scripts you trust.
+The Codex read gap is real: a Codex run can read files outside the project, and their contents go to
+the model. Prefer Claude on sensitive machines. npm scripts run with your user permissions under either
+provider, so only use agents on projects whose scripts you trust.
 
-Usage is shown only when the CLI reports it: token counts from both, and Claude's rate-limit window
-utilisation. Otherwise the UI says **usage unavailable**. A Codex `turn.failed` that mentions a
-rate/usage limit, or a Claude `rate_limit_event` with status `rejected`, puts that provider on
-cooldown for Auto.
+**MCP.** Both CLIs receive the same servers, translated to `--mcp-config` JSON for Claude and to
+`-c mcp_servers.*` overrides for Codex. Secrets are passed through the CLI's environment, never in
+arguments or files: Claude references them as `${NAME}`, and Codex forwards them with `env_vars` and
+excludes them from its shell. Under Claude, allowed shell commands still inherit them.
+The Playwright server runs headless with an isolated in-memory profile per run. It is limited to the
+preview origin with `--allowed-origins`, which Playwright documents as not a hard security boundary,
+and it saves screenshots to the run's folder in app data.
 
-Auto picks the first usable provider in the order `claude > codex`, because neither CLI gives a
-comparable consumption signal. The rationale is recorded with each run. A manually chosen provider
-that's unavailable is refused, never silently swapped.
-
-The shared policy is `DEFAULT_POLICY` in `engine/agents/supervisor.ts`; provider-specific flags live
-in `engine/agents/claude.ts` and `engine/agents/codex.ts`.
+**Usage.** Usage is shown only as the CLI reports it: token counts from both, and Claude's rate-limit
+window utilisation. Otherwise the UI says **usage unavailable**. Auto picks the first usable provider
+in the order `claude > codex`, because neither CLI gives a comparable consumption signal. It skips a
+provider that's missing, logged out, or cooling down after a reported rate limit. A manually chosen
+provider that's unavailable is refused, never silently swapped. A failed run that changed files offers
+**Restore checkpoint first** or **Retry on top**; it never replays automatically.
 
 ## Tests
 
 ```sh
 npm run typecheck
-npm test            # engine integration tests: projects, read-only files, git, stream parsing, supervisor lifecycle/cancel
-npm run test:e2e    # builds, launches the real Electron app, imports this repo, checks Files/Agent, restarts
+npm test                   # engine integration: projects, files, git, checkpoints/restore, tasks, MCP registry +
+                           # CLI translation, health MCP server, dev server, stream parsers, supervisor
+npm run test:e2e           # real Electron app: import this repo, Files/Agent, restart persistence; Website Studio
+                           # with a real dev server + embedded preview, blocked navigation, Tasks, MCP, diffs
 npm run test:live:claude   # opt-in: REAL claude CLI on a throwaway folder (uses your quota)
 npm run test:live:codex    # opt-in: REAL codex CLI (needs `codex login`)
 ```
 
 The supervisor tests use a stand-in process that speaks Claude's stream-json format
 (`tests/fixtures/stand-in-agent.mjs`) to test cancellation and process-tree cleanup deterministically.
-The live tests check the real adapters. Neither is wired into the app as a fake provider.
-The Codex parser tests use event lines in the `codex exec --json` format (codex-cli 0.169).
+The live tests check the real adapters. Nothing fake is wired into the app.
 
 ## Architecture
 
 ```text
-src/                 React renderer (untrusted UI): no Node, no fs, no shell
+src/                 React renderer (untrusted UI): no Node, no fs, no shell; runs in "browser preview" mode without the bridge
 electron/preload/    Narrow typed bridge → window.thinkerer (shared/api.ts)
-electron/main/       Window + security policy, validated IPC handlers, restart
+electron/main/       Window + security policy, validated IPC, native confirmations, preview view, safeStorage secrets
 engine/              Privileged services, Electron-free (unit-testable)
   projects.ts          project registry + .thinkerer/project.json
   files.ts, paths.ts   read-only listing/preview with path + symlink escape checks
-  git.ts               git status
-  agents/
-    types.ts           AgentAdapter interface (one per provider CLI)
-    claude.ts          Claude Code adapter (args, detection, stream-json parser)
-    codex.ts           Codex adapter (args, detection, exec --json parser)
-    supervisor.ts      run lifecycle, provider selection, one-run-per-project lock, cancel, run records
+  git.ts, checkpoints.ts  status; checkpoints, run diffs, restore
+  tasks.ts             task board store
+  mcp.ts               MCP registry, per-project grants, run-time resolution
+  devserver.ts         approved dev command runner
+  agents/              adapter interface, Claude + Codex adapters, supervisor
+mcp/                 bundled MCP: thinkerer-health (demo), Playwright launcher
 shared/              Types shared by engine and renderer
 scripts/dev.mjs      dev launcher with restart loop
+vite.web.config.mts  renderer-only dev server (:5174) for self-preview
 ```
 
-Electron baseline: `contextIsolation`, `sandbox`, no `nodeIntegration`, CSP, no new windows, and
-navigation locked to the app origin. All permission requests are denied, and every IPC call checks
-its sender and arguments.
+Electron baseline: `contextIsolation`, `sandbox`, no `nodeIntegration`, CSP, no new windows,
+navigation locked to the app origin, all permission requests denied, and every IPC call checks its
+sender and arguments. The preview view has no preload, its own session per project, and the same
+navigation lock.
 
-## Status against the spec
+## Known limitations
 
-Done in Phase 0:
-
-- F1: desktop shell, project list, create/import, metadata, tabs, read-only file tree and preview.
-- F2: Claude and Codex adapters behind one interface, CLI detection and login status, standard run states, streaming output, current action, elapsed time, cancel with process-tree cleanup, one modifying run per project, persisted run records.
-- F3: Auto/Claude/Codex selector with a recorded rationale and health checks (installed, logged in, cooldown), a manual choice never silently switched, rate-limit cooldown driven by CLI signals, CLI-reported usage only.
-- F6 (partial): Git status before and after each run, changed files.
-- F7: this repo importable, renderer hot reload, controlled restart for main-process changes.
-
-Not yet built (Phase 1):
-
-- MCP registry and per-project grants
-- Website Studio (dev server, preview, Playwright)
-- Git checkpoints, restore, and diff view
-- Task board
-- Interactive approvals (`awaiting-approval`)
+- **Codex:** its read access isn't confined. Codex MCP and agent runs are verified against the real
+  CLI up to authentication only; the end-to-end live test needs `codex login`.
+- **Approvals:** there are no interactive approval prompts for agents yet (`awaiting-approval` is
+  unused). Anything outside policy is denied and listed in the run. Off-origin navigation in the agent
+  browser is blocked rather than offered for approval.
+- **Packaging:** the bundled MCP scripts are resolved from the app folder. That works from source;
+  packaging would need them as extra resources.
+- **Formatting:** agent messages are shown as plain text, not rendered Markdown.

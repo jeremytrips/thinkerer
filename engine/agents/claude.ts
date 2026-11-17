@@ -139,7 +139,7 @@ function rateLimitUsage(info: any): UsageObservation {
 }
 
 function summarizeToolInput(name: string, input: Record<string, unknown>): string {
-  const pick = input.command ?? input.file_path ?? input.pattern ?? input.path ?? input.url ?? input.element ?? input.filename ?? input.text ?? input.description
+  const pick = input.command ?? input.file_path ?? input.pattern ?? input.path ?? input.url ?? input.element ?? input.filename ?? input.key ?? input.text ?? input.description
   return pick ? `${name}: ${truncate(String(pick), 200)}` : name
 }
 
