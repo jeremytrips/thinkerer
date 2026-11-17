@@ -247,6 +247,10 @@ legend { color: var(--muted); padding: 0 4px; }
 /* Modal */
 .modal-backdrop { position: fixed; inset: 0; background: rgb(0 0 0 / 0.45); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 24px; }
 .modal { width: min(640px, 100%); max-height: 85vh; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+.modal.about { width: min(440px, 100%); }
+.about-facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }
+.about-facts dt { color: var(--muted); }
+.about-facts dd { margin: 0; overflow-wrap: anywhere; }
 .file-group summary { cursor: pointer; font-weight: 600; }
 .file-group ul { margin: 4px 0 0 16px; max-height: 180px; overflow: auto; }
 

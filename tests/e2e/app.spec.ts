@@ -24,6 +24,15 @@ test('import this repository, browse read-only files, see providers, persist acr
     // Renderer must not have Node access.
     expect(await page.evaluate(() => typeof (window as unknown as { require?: unknown }).require)).toBe('undefined')
 
+    // About dialog opens from the top bar and closes again.
+    await page.getByRole('button', { name: 'About', exact: true }).click()
+    const about = page.getByRole('dialog', { name: 'About Thinkerer' })
+    await expect(about).toBeVisible()
+    await expect(about).toContainText('Version')
+    await page.screenshot({ path: join(shots, 'about.png') })
+    await about.getByRole('button', { name: 'Close' }).click()
+    await expect(about).toBeHidden()
+
     await app.evaluate(({ dialog }, folder) => {
       dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [folder] })) as typeof dialog.showOpenDialog
     }, root)

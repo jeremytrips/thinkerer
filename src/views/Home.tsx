@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { AppInfo, Project } from '../../shared/types'
 import { api, browserPreview, errorMessage } from '../api'
+import { AboutDialog } from './AboutDialog'
 import { RestartButton } from './RestartButton'
 
 interface Props {
@@ -14,6 +15,7 @@ export function Home({ projects, info, onOpen, onChanged }: Props) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [newName, setNewName] = useState<string | null>(null)
+  const [about, setAbout] = useState(false)
 
   async function act(fn: () => Promise<Project | boolean | null>) {
     setBusy(true)
@@ -36,8 +38,12 @@ export function Home({ projects, info, onOpen, onChanged }: Props) {
           <span className="brand-mark" aria-hidden>◆</span> Thinkerer
           {info?.isDev && <span className="badge">dev build</span>}
         </div>
-        <RestartButton info={info} />
+        <span className="row">
+          <button className="small" onClick={() => setAbout(true)}>About</button>
+          <RestartButton info={info} />
+        </span>
       </header>
+      {about && <AboutDialog info={info} onClose={() => setAbout(false)} />}
 
       <main className="home-main">
         <div className="home-head">
