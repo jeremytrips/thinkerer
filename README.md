@@ -48,6 +48,9 @@ Support/Thinkerer` on macOS). Set `THINKERER_APP_DATA=/some/dir` to use a differ
 4. **Agent**: enter “Add a visible About Thinkerer dialog, and test that it opens.” and run it.
    - A **Git checkpoint** of the whole folder is saved first, including your uncommitted work.
    - The CLI streams its progress. **Stop run** kills its whole process tree.
+   - **+ New chat** starts another run in parallel (up to 4 per project). Each chat gets a tab and can be
+     stopped on its own. Parallel chats share the same folder, so a chat that overlapped with others says so:
+     its change list and checkpoint may include their edits. Restoring is blocked while any chat is running.
    - The agent can drive a headless Chromium (Playwright MCP) against the preview. Its actions and
      screenshots appear in the run, and under **Website → Agent browser checks**.
 5. Review **Changes made by this run** (per-file diffs). Renderer changes have already hot-reloaded

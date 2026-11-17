@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -74,7 +74,7 @@ http.createServer((q, s) => { s.setHeader('content-type', 'text/html'); s.end(pa
     // Website Studio: real dev server + embedded preview
     await page.getByRole('tab', { name: 'Website' }).click()
     await page.getByRole('button', { name: 'Start dev server' }).click()
-    await expect(page.locator('.website-head .pill')).toHaveText('Running', { timeout: 20_000 })
+    await expect(page.locator('.preview-bar .pill')).toHaveText('Running', { timeout: 20_000 })
     await expect(page.locator('.devlog')).toContainText('demo listening')
     const previewUrl = `http://localhost:${port}/`
     await expect.poll(() => app.evaluate(({ webContents }) => webContents.getAllWebContents().map((w) => w.getURL()))).toContain(previewUrl)
@@ -95,8 +95,49 @@ http.createServer((q, s) => { s.setHeader('content-type', 'text/html'); s.end(pa
     }, previewUrl)
     writeFileSync(join(shots, 'website-preview.png'), Buffer.from(previewPng, 'base64'))
 
+    // Agent tab: the same live preview beside the chat, and "Send to agent" attaches what the user sees.
+    await page.getByRole('tab', { name: 'Agent', exact: true }).click()
+    await expect(page.locator('.agent-preview .preview-bar .pill')).toHaveText('Running')
+    const frame = page.locator('.agent-preview .preview-frame')
+    const nativeBounds = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].contentView.children.map((v) => v.getBounds()))
+    await expect.poll(async () => {
+      const box = (await frame.boundingBox())!
+      return (await nativeBounds()).some((b) => Math.abs(b.x - box.x) <= 1 && Math.abs(b.width - box.width) <= 1)
+    }).toBe(true)
+    await page.getByRole('button', { name: 'Send to agent' }).click({ timeout: 10_000 })
+    // The page logged one console error; the blocked navigation above must not have reset it.
+    await expect(page.locator('.attachment-chip')).toContainText('1 console error')
+    const attachmentsDir = join(project, '.thinkerer', 'attachments')
+    const pngs = () => readdirSync(attachmentsDir).filter((n) => n.endsWith('.png'))
+    expect(pngs()).toHaveLength(1)
+    expect(execFileSync('git', ['status', '--porcelain', '-uall'], { cwd: project, encoding: 'utf8' })).not.toContain('attachments')
+    await page.screenshot({ path: join(shots, 'agent-with-preview.png') })
+    await page.getByRole('button', { name: 'Remove screenshot' }).click({ timeout: 10_000 })
+    await expect(page.locator('.attachment-chip')).toHaveCount(0)
+    await expect.poll(() => pngs().length).toBe(0)
+    // The mobile simulator shows the same page in a phone-sized screen, and the native view follows it.
+    await page.getByRole('tab', { name: 'Mobile simulator' }).click()
+    const screen = page.locator('.agent-preview .preview-screen')
+    await expect.poll(async () => {
+      const box = (await screen.boundingBox())!
+      return (await nativeBounds()).some((b) => Math.abs(b.x - box.x) <= 1 && Math.abs(b.width - box.width) <= 1 && b.width <= 393)
+    }).toBe(true)
+    await page.screenshot({ path: join(shots, 'agent-mobile.png') })
+    await page.getByRole('tab', { name: 'Web browser' }).click()
+    await expect.poll(async () => {
+      const box = (await frame.boundingBox())!
+      return (await nativeBounds()).some((b) => Math.abs(b.x - box.x) <= 1 && Math.abs(b.width - box.width) <= 1)
+    }).toBe(true)
+    // The preview can be hidden and brought back.
+    await page.getByRole('button', { name: 'Preview', pressed: true }).click({ timeout: 10_000 })
+    await expect(page.locator('.agent-preview')).toHaveCount(0)
+    await expect.poll(async () => (await nativeBounds()).length).toBe(0)
+    await page.getByRole('button', { name: 'Preview', pressed: false }).click({ timeout: 10_000 })
+    await expect(page.locator('.agent-preview .preview-bar .pill')).toHaveText('Running')
+    await page.getByRole('tab', { name: 'Website', exact: true }).click()
+
     await page.getByRole('button', { name: 'Stop dev server' }).click()
-    await expect(page.locator('.website-head .pill')).toHaveText('Stopped')
+    await expect(page.locator('.preview-bar .pill')).toHaveText('Stopped')
 
     // Files: uncommitted changes with a diff, no checkpoints yet
     await page.getByRole('tab', { name: 'Files' }).click()

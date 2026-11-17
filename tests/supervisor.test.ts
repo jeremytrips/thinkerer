@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { parseClaudeLine } from '../engine/agents/claude'
-import { AgentSupervisor } from '../engine/agents/supervisor'
+import { AgentSupervisor, MAX_PARALLEL_RUNS } from '../engine/agents/supervisor'
 import type { AgentAdapter, InvocationOptions } from '../engine/agents/types'
+import { attachmentRelPath, saveAttachment } from '../engine/attachments'
 import { restoreCheckpoint } from '../engine/checkpoints'
 import { McpRegistry } from '../engine/mcp'
 import { ProjectService } from '../engine/projects'
@@ -17,7 +18,9 @@ import type { RunSummary } from '../shared/types'
 
 const FIXTURE = join(__dirname, 'fixtures', 'stand-in-agent.mjs')
 
+/** In 'hang' mode each run writes its grandchild's pid to `${pidFile}.<n>` (n = 0, 1, …). */
 function standIn(mode: 'ok' | 'hang', pidFile = '', seen?: InvocationOptions[]): AgentAdapter {
+  let n = 0
   return {
     id: 'claude',
     label: 'Stand-in',
@@ -25,7 +28,7 @@ function standIn(mode: 'ok' | 'hang', pidFile = '', seen?: InvocationOptions[]):
     detect: async () => ({ id: 'claude', label: 'Stand-in', installed: true, executable: process.execPath, version: 'test', authenticated: true, adapterAvailable: true, detail: '', policy: 'test' }),
     buildInvocation: (opts) => {
       seen?.push(opts)
-      return { command: opts.executable, args: [FIXTURE, mode, pidFile], stdin: opts.prompt, env: process.env }
+      return { command: opts.executable, args: [FIXTURE, mode, pidFile && `${pidFile}.${n++}`], stdin: opts.prompt, env: process.env }
     },
     createParser: () => ({ parseLine: parseClaudeLine })
   }
@@ -84,23 +87,41 @@ describe('AgentSupervisor', () => {
     expect(history.map((r) => r.id)).toEqual([final.id])
   })
 
-  it('allows only one run per project and cancels the whole process tree', async () => {
+  it('runs chats in parallel, records the overlap, and cancels each process tree independently', async () => {
     const pidFile = join(tmp, 'grandchild.pid')
     const sup = new AgentSupervisor(join(tmp, 'appdata'), projects, { adapters: [standIn('hang', pidFile)] })
-    const running = waitFor(sup, (s) => s.currentAction !== null)
-    await sup.start(projectId, 'hang', 'claude')
-    await running
-    await expect(sup.start(projectId, 'second', 'claude')).rejects.toThrow(/already active/)
+    const first = await sup.start(projectId, 'first', 'claude')
+    const second = await sup.start(projectId, 'second', 'claude')
+    expect(sup.activeRuns(projectId).map((r) => r.id)).toEqual([first.id, second.id])
+    expect(second.concurrentRunIds).toEqual([first.id])
+    expect((await sup.getRun(first.id))!.concurrentRunIds).toEqual([second.id])
 
-    while (!existsSync(pidFile)) await new Promise((r) => setTimeout(r, 20))
-    const grandchild = Number(readFileSync(pidFile, 'utf8'))
-    const finished = waitFor(sup, done)
-    expect(sup.cancel(projectId)).toBe(true)
-    const final = await finished
-    expect(final.status).toBe('cancelled')
+    // Starts racing each other still respect the cap.
+    const extra = await Promise.allSettled([1, 2, 3].map((i) => sup.start(projectId, `extra ${i}`, 'claude')))
+    expect(extra.filter((r) => r.status === 'fulfilled')).toHaveLength(MAX_PARALLEL_RUNS - 2)
+    expect(extra.find((r) => r.status === 'rejected')).toMatchObject({ reason: { message: /already has 4 agent runs/ } })
+    const pids = await Promise.all(
+      [0, 1].map(async (i) => {
+        while (!existsSync(`${pidFile}.${i}`)) await new Promise((r) => setTimeout(r, 20))
+        return Number(readFileSync(`${pidFile}.${i}`, 'utf8'))
+      })
+    )
 
+    // Stopping one chat leaves the other running.
+    const firstDone = waitFor(sup, (s) => s.id === first.id && done(s))
+    expect(sup.cancel(first.id)).toBe(true)
+    expect((await firstDone).status).toBe('cancelled')
     await new Promise((r) => setTimeout(r, 200))
-    expect(() => process.kill(grandchild, 0)).toThrow() // grandchild is gone too
+    expect(() => process.kill(pids[0], 0)).toThrow() // first grandchild is gone too
+    expect(() => process.kill(pids[1], 0)).not.toThrow()
+    expect(sup.activeRuns(projectId).map((r) => r.id)).toContain(second.id)
+
+    let left = sup.activeRuns(projectId).length
+    const allDone = new Promise<void>((resolve) => sup.on('update', (s) => done(s) && --left === 0 && resolve()))
+    sup.cancelAll()
+    await allDone
+    await new Promise((r) => setTimeout(r, 200))
+    expect(() => process.kill(pids[1], 0)).toThrow()
     expect(sup.hasActiveRuns()).toBe(false)
   })
 
@@ -118,7 +139,7 @@ describe('AgentSupervisor', () => {
     const afterCrash = await new AgentSupervisor(appData, projects).listRuns(projectId)
     expect(afterCrash[0]).toMatchObject({ id: run.id, status: 'failed', error: /exited/ })
     const finished = waitFor(sup, done)
-    sup.cancel(projectId)
+    sup.cancel(run.id)
     await finished
   })
 
@@ -151,5 +172,27 @@ describe('AgentSupervisor', () => {
     expect(seen[0].mcp[0].env.THINKERER_PROJECT_ROOT).toBe(repo)
     expect(seen[0].policy.appendSystemPrompt).toMatch(/health MCP server/)
     expect((await tasks.list(repo))[0]).toMatchObject({ status: 'doing', runIds: [final.id] })
+  })
+
+  it('hands preview screenshots to the agent without them reaching Git, and keeps a copy with the run', async () => {
+    const id = await saveAttachment(repo, Buffer.from('fake png'))
+    const attachment = { id, url: 'http://localhost:5174/pricing', consoleErrors: ['TypeError: x is undefined'], at: new Date().toISOString() }
+    const seen: InvocationOptions[] = []
+    const sup = new AgentSupervisor(join(tmp, 'appdata'), projects, { adapters: [standIn('ok', '', seen)] })
+    const finished = waitFor(sup, done)
+    await sup.start(projectId, 'fix this', 'claude', { attachments: [attachment] })
+    const final = await finished
+
+    expect(final.status).toBe('succeeded')
+    expect(final.prompt).toBe('fix this')
+    expect(seen[0].prompt).toContain(`Screenshot: ${attachmentRelPath(id)}`)
+    expect(seen[0].prompt).toContain('Page: http://localhost:5174/pricing')
+    expect(seen[0].prompt).toContain('TypeError: x is undefined')
+    expect(final.attachments).toEqual([attachment])
+    // Ignored by Git: not part of the run's changes, and removed from the project afterwards.
+    expect(final.changes!.map((c) => c.path)).toEqual(['made.txt'])
+    expect(existsSync(join(repo, attachmentRelPath(id)))).toBe(false)
+    expect(await sup.attachmentDataUrl(final.id, id)).toBe(`data:image/png;base64,${Buffer.from('fake png').toString('base64')}`)
+    await expect(sup.start(projectId, 'x', 'claude', { attachments: [{ ...attachment, id: '../../etc/passwd' }] })).rejects.toThrow(/Invalid attachment/)
   })
 })

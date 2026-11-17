@@ -26,9 +26,20 @@ const previewApi: ThinkererApi = {
   tasks: { list: async () => [], create: unavailable, update: unavailable, remove: unavailable },
   mcp: { list: async () => [], upsert: unavailable, remove: unavailable, setSecret: unavailable, effective: async () => [] },
   website: { state: unavailable, logs: async () => [], start: unavailable, stop: unavailable, onLog: noop, onState: noop },
-  preview: { show: unavailable, setBounds: unavailable, hide: async () => true, reload: unavailable, approve: unavailable, onEvent: noop },
+  preview: {
+    show: unavailable,
+    setBounds: unavailable,
+    hide: async () => true,
+    reload: unavailable,
+    url: async () => null,
+    navigate: unavailable,
+    capture: unavailable,
+    discard: async () => false,
+    approve: unavailable,
+    onEvent: noop
+  },
   agents: { providers: async () => [] },
-  runs: { start: unavailable, cancel: unavailable, active: async () => null, list: async () => [], get: async () => null, artifact: unavailable, onEvent: noop, onUpdate: noop }
+  runs: { start: unavailable, cancel: unavailable, active: async () => [], list: async () => [], get: async () => null, artifact: unavailable, attachment: unavailable, onEvent: noop, onUpdate: noop }
 }
 
 export const api: ThinkererApi = window.thinkerer ?? previewApi

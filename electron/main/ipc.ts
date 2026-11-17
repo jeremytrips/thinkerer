@@ -1,6 +1,7 @@
 import { realpath } from 'node:fs/promises'
 import { app, dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
 import type { AgentSupervisor } from '../../engine/agents/supervisor'
+import { removeAttachment, saveAttachment } from '../../engine/attachments'
 import {
   fileDiff,
   initRepo,
@@ -17,7 +18,17 @@ import { gitStatus } from '../../engine/git'
 import type { McpRegistry } from '../../engine/mcp'
 import type { ProjectService } from '../../engine/projects'
 import type { TaskStore } from '../../engine/tasks'
-import type { AppInfo, McpServerDef, Project, ProjectConfigPatch, ProviderChoice, Result, TaskStatus } from '../../shared/types'
+import type {
+  AppInfo,
+  McpServerDef,
+  PreviewCapture,
+  Project,
+  ProjectConfigPatch,
+  PromptAttachment,
+  ProviderChoice,
+  Result,
+  TaskStatus
+} from '../../shared/types'
 import type { PreviewManager } from './preview'
 
 interface Deps {
@@ -34,6 +45,7 @@ interface Deps {
 }
 
 const PROVIDERS: ProviderChoice[] = ['auto', 'claude', 'codex']
+const MAX_ATTACHMENTS = 5
 
 function str(v: unknown, name: string, max = 10_000): string {
   if (typeof v !== 'string' || v.length > max) throw new Error(`Invalid ${name}`)
@@ -56,6 +68,8 @@ function bounds(v: unknown): { x: number; y: number; width: number; height: numb
  */
 export function registerIpc(deps: Deps): void {
   const { projects, supervisor, tasks, mcp, devServers, preview } = deps
+  // Preview screenshots waiting to be sent with a prompt, keyed by attachment id.
+  const captures = new Map<string, { projectId: string; attachment: PromptAttachment }>()
 
   function handle<A extends unknown[], T>(channel: string, fn: (...args: A) => Promise<T> | T): void {
     ipcMain.handle(channel, async (event: IpcMainInvokeEvent, ...args: unknown[]): Promise<Result<T>> => {
@@ -100,7 +114,7 @@ export function registerIpc(deps: Deps): void {
     sourceRoot: app.isPackaged ? null : await realpath(app.getAppPath()).catch(() => null)
   }))
   handle('app:restart', () => {
-    if (supervisor.hasActiveRuns()) throw new Error('Stop the active agent run before restarting')
+    if (supervisor.hasActiveRuns()) throw new Error('Stop the active agent runs before restarting')
     setTimeout(deps.restart, 50) // let the reply reach the renderer first
     return true
   })
@@ -129,7 +143,7 @@ export function registerIpc(deps: Deps): void {
   })
   handle('projects:remove', async (id: unknown) => {
     const projectId = str(id, 'project id', 100)
-    if (supervisor.activeRun(projectId)) throw new Error('Stop the active agent run first')
+    if (supervisor.activeRuns(projectId).length) throw new Error('Stop the active agent runs first')
     devServers.stop(projectId)
     await projects.remove(projectId)
     return true
@@ -162,7 +176,7 @@ export function registerIpc(deps: Deps): void {
   handle('checkpoints:preview', async (id: unknown, cp: unknown) => restorePreview(await projectPath(id), str(cp, 'checkpoint id', 100)))
   handle('checkpoints:restore', async (id: unknown, cp: unknown) => {
     const projectId = str(id, 'project id', 100)
-    if (supervisor.activeRun(projectId)) throw new Error('Stop the active agent run before restoring')
+    if (supervisor.activeRuns(projectId).length) throw new Error('Stop all active agent runs before restoring')
     return restoreCheckpoint(await projectPath(projectId), str(cp, 'checkpoint id', 100))
   })
 
@@ -241,6 +255,31 @@ export function registerIpc(deps: Deps): void {
     preview.reload()
     return true
   })
+  handle('preview:url', (id: unknown) => preview.currentUrl(str(id, 'project id', 100)))
+  handle('preview:navigate', (id: unknown, url: unknown) => {
+    preview.navigate(str(id, 'project id', 100), str(url, 'url', 4096))
+    return true
+  })
+  handle('preview:capture', async (id: unknown): Promise<PreviewCapture> => {
+    const project = await okProject(id)
+    const shot = await preview.capture(project.id)
+    const attachment: PromptAttachment = {
+      id: await saveAttachment(project.path, shot.png),
+      url: shot.url || null,
+      consoleErrors: shot.consoleErrors,
+      at: new Date().toISOString()
+    }
+    captures.set(attachment.id, { projectId: project.id, attachment })
+    return { ...attachment, dataUrl: `data:image/png;base64,${shot.png.toString('base64')}` }
+  })
+  handle('preview:discard', async (id: unknown, captureId: unknown) => {
+    const project = await okProject(id)
+    const key = str(captureId, 'capture id', 100)
+    if (captures.get(key)?.projectId !== project.id) return false
+    captures.delete(key)
+    await removeAttachment(project.path, key)
+    return true
+  })
   handle('preview:approve', async (id: unknown, url: unknown) => {
     const projectId = str(id, 'project id', 100)
     const target = str(url, 'url', 4096)
@@ -253,17 +292,32 @@ export function registerIpc(deps: Deps): void {
 
   // Agent runs
   handle('agents:providers', () => supervisor.providers())
-  handle('runs:start', (id: unknown, prompt: unknown, provider: unknown, taskId: unknown) => {
+  handle('runs:start', async (id: unknown, prompt: unknown, provider: unknown, taskId: unknown, attachmentIds: unknown) => {
     if (!PROVIDERS.includes(provider as ProviderChoice)) throw new Error('Invalid provider')
-    return supervisor.start(str(id, 'project id', 100), str(prompt, 'prompt', 100_000), provider as ProviderChoice, {
-      taskId: taskId ? str(taskId, 'task id', 100) : null
+    const projectId = str(id, 'project id', 100)
+    const ids = attachmentIds === undefined || attachmentIds === null ? [] : attachmentIds
+    if (!Array.isArray(ids) || ids.length > MAX_ATTACHMENTS) throw new Error('Invalid attachments')
+    // Only captures this window made for this project, so the renderer can't point a run at arbitrary files.
+    const attachments = ids.map((a) => {
+      const c = captures.get(str(a, 'attachment id', 100))
+      if (!c || c.projectId !== projectId) throw new Error('Screenshot is no longer available; capture it again')
+      return c.attachment
     })
+    const summary = await supervisor.start(projectId, str(prompt, 'prompt', 100_000), provider as ProviderChoice, {
+      taskId: taskId ? str(taskId, 'task id', 100) : null,
+      attachments
+    })
+    for (const a of attachments) captures.delete(a.id)
+    return summary
   })
-  handle('runs:cancel', (id: unknown) => supervisor.cancel(str(id, 'project id', 100)))
-  handle('runs:active', (id: unknown) => supervisor.activeRun(str(id, 'project id', 100)))
+  handle('runs:cancel', (runId: unknown) => supervisor.cancel(str(runId, 'run id', 100)))
+  handle('runs:active', (id: unknown) => supervisor.activeRuns(str(id, 'project id', 100)))
   handle('runs:list', (id: unknown) => supervisor.listRuns(str(id, 'project id', 100)))
   handle('runs:get', (runId: unknown) => supervisor.getRun(str(runId, 'run id', 100)))
   handle('runs:artifact', (runId: unknown, name: unknown) => supervisor.artifactDataUrl(str(runId, 'run id', 100), str(name, 'artifact', 200)))
+  handle('runs:attachment', (runId: unknown, attachmentId: unknown) =>
+    supervisor.attachmentDataUrl(str(runId, 'run id', 100), str(attachmentId, 'attachment id', 100))
+  )
 
   supervisor.on('event', (runId, event) => send('runs:event', runId, event))
   supervisor.on('update', (summary) => send('runs:update', summary))

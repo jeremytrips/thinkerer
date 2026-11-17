@@ -123,6 +123,20 @@ export interface RunArtifact {
   at: string
 }
 
+/** A screenshot of the user's preview, attached to a prompt so the agent sees what they see. */
+export interface PromptAttachment {
+  id: string
+  /** Page shown in the preview when it was captured. */
+  url: string | null
+  /** Console errors the preview logged since that page loaded (most recent last). */
+  consoleErrors: string[]
+  at: string
+}
+
+export interface PreviewCapture extends PromptAttachment {
+  dataUrl: string
+}
+
 export type TaskStatus = 'todo' | 'doing' | 'done'
 
 export interface Task {
@@ -182,7 +196,7 @@ export interface DevLogLine {
 
 export interface PreviewEvent {
   at: string
-  kind: 'console' | 'navigation-blocked' | 'load-failed' | 'loaded'
+  kind: 'console' | 'navigation-blocked' | 'load-failed' | 'loaded' | 'navigated'
   level?: 'debug' | 'info' | 'warning' | 'error'
   text: string
   url?: string
@@ -200,6 +214,8 @@ export interface RunRecord {
   changes: FileChange[] | null
   mcpServers: string[]
   artifacts: RunArtifact[]
+  /** Preview screenshots the user sent with the prompt. Absent on older runs. */
+  attachments?: PromptAttachment[]
   provider: ProviderId
   selection: { requested: ProviderChoice; rationale: string }
   status: RunStatus
@@ -214,6 +230,12 @@ export interface RunRecord {
   permissionDenials: { tool: string; input: string }[]
   gitBefore: GitStatus | null
   gitAfter: GitStatus | null
+  /**
+   * Other runs that were active in the same project while this one ran. When
+   * non-empty, the checkpoint and changes may include their edits too. Absent
+   * on runs recorded before parallel runs existed.
+   */
+  concurrentRunIds?: string[]
   events: RunEvent[]
 }
 

@@ -73,6 +73,10 @@ const api: ThinkererApi = {
     setBounds: (bounds) => call('preview:bounds', bounds),
     hide: () => call('preview:hide'),
     reload: () => call('preview:reload'),
+    url: (projectId) => call('preview:url', projectId),
+    navigate: (projectId, url) => call('preview:navigate', projectId, url),
+    capture: (projectId) => call('preview:capture', projectId),
+    discard: (projectId, captureId) => call('preview:discard', projectId, captureId),
     approve: (projectId, url) => call('preview:approve', projectId, url),
     onEvent: (cb) => subscribe<[string, PreviewEvent]>('preview:event', cb)
   },
@@ -80,12 +84,13 @@ const api: ThinkererApi = {
     providers: () => call('agents:providers')
   },
   runs: {
-    start: (projectId, prompt, provider, taskId) => call('runs:start', projectId, prompt, provider, taskId ?? null),
-    cancel: (projectId) => call('runs:cancel', projectId),
+    start: (projectId, prompt, provider, taskId, attachmentIds) => call('runs:start', projectId, prompt, provider, taskId ?? null, attachmentIds ?? []),
+    cancel: (runId) => call('runs:cancel', runId),
     active: (projectId) => call('runs:active', projectId),
     list: (projectId) => call('runs:list', projectId),
     get: (runId) => call('runs:get', runId),
     artifact: (runId, name) => call('runs:artifact', runId, name),
+    attachment: (runId, attachmentId) => call('runs:attachment', runId, attachmentId),
     onEvent: (cb) => subscribe<[string, RunEvent]>('runs:event', cb),
     onUpdate: (cb) => subscribe<[RunSummary]>('runs:update', cb)
   }

@@ -48,6 +48,8 @@ test('import this repository, browse read-only files, see providers, persist acr
     await page.screenshot({ path: join(shots, 'files.png') })
 
     await page.getByRole('tab', { name: 'Agent' }).click()
+    await expect(page.locator('.agent-preview .preview-pane')).toBeVisible() // website shown beside the chat by default
+    await page.getByRole('button', { name: 'History' }).click()
     await expect(page.locator('.agent-side .providers')).toContainText('Claude Code')
     await expect(page.locator('.agent-side .providers')).toContainText('Codex')
     await page.locator('.agent-side .provider-policy').first().locator('summary').click()

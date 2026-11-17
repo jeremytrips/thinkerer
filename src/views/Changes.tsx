@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FileChange, RestorePreview } from '../../shared/types'
 import { api, errorMessage } from '../api'
+import { useOverlay } from '../overlay'
 
 const STATUS_LABEL: Record<FileChange['status'], string> = { A: 'added', M: 'modified', D: 'deleted', R: 'renamed', C: 'copied', T: 'type changed' }
 
@@ -85,6 +86,7 @@ export function RestoreDialog({ projectId, checkpointId, label, onClose, onResto
   const [preview, setPreview] = useState<RestorePreview | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  useOverlay()
 
   useEffect(() => {
     api.checkpoints.preview(projectId, checkpointId).then(setPreview, (e) => setError(errorMessage(e)))

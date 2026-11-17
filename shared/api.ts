@@ -10,6 +10,7 @@ import type {
   GitStatus,
   McpServerDef,
   McpServerView,
+  PreviewCapture,
   PreviewEvent,
   Project,
   ProjectConfigPatch,
@@ -87,6 +88,14 @@ export interface ThinkererApi {
     setBounds(bounds: Bounds): Promise<boolean>
     hide(): Promise<boolean>
     reload(): Promise<boolean>
+    /** URL currently shown in the project's preview, or null if it isn't open. */
+    url(projectId: string): Promise<string | null>
+    /** Loads a URL in the preview, subject to the same origin allowlist as clicks. */
+    navigate(projectId: string, url: string): Promise<boolean>
+    /** Screenshot of what the user sees, saved for attaching to the next prompt. */
+    capture(projectId: string): Promise<PreviewCapture>
+    /** Deletes a capture that won't be sent. */
+    discard(projectId: string, captureId: string): Promise<boolean>
     approve(projectId: string, url: string): Promise<boolean>
     onEvent(cb: (projectId: string, event: PreviewEvent) => void): () => void
   }
@@ -94,12 +103,14 @@ export interface ThinkererApi {
     providers(): Promise<ProviderStatus[]>
   }
   runs: {
-    start(projectId: string, prompt: string, provider: ProviderChoice, taskId?: string | null): Promise<RunSummary>
-    cancel(projectId: string): Promise<boolean>
-    active(projectId: string): Promise<RunRecord | null>
+    start(projectId: string, prompt: string, provider: ProviderChoice, taskId?: string | null, attachmentIds?: string[]): Promise<RunSummary>
+    cancel(runId: string): Promise<boolean>
+    /** Live runs for the project, oldest first. */
+    active(projectId: string): Promise<RunRecord[]>
     list(projectId: string): Promise<RunSummary[]>
     get(runId: string): Promise<RunRecord | null>
     artifact(runId: string, name: string): Promise<string>
+    attachment(runId: string, attachmentId: string): Promise<string>
     onEvent(cb: (runId: string, event: RunEvent) => void): () => void
     onUpdate(cb: (summary: RunSummary) => void): () => void
   }

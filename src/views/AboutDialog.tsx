@@ -1,7 +1,9 @@
 import { useEffect } from 'react'
 import type { AppInfo } from '../../shared/types'
+import { useOverlay } from '../overlay'
 
 export function AboutDialog({ info, onClose }: { info: AppInfo | null; onClose: () => void }) {
+  useOverlay()
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
     window.addEventListener('keydown', onKey)

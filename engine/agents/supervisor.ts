@@ -1,9 +1,21 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { mkdir, readdir, readFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { Project, ProviderChoice, ProviderId, ProviderStatus, RunArtifact, RunEvent, RunRecord, RunSummary, UsageObservation } from '../../shared/types'
+import type {
+  Project,
+  PromptAttachment,
+  ProviderChoice,
+  ProviderId,
+  ProviderStatus,
+  RunArtifact,
+  RunEvent,
+  RunRecord,
+  RunSummary,
+  UsageObservation
+} from '../../shared/types'
+import { ATTACHMENT_ID, attachmentPath, attachmentRelPath, removeAttachment } from '../attachments'
 import { createCheckpoint, diffSummary, recordAfter } from '../checkpoints'
 import { gitStatus } from '../git'
 import type { McpRegistry, McpRunContext, ResolvedMcpServer } from '../mcp'
@@ -16,6 +28,8 @@ import type { AgentAdapter, RunPolicy } from './types'
 
 const MAX_EVENTS = 5000
 const KILL_GRACE_MS = 3000
+/** Parallel runs (chats) allowed per project. They share the project folder. */
+export const MAX_PARALLEL_RUNS = 4
 const IMAGE_TYPES: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' }
 
 /** Preference used by Auto when no comparable consumption signal is available. */
@@ -58,6 +72,8 @@ export interface SupervisorOptions {
 
 export interface StartOptions {
   taskId?: string | null
+  /** Preview screenshots already saved in the project (see engine/attachments). */
+  attachments?: PromptAttachment[]
 }
 
 export interface SupervisorEvents {
@@ -66,13 +82,15 @@ export interface SupervisorEvents {
 }
 
 /**
- * Owns provider CLI processes. One modifying run per project at a time (spec
- * F2); every run is recorded to <appData>/runs/<id>.json.
+ * Owns provider CLI processes. Several runs may work in the same project folder
+ * at once (up to MAX_PARALLEL_RUNS); runs that overlap in time are recorded in
+ * `concurrentRunIds`, because their checkpoints and diffs can then include each
+ * other's edits. Every run is recorded to <appData>/runs/<id>.json.
  */
 export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
   private readonly runsDir: string
-  private readonly active = new Map<string, ActiveRun>() // keyed by projectId
-  private readonly starting = new Set<string>()
+  private readonly active = new Map<string, ActiveRun>() // keyed by runId
+  private readonly starting = new Map<string, number>() // projectId → starts in flight
   private readonly cooldownUntil = new Map<ProviderId, number>()
   private readonly adapters: Partial<Record<ProviderId, AgentAdapter>> = {}
   private readonly policy: RunPolicy
@@ -99,8 +117,12 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
   async start(projectId: string, prompt: string, requested: ProviderChoice, opts: StartOptions = {}): Promise<RunSummary> {
     if (typeof prompt !== 'string' || !prompt.trim()) throw new Error('Prompt is empty')
     if (prompt.length > 100_000) throw new Error('Prompt is too long')
-    if (this.active.has(projectId) || this.starting.has(projectId)) throw new Error('An agent run is already active for this project')
-    this.starting.add(projectId)
+    if (opts.attachments?.some((a) => !ATTACHMENT_ID.test(a.id))) throw new Error('Invalid attachment')
+    const inFlight = this.starting.get(projectId) ?? 0
+    if (this.activeRuns(projectId).length + inFlight >= MAX_PARALLEL_RUNS) {
+      throw new Error(`This project already has ${MAX_PARALLEL_RUNS} agent runs in progress; stop one or wait for it to finish`)
+    }
+    this.starting.set(projectId, inFlight + 1)
     let run: ActiveRun
     try {
       const project = await this.projects.get(projectId)
@@ -111,6 +133,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       }
       const { provider, rationale, status } = await this.selectProvider(requested)
       const now = new Date().toISOString()
+      const others = this.activeRuns(projectId)
       const record: RunRecord = {
         id: randomUUID(),
         projectId,
@@ -122,6 +145,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
         changes: null,
         mcpServers: [],
         artifacts: [],
+        attachments: opts.attachments ?? [],
         provider,
         selection: { requested, rationale },
         status: 'queued',
@@ -136,16 +160,23 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
         permissionDenials: [],
         gitBefore,
         gitAfter: null,
+        concurrentRunIds: others.map((r) => r.id),
         events: []
       }
       run = { record, child: null, cancelRequested: false, killTimer: null }
-      this.active.set(projectId, run)
+      for (const other of others) {
+        other.concurrentRunIds = [...(other.concurrentRunIds ?? []), record.id]
+        this.emitUpdate(other)
+      }
+      this.active.set(record.id, run)
       this.addEvent(run, { kind: 'status', text: `Provider: ${this.adapters[provider]!.label}` })
       await this.persist(record)
       this.emitUpdate(record)
       void this.launch(run, project, status)
     } finally {
-      this.starting.delete(projectId)
+      const left = (this.starting.get(projectId) ?? 1) - 1
+      if (left > 0) this.starting.set(projectId, left)
+      else this.starting.delete(projectId)
     }
     return summarize(run.record)
   }
@@ -156,6 +187,11 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     try {
       if (record.taskId && this.opts.tasks) {
         await this.opts.tasks.attachRun(project.path, record.taskId, record.id)
+      }
+      // Keep a copy with the run, so the chat can still show it after the project copy is removed.
+      for (const a of record.attachments ?? []) {
+        await mkdir(this.inputsDir(record.id), { recursive: true })
+        await copyFile(attachmentPath(project.path, a.id), join(this.inputsDir(record.id), `${a.id}.png`))
       }
       // Recovery point first: nothing the agent does can be unrecoverable.
       record.checkpoint = await createCheckpoint(project.path, record.id, `Thinkerer: before run — ${record.prompt.slice(0, 72)}`)
@@ -173,7 +209,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       const inv = adapter.buildInvocation({
         executable: status.executable!,
         cwd: project.path,
-        prompt: record.prompt,
+        prompt: record.prompt + attachmentNote(record.attachments ?? []),
         policy: { ...this.policy, appendSystemPrompt: this.instructions(project, servers) },
         mcp: servers,
         secretEnv
@@ -223,6 +259,10 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     return join(this.runsDir, `${runId}-artifacts`)
   }
 
+  private inputsDir(runId: string): string {
+    return join(this.runsDir, `${runId}-inputs`)
+  }
+
   /** Image artifact as a data: URL for the renderer (no file paths cross IPC). */
   async artifactDataUrl(runId: string, name: string): Promise<string> {
     if (!/^[0-9a-f-]{36}$/.test(runId) || !/^[\w.-]+$/.test(name)) throw new Error('Invalid artifact')
@@ -230,6 +270,13 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     if (!type) throw new Error('Unsupported artifact type')
     const data = await readFile(join(this.artifactsDir(runId), name))
     return `data:${type};base64,${data.toString('base64')}`
+  }
+
+  /** A screenshot the user attached to the run's prompt, as a data: URL. */
+  async attachmentDataUrl(runId: string, id: string): Promise<string> {
+    if (!/^[0-9a-f-]{36}$/.test(runId) || !ATTACHMENT_ID.test(id)) throw new Error('Invalid attachment')
+    const data = await readFile(join(this.inputsDir(runId), `${id}.png`))
+    return `data:image/png;base64,${data.toString('base64')}`
   }
 
   private async scanArtifacts(runId: string): Promise<RunArtifact[]> {
@@ -242,9 +289,9 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     }
   }
 
-  cancel(projectId: string): boolean {
-    const run = this.active.get(projectId)
-    if (!run) return false
+  cancel(runId: string): boolean {
+    const run = this.active.get(runId)
+    if (!run || run.cancelRequested) return !!run
     run.cancelRequested = true
     this.addEvent(run, { kind: 'status', text: 'Cancellation requested — stopping agent process' })
     killTree(run.child, 'SIGTERM')
@@ -253,19 +300,21 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
   }
 
   cancelAll(): void {
-    for (const projectId of this.active.keys()) this.cancel(projectId)
+    for (const runId of this.active.keys()) this.cancel(runId)
   }
 
   hasActiveRuns(): boolean {
     return this.active.size > 0
   }
 
-  activeRun(projectId: string): RunRecord | null {
-    return this.active.get(projectId)?.record ?? null
+  /** Live runs for a project, oldest first. */
+  activeRuns(projectId: string): RunRecord[] {
+    return [...this.active.values()].filter((r) => r.record.projectId === projectId).map((r) => r.record)
   }
 
   async getRun(runId: string): Promise<RunRecord | null> {
-    for (const r of this.active.values()) if (r.record.id === runId) return r.record
+    const live = this.active.get(runId)
+    if (live) return live.record
     if (!/^[0-9a-f-]{36}$/.test(runId)) return null
     return readJson<RunRecord>(join(this.runsDir, `${runId}.json`))
   }
@@ -278,7 +327,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     } catch {
       return []
     }
-    const activeIds = new Set([...this.active.values()].map((r) => r.record.id))
+    const activeIds = new Set(this.active.keys())
     const out: RunSummary[] = []
     for (const f of files) {
       const rec = await readJson<RunRecord>(join(this.runsDir, f)).catch(() => null)
@@ -400,8 +449,9 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       }
     }
     run.record.artifacts = await this.scanArtifacts(run.record.id)
+    for (const a of run.record.attachments ?? []) await removeAttachment(run.record.projectPath, a.id).catch(() => {})
     this.addEvent(run, { kind: status === 'failed' ? 'error' : 'status', text: error ?? `Run ${status}` })
-    this.active.delete(run.record.projectId)
+    this.active.delete(run.record.id)
     await this.persist(run.record).catch(() => {})
     this.emitUpdate(run.record)
   }
@@ -431,6 +481,23 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
 function missingAdapter(id: ProviderId): ProviderStatus {
   const label = id === 'claude' ? 'Claude Code' : 'Codex'
   return { id, label, installed: false, executable: null, version: null, authenticated: null, adapterAvailable: false, detail: 'No adapter registered', policy: '' }
+}
+
+/** Tells the agent where the user's preview screenshots are and what page they show. */
+export function attachmentNote(attachments: PromptAttachment[]): string {
+  if (!attachments.length) return ''
+  const items = attachments.map((a, i) => {
+    const lines = [`${i + 1}. Screenshot: ${attachmentRelPath(a.id)}`, `   Page: ${a.url ?? 'unknown'}`]
+    if (a.consoleErrors.length) lines.push('   Console errors:', ...a.consoleErrors.map((e) => `   - ${e.slice(0, 500)}`))
+    return lines.join('\n')
+  })
+  return [
+    '',
+    '',
+    '---',
+    `The user attached ${attachments.length === 1 ? 'a screenshot' : 'screenshots'} of the site as they see it in Thinkerer's preview. Open each image file (path relative to the project root) to look at it before you start; do not edit or delete it.`,
+    ...items
+  ].join('\n')
 }
 
 function summarize(record: RunRecord): RunSummary {

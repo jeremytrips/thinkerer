@@ -1,29 +1,19 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { DevLogLine, DevServerState, PreviewEvent, Project, RunRecord } from '../../shared/types'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { DevLogLine, PreviewEvent, Project, RunRecord } from '../../shared/types'
 import { api, errorMessage } from '../api'
 import { ArtifactGallery } from './AgentTab'
+import { PreviewPane } from './PreviewPane'
 import { StatusPill, relativeTime } from './RunBits'
 
 type Panel = 'log' | 'console' | 'checks'
 
-const STATE_LABEL: Record<DevServerState['status'], string> = {
-  stopped: 'Stopped',
-  starting: 'Starting…',
-  running: 'Running',
-  exited: 'Exited',
-  external: 'Served externally'
-}
-
 export function WebsiteTab({ project }: { project: Project }) {
-  const [state, setState] = useState<DevServerState | null>(null)
   const [logs, setLogs] = useState<DevLogLine[]>([])
   const [events, setEvents] = useState<PreviewEvent[]>([])
   const [panel, setPanel] = useState<Panel>('log')
   const [check, setCheck] = useState<RunRecord | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const previewRef = useRef<HTMLDivElement>(null)
   const logEnd = useRef<HTMLDivElement>(null)
-  const previewing = state?.status === 'running' || state?.status === 'external'
 
   const loadCheck = useCallback(async () => {
     const runs = await api.runs.list(project.id)
@@ -32,40 +22,17 @@ export function WebsiteTab({ project }: { project: Project }) {
   }, [project.id])
 
   useEffect(() => {
-    api.website.state(project.id).then(setState, (e) => setError(errorMessage(e)))
     api.website.logs(project.id).then(setLogs, () => {})
     void loadCheck()
     const offLog = api.website.onLog((id, line) => id === project.id && setLogs((cur) => [...cur.slice(-1999), line]))
-    const offState = api.website.onState((s) => s.projectId === project.id && setState(s))
     const offPreview = api.preview.onEvent((id, e) => id === project.id && setEvents((cur) => [...cur.slice(-499), e]))
     const offRuns = api.runs.onUpdate((s) => s.projectId === project.id && s.endedAt && void loadCheck())
     return () => {
       offLog()
-      offState()
       offPreview()
       offRuns()
     }
   }, [project.id, loadCheck])
-
-  // Keep the native preview view glued to the placeholder element.
-  useLayoutEffect(() => {
-    const el = previewRef.current
-    if (!previewing || !el) return
-    const rect = () => {
-      const r = el.getBoundingClientRect()
-      return { x: r.left, y: r.top, width: r.width, height: r.height }
-    }
-    api.preview.show(project.id, rect()).catch((e) => setError(errorMessage(e)))
-    const ro = new ResizeObserver(() => void api.preview.setBounds(rect()))
-    ro.observe(el)
-    const onResize = () => void api.preview.setBounds(rect())
-    window.addEventListener('resize', onResize)
-    return () => {
-      ro.disconnect()
-      window.removeEventListener('resize', onResize)
-      void api.preview.hide()
-    }
-  }, [previewing, project.id])
 
   useEffect(() => {
     if (panel === 'log') logEnd.current?.scrollIntoView({ block: 'end' })
@@ -81,7 +48,6 @@ export function WebsiteTab({ project }: { project: Project }) {
   }
 
   const config = project.config!
-  const running = state && (state.status === 'running' || state.status === 'starting' || state.status === 'external')
   const consoleErrors = events.filter((e) => e.kind === 'console' && e.level === 'error').length
   const verdict = check?.resultText ? (/\bFAIL(ED)?\b/.test(check.resultText) ? 'FAILED' : /\bPASS(ED)?\b/.test(check.resultText) ? 'PASSED' : null) : null
   const browserActions =
@@ -90,38 +56,17 @@ export function WebsiteTab({ project }: { project: Project }) {
   return (
     <section className="website">
       <div className="website-head">
-        <div>
-          <h1>Website</h1>
-          <div className="row small">
-            {state && <span className={`pill ${previewing ? 'pill-succeeded' : state.status === 'starting' ? 'pill-running' : state.status === 'exited' ? 'pill-failed' : 'pill-cancelled'}`}>{STATE_LABEL[state.status]}</span>}
-            <span className="mono">{config.website.devCommand || 'no dev command'}</span>
-            <span className="muted">→</span>
-            <span className="mono">{config.website.previewUrl || 'no preview URL'}</span>
-          </div>
-        </div>
-        <div className="row">
-          {previewing && <button className="small" onClick={() => act(() => api.preview.reload())}>Reload preview</button>}
-          {running ? (
-            <button className="small" onClick={() => act(() => api.website.stop(project.id))}>{state?.status === 'external' ? 'Stop previewing' : 'Stop dev server'}</button>
-          ) : (
-            <button className="small primary" onClick={() => act(() => api.website.start(project.id))} disabled={!config.website.devCommand}>
-              Start dev server
-            </button>
-          )}
+        <h1>Website</h1>
+        <div className="row small">
+          <span className="mono">{config.website.devCommand || 'no dev command'}</span>
+          <span className="muted">→</span>
+          <span className="mono">{config.website.previewUrl || 'no preview URL'}</span>
         </div>
       </div>
-      {state?.needsApproval && !running && (
-        <p className="small muted">Starting will ask you to approve this command (first run, or it changed since you last approved it).</p>
-      )}
       {error && <div className="banner banner-error">{error}</div>}
 
-      <div className="preview-frame card" ref={previewing ? previewRef : undefined}>
-        {!previewing && (
-          <div className="preview-empty muted">
-            {state?.status === 'starting' ? 'Waiting for the dev server to respond…' : 'Start the dev server to preview the site here.'}
-            <div className="small">The preview is sandboxed and limited to {config.website.previewUrl ? new URL(config.website.previewUrl).origin : 'the preview URL'}.</div>
-          </div>
-        )}
+      <div className="card website-preview">
+        <PreviewPane project={project} />
       </div>
 
       <div className="website-panel card">
