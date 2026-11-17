@@ -27,7 +27,7 @@ async function projectHealth() {
   try {
     const { stdout } = await exec('git', ['status', '--porcelain=v1', '--branch'], { cwd: root })
     const lines = stdout.split('\n').filter(Boolean)
-    report.git = { branch: lines[0]?.slice(3).split('...')[0] ?? null, uncommittedFiles: lines.length - 1 }
+    report.git = { branch: lines[0]?.slice(3).split('...')[0].replace(/^No commits yet on /, '') ?? null, uncommittedFiles: lines.length - 1 }
   } catch {
     report.git = { error: 'not a git repository' }
   }

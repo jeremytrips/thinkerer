@@ -165,8 +165,9 @@ navigation lock.
 
 ## Known limitations
 
-- **Codex:** its read access isn't confined. Codex MCP and agent runs are verified against the real
-  CLI up to authentication only; the end-to-end live test needs `codex login`.
+- **Codex:** its read access isn't confined by its sandbox. Live runs, including MCP tool calls, are
+  verified against codex-cli 0.169 (`npm run test:live:codex`). Codex reports token counts but no
+  rate-limit window figures, so those show as unavailable.
 - **Approvals:** there are no interactive approval prompts for agents yet (`awaiting-approval` is
   unused). Anything outside policy is denied and listed in the run. Off-origin navigation in the agent
   browser is blocked rather than offered for approval.

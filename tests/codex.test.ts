@@ -54,6 +54,12 @@ describe('Codex adapter', () => {
     expect(limited.usage).toEqual({ rateLimitStatus: 'rejected' })
   })
 
+  it('shows MCP tool output', () => {
+    const p = createCodexParser()
+    const [r] = p.parseLine(line({ type: 'item.completed', item: { type: 'mcp_tool_call', server: 'health', tool: 'project_health', status: 'completed', result: { content: [{ type: 'text', text: '{"git":{"branch":"main"}}' }] } } }))
+    expect(r.event).toEqual({ kind: 'tool-result', text: '{"git":{"branch":"main"}}', meta: { isError: false } })
+  })
+
   it('records declined commands as policy denials', () => {
     const p = createCodexParser()
     p.parseLine(line({ type: 'item.completed', item: { type: 'command_execution', command: 'curl example.com', aggregated_output: '', exit_code: null, status: 'declined' } }))

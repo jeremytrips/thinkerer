@@ -110,6 +110,7 @@ type Item = {
   tool?: string
   query?: string
   error?: { message?: string } | null
+  result?: { content?: { type?: string; text?: string }[] } | null
 }
 
 const RATE_LIMIT = /rate.?limit|usage limit|quota|429/i
@@ -196,8 +197,11 @@ export function createCodexParser(): StreamParser {
         if (item.status === 'failed') updates.push({ event: { kind: 'tool-result', text: 'File change failed', meta: { isError: true } } })
         return updates
       }
-      case 'mcp_tool_call':
-        return [{ event: { kind: 'tool-result', text: item.error?.message ?? `MCP ${item.status ?? 'completed'}`, meta: { isError: item.status === 'failed' } } }]
+      case 'mcp_tool_call': {
+        const output = (item.result?.content ?? []).map((c) => (c.type === 'text' ? c.text ?? '' : `[${c.type}]`)).join('\n')
+        const text = item.error?.message ?? (output || `MCP ${item.status ?? 'completed'}`)
+        return [{ event: { kind: 'tool-result', text: truncate(text, 4000), meta: { isError: item.status === 'failed' || !!item.error } } }]
+      }
       case 'web_search':
         return [{ event: { kind: 'tool-use', text: `WebSearch: ${item.query ?? ''}`, meta: { tool: 'WebSearch' } } }]
       case 'error':
