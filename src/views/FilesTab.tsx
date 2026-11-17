@@ -1,14 +1,22 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { FileContent, FileEntry, GitStatus, Project } from '../../shared/types'
+import type { Checkpoint, FileChange, FileContent, FileEntry, Project } from '../../shared/types'
 import { api, errorMessage } from '../api'
+import { ChangeList, RestoreDialog } from './Changes'
+import { relativeTime } from './RunBits'
+
+type View = 'browse' | 'changes' | 'checkpoints'
 
 /** Read-only explorer. There is intentionally no way to edit source here. */
 export function FilesTab({ project }: { project: Project }) {
   const [children, setChildren] = useState<Record<string, FileEntry[]>>({})
   const [open, setOpen] = useState<Set<string>>(new Set(['']))
   const [file, setFile] = useState<FileContent | null>(null)
-  const [git, setGit] = useState<GitStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [view, setView] = useState<View>('browse')
+  const [changes, setChanges] = useState<FileChange[] | null>(null)
+  const [checkpoints, setCheckpoints] = useState<Checkpoint[] | null>(null)
+  const [restore, setRestore] = useState<Checkpoint | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   const load = useCallback(
     async (dir: string) => {
@@ -26,13 +34,18 @@ export function FilesTab({ project }: { project: Project }) {
     setChildren({})
     setError(null)
     for (const dir of open) void load(dir)
-    api.git.status(project.id).then(setGit, () => setGit(null))
     if (file) api.files.read(project.id, file.path).then(setFile, () => setFile(null))
+    loadGit()
   }, [open, load, project.id, file])
+
+  function loadGit() {
+    api.git.workingChanges(project.id).then(setChanges, () => setChanges(null))
+    api.checkpoints.list(project.id).then(setCheckpoints, () => setCheckpoints(null))
+  }
 
   useEffect(() => {
     void load('')
-    api.git.status(project.id).then(setGit, () => setGit(null))
+    loadGit()
   }, [load, project.id])
 
   async function toggle(entry: FileEntry) {
@@ -83,23 +96,64 @@ export function FilesTab({ project }: { project: Project }) {
           <button className="small" onClick={refresh}>Refresh</button>
         </div>
       </div>
+      <div className="row segmented" role="tablist">
+        <button role="tab" aria-selected={view === 'browse'} className={view === 'browse' ? 'tab active' : 'tab'} onClick={() => setView('browse')}>Browse</button>
+        <button role="tab" aria-selected={view === 'changes'} className={view === 'changes' ? 'tab active' : 'tab'} onClick={() => setView('changes')}>
+          Uncommitted changes{changes ? ` (${changes.length})` : ''}
+        </button>
+        <button role="tab" aria-selected={view === 'checkpoints'} className={view === 'checkpoints' ? 'tab active' : 'tab'} onClick={() => setView('checkpoints')}>
+          Checkpoints{checkpoints ? ` (${checkpoints.length})` : ''}
+        </button>
+      </div>
       {error && <div className="banner banner-error">{error}</div>}
-      <div className="files-body">
-        <div className="tree card">
-          {git && git.entries.length > 0 && (
-            <details className="tree-changes" open={git.entries.length <= 10}>
-              <summary className="small muted">Uncommitted changes ({git.entries.length})</summary>
-              <ul>
-                {git.entries.slice(0, 50).map((e) => (
-                  <li key={e.path}>
-                    <button className="tree-item mono small" onClick={() => !e.path.endsWith('/') && openFile(e.path.replace(/^.* -> /, ''))}>
-                      <span className="git-code">{e.code}</span> {e.path}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </details>
+      {notice && <div className="banner banner-info">{notice}</div>}
+      {view === 'changes' && (
+        <div className="card files-panel">
+          {changes === null ? (
+            <p className="muted">Not a Git repository.</p>
+          ) : changes.length === 0 ? (
+            <p className="muted">No uncommitted changes.</p>
+          ) : (
+            <ChangeList changes={changes} loadDiff={(path) => api.git.workingDiff(project.id, path)} />
           )}
+        </div>
+      )}
+      {view === 'checkpoints' && (
+        <div className="card files-panel">
+          {checkpoints === null ? (
+            <p className="muted">Not a Git repository.</p>
+          ) : checkpoints.length === 0 ? (
+            <p className="muted">No checkpoints yet. One is saved automatically before every agent run.</p>
+          ) : (
+            <ul className="checkpoint-list">
+              {checkpoints.map((c) => (
+                <li key={c.id} className="row space">
+                  <span className="ellipsis">
+                    {c.label.replace(/^Thinkerer: /, '')} <span className="small muted">· {relativeTime(c.createdAt)} · {c.commit.slice(0, 8)}</span>
+                  </span>
+                  <button className="small" onClick={() => setRestore(c)}>Restore…</button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="small muted">Checkpoints are local Git refs (refs/thinkerer/*). They are never pushed by default.</p>
+        </div>
+      )}
+      {restore && (
+        <RestoreDialog
+          projectId={project.id}
+          checkpointId={restore.id}
+          label={`${restore.label} · ${new Date(restore.createdAt).toLocaleString()}`}
+          onClose={() => setRestore(null)}
+          onRestored={(msg) => {
+            setRestore(null)
+            setNotice(msg)
+            refresh()
+          }}
+        />
+      )}
+      <div className="files-body" hidden={view !== 'browse'}>
+        <div className="tree card">
           <ul>{renderDir('', 0)}</ul>
         </div>
         <div className="viewer card">

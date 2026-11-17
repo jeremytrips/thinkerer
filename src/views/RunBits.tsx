@@ -77,7 +77,7 @@ export function EventLine({ event, root }: { event: RunEvent; root: string }) {
     case 'tool-use':
       return (
         <div className="ev ev-tool">
-          <span className="tool-chip">{String(event.meta?.tool ?? 'tool')}</span>
+          <span className="tool-chip">{String(event.meta?.tool ?? 'tool').replace(/^mcp__([^_]+(?:-[^_]+)*)__/, '$1 · ')}</span>
           <span className="mono">{text.replace(/^[^:]+:\s*/, '')}</span>
         </div>
       )

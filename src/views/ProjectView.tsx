@@ -1,20 +1,24 @@
+import { useState } from 'react'
 import type { AppInfo, Project } from '../../shared/types'
-import { AgentTab } from './AgentTab'
+import { AgentTab, type AgentPrefill } from './AgentTab'
 import { FilesTab } from './FilesTab'
+import { McpTab } from './McpTab'
 import { Overview } from './Overview'
 import { Placeholder } from './Placeholder'
 import { RestartButton } from './RestartButton'
 import { SettingsTab } from './SettingsTab'
+import { TasksTab } from './TasksTab'
+import { WebsiteTab } from './WebsiteTab'
 
 export type TabId = 'overview' | 'agent' | 'website' | 'tasks' | 'files' | 'mcp' | 'marketing' | 'settings'
 
 const TABS: { id: TabId; label: string; later?: boolean }[] = [
   { id: 'overview', label: 'Overview' },
   { id: 'agent', label: 'Agent' },
-  { id: 'website', label: 'Website', later: true },
-  { id: 'tasks', label: 'Tasks', later: true },
+  { id: 'website', label: 'Website' },
+  { id: 'tasks', label: 'Tasks' },
   { id: 'files', label: 'Files' },
-  { id: 'mcp', label: 'MCP', later: true },
+  { id: 'mcp', label: 'MCP' },
   { id: 'marketing', label: 'Marketing', later: true },
   { id: 'settings', label: 'Settings' }
 ]
@@ -30,6 +34,7 @@ interface Props {
 
 export function ProjectView({ project, info, tab, onTab, onBack, onChanged }: Props) {
   const isSelf = !!info?.sourceRoot && info.sourceRoot === project.path
+  const [prefill, setPrefill] = useState<AgentPrefill | null>(null)
   return (
     <div className="project">
       <nav className="sidebar" aria-label="Project">
@@ -61,9 +66,21 @@ export function ProjectView({ project, info, tab, onTab, onBack, onChanged }: Pr
         ) : tab === 'overview' ? (
           <Overview project={project} isSelf={isSelf} onTab={onTab} />
         ) : tab === 'agent' ? (
-          <AgentTab project={project} info={info} isSelf={isSelf} />
+          <AgentTab project={project} info={info} isSelf={isSelf} onTab={onTab} prefill={prefill} />
         ) : tab === 'files' ? (
           <FilesTab project={project} />
+        ) : tab === 'website' ? (
+          <WebsiteTab project={project} />
+        ) : tab === 'tasks' ? (
+          <TasksTab
+            project={project}
+            onRunAgent={(task) => {
+              setPrefill({ prompt: task.notes ? `${task.title}\n\n${task.notes}` : task.title, taskId: task.id, nonce: Date.now() })
+              onTab('agent')
+            }}
+          />
+        ) : tab === 'mcp' ? (
+          <McpTab project={project} onChanged={onChanged} />
         ) : tab === 'settings' ? (
           <SettingsTab project={project} onChanged={onChanged} onRemoved={onBack} />
         ) : (

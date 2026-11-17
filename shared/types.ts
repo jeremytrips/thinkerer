@@ -30,7 +30,7 @@ export interface ProjectConfigPatch {
   components?: Component[]
   target?: Target
   website?: { devCommand?: string; previewUrl?: string }
-  agent?: { provider?: ProviderChoice }
+  agent?: { provider?: ProviderChoice; enabledMcpServers?: string[] }
 }
 
 export interface FileEntry {
@@ -88,11 +88,118 @@ export interface UsageObservation {
   rateLimitStatus?: string
 }
 
+export interface Checkpoint {
+  id: string
+  commit: string
+  /** HEAD at the time of the checkpoint (null in a repo with no commits). */
+  head: string | null
+  label: string
+  createdAt: string
+}
+
+export interface FileChange {
+  /** git status letter: Added, Modified, Deleted, Renamed, Copied, Type change */
+  status: 'A' | 'M' | 'D' | 'R' | 'C' | 'T'
+  path: string
+  oldPath: string | null
+  additions: number | null
+  deletions: number | null
+}
+
+/** Changes the working tree will undergo if the checkpoint is restored. */
+export interface RestorePreview {
+  id: string
+  commit: string
+  /** current → checkpoint: A = will be recreated, D = will be deleted, M = will be reverted. */
+  changes: FileChange[]
+  headMoved: boolean
+  currentHead: string | null
+  checkpointHead: string | null
+}
+
+export interface RunArtifact {
+  name: string
+  mediaType: string
+  at: string
+}
+
+export type TaskStatus = 'todo' | 'doing' | 'done'
+
+export interface Task {
+  id: string
+  title: string
+  notes: string
+  status: TaskStatus
+  runIds: string[]
+  createdAt: string
+  updatedAt: string
+}
+
+export interface McpServerDef {
+  /** Lowercase id used as the server name in both CLIs' configs. */
+  id: string
+  label: string
+  description: string
+  builtin: boolean
+  command: string
+  args: string[]
+  /** Non-secret environment. */
+  env: Record<string, string>
+  /** Names of secret env vars; values live in OS-protected storage, never in config files. */
+  secretEnv: string[]
+}
+
+export interface McpServerView extends McpServerDef {
+  /** Which secret values are stored (names only). */
+  secretsSet: string[]
+}
+
+/** What a provider will actually receive for a project's enabled servers. */
+export interface EffectiveMcp {
+  provider: ProviderId
+  servers: { id: string; label: string; included: boolean; reason: string | null }[]
+}
+
+export type DevServerStatus = 'stopped' | 'starting' | 'running' | 'exited' | 'external'
+
+export interface DevServerState {
+  projectId: string
+  status: DevServerStatus
+  command: string | null
+  url: string | null
+  pid: number | null
+  exitCode: number | null
+  startedAt: string | null
+  /** True when the configured command differs from the one the user last approved. */
+  needsApproval: boolean
+}
+
+export interface DevLogLine {
+  at: string
+  stream: 'stdout' | 'stderr' | 'system'
+  text: string
+}
+
+export interface PreviewEvent {
+  at: string
+  kind: 'console' | 'navigation-blocked' | 'load-failed' | 'loaded'
+  level?: 'debug' | 'info' | 'warning' | 'error'
+  text: string
+  url?: string
+}
+
 export interface RunRecord {
   id: string
   projectId: string
   projectPath: string
   prompt: string
+  taskId: string | null
+  checkpoint: Checkpoint | null
+  afterCommit: string | null
+  /** Exact changes made during the run (checkpoint → end state); null if unavailable. */
+  changes: FileChange[] | null
+  mcpServers: string[]
+  artifacts: RunArtifact[]
   provider: ProviderId
   selection: { requested: ProviderChoice; rationale: string }
   status: RunStatus

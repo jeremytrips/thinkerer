@@ -6,12 +6,15 @@
   ],
   "target": "electron",
   "website": {
-    "devCommand": "npm run dev",
-    "previewUrl": "http://localhost:5173"
+    "devCommand": "npm run dev:web",
+    "previewUrl": "http://localhost:5174"
   },
   "agent": {
     "provider": "auto",
-    "enabledMcpServers": []
+    "enabledMcpServers": [
+      "playwright",
+      "health"
+    ]
   },
   "marketing": {
     "enabled": true

@@ -1,8 +1,14 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, session, shell } from 'electron'
+import { findExecutable } from '../../engine/agents/detect'
 import { AgentSupervisor } from '../../engine/agents/supervisor'
+import { DevServerManager } from '../../engine/devserver'
+import { McpRegistry } from '../../engine/mcp'
 import { ProjectService } from '../../engine/projects'
+import { TaskStore } from '../../engine/tasks'
 import { registerIpc } from './ipc'
+import { PreviewManager } from './preview'
+import { SafeSecretStore } from './secrets'
 
 /** Exit code that scripts/dev.mjs treats as "rebuild main/preload and relaunch". */
 export const DEV_RESTART_EXIT_CODE = 75
@@ -13,8 +19,28 @@ if (process.env.THINKERER_APP_DATA) app.setPath('userData', process.env.THINKERE
 const isDev = !app.isPackaged && !!process.env.ELECTRON_RENDERER_URL
 const appData = app.getPath('userData')
 const projects = new ProjectService(appData)
-const supervisor = new AgentSupervisor(appData, projects)
+const tasks = new TaskStore()
+const mcp = new McpRegistry(appData, new SafeSecretStore(appData))
+const devServers = new DevServerManager(appData)
+const supervisor = new AgentSupervisor(appData, projects, {
+  tasks,
+  mcp: {
+    registry: mcp,
+    // Bundled MCP scripts live in the app root (mcp/, node_modules/).
+    context: async (): Promise<{ appRoot: string; node: { command: string; env: Record<string, string> } }> => {
+      const node = await findExecutable('node')
+      return {
+        appRoot: app.getAppPath(),
+        node: node ? { command: node, env: {} } : { command: process.execPath, env: { ELECTRON_RUN_AS_NODE: '1' } }
+      }
+    }
+  }
+})
 let mainWindow: BrowserWindow | null = null
+const preview = new PreviewManager(
+  () => mainWindow,
+  (projectId, event) => mainWindow?.webContents.send('preview:event', projectId, event)
+)
 
 function rendererOrigin(): string {
   return isDev ? new URL(process.env.ELECTRON_RENDERER_URL!).origin : 'file://'
@@ -69,6 +95,10 @@ app.whenReady().then(() => {
   registerIpc({
     projects,
     supervisor,
+    tasks,
+    mcp,
+    devServers,
+    preview,
     isDev,
     getWindow: () => mainWindow,
     rendererOrigin,
@@ -87,7 +117,10 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('before-quit', () => supervisor.cancelAll())
+app.on('before-quit', () => {
+  supervisor.cancelAll()
+  devServers.stopAll()
+})
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })

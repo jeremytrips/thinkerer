@@ -6,13 +6,15 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "node scripts/dev.mjs",
+    "dev:web": "vite --config vite.web.config.mts",
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:live:claude": "THINKERER_LIVE_CLAUDE=1 vitest run tests/agents.live.test.ts",
     "test:live:codex": "THINKERER_LIVE_CODEX=1 vitest run tests/agents.live.test.ts",
-    "test:e2e": "electron-vite build && playwright test"
+    "test:e2e": "electron-vite build && playwright test",
+    "setup:browsers": "node node_modules/@playwright/mcp/node_modules/playwright/cli.js install chromium"
   },
   "devDependencies": {
     "@playwright/test": "1.65",
@@ -27,6 +29,7 @@
     "vitest": "^5.1.0"
   },
   "dependencies": {
+    "@playwright/mcp": "^0.0.85",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   }

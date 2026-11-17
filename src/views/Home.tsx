@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { AppInfo, Project } from '../../shared/types'
-import { api, errorMessage } from '../api'
+import { api, browserPreview, errorMessage } from '../api'
 import { RestartButton } from './RestartButton'
 
 interface Props {
@@ -72,6 +72,9 @@ export function Home({ projects, info, onOpen, onChanged }: Props) {
           </form>
         )}
 
+        {browserPreview && (
+          <div className="banner banner-info">Browser preview — desktop features (projects, agents, files) are only available in the Thinkerer app.</div>
+        )}
         {error && <div className="banner banner-error">{error}</div>}
 
         {projects === null ? (

@@ -1,4 +1,5 @@
 import type { ProviderId, ProviderStatus, RunEvent, UsageObservation } from '../../shared/types'
+import type { ResolvedMcpServer } from '../mcp'
 
 export interface Invocation {
   command: string
@@ -26,6 +27,17 @@ export interface RunPolicy {
   appendSystemPrompt: string
 }
 
+export interface InvocationOptions {
+  executable: string
+  cwd: string
+  prompt: string
+  policy: RunPolicy
+  /** The project's approved MCP servers — identical for every provider (spec F4). */
+  mcp: ResolvedMcpServer[]
+  /** Secret values for those servers, passed via the CLI's environment, never argv. */
+  secretEnv: Record<string, string>
+}
+
 /** Every provider CLI is integrated through this interface (spec F2). */
 export interface AgentAdapter {
   id: ProviderId
@@ -33,6 +45,6 @@ export interface AgentAdapter {
   /** Plain-language description of what this provider's runs may do, shown in the UI. */
   policySummary: string
   detect(): Promise<ProviderStatus>
-  buildInvocation(opts: { executable: string; cwd: string; prompt: string; policy: RunPolicy }): Invocation
+  buildInvocation(opts: InvocationOptions): Invocation
   createParser(): StreamParser
 }

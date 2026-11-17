@@ -9,7 +9,7 @@ const line = (o: unknown) => JSON.stringify(o)
 
 describe('Codex adapter', () => {
   it('builds a sandboxed, non-interactive invocation that ignores user config and reads the prompt from stdin', () => {
-    const inv = codexAdapter.buildInvocation({ executable: '/bin/codex', cwd: '/p', prompt: '--not-a-flag', policy: DEFAULT_POLICY })
+    const inv = codexAdapter.buildInvocation({ executable: '/bin/codex', cwd: '/p', prompt: '--not-a-flag', policy: DEFAULT_POLICY, mcp: [], secretEnv: {} })
     expect(inv.args.slice(0, 4)).toEqual(['exec', '--json', '--cd', '/p'])
     expect(inv.args).toEqual(expect.arrayContaining(['--sandbox', 'workspace-write', 'approval_policy="never"', 'sandbox_workspace_write.network_access=false', 'web_search="disabled"', '--ignore-user-config', '--ignore-rules']))
     for (const f of ['apps', 'plugins', 'browser_use', 'computer_use', 'hooks']) expect(inv.args.join(' ')).toContain(`--disable ${f}`)

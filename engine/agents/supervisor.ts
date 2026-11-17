@@ -1,18 +1,22 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { mkdir, readdir } from 'node:fs/promises'
+import { mkdir, readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { ProviderChoice, ProviderId, ProviderStatus, RunEvent, RunRecord, RunSummary, UsageObservation } from '../../shared/types'
+import type { Project, ProviderChoice, ProviderId, ProviderStatus, RunArtifact, RunEvent, RunRecord, RunSummary, UsageObservation } from '../../shared/types'
+import { createCheckpoint, diffSummary, recordAfter } from '../checkpoints'
 import { gitStatus } from '../git'
+import type { McpRegistry, McpRunContext, ResolvedMcpServer } from '../mcp'
 import type { ProjectService } from '../projects'
 import { readJson, writeJson } from '../store'
+import type { TaskStore } from '../tasks'
 import { claudeAdapter } from './claude'
 import { codexAdapter } from './codex'
 import type { AgentAdapter, RunPolicy } from './types'
 
 const MAX_EVENTS = 5000
 const KILL_GRACE_MS = 3000
+const IMAGE_TYPES: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' }
 
 /** Preference used by Auto when no comparable consumption signal is available. */
 export const DEFAULT_PREFERENCE: ProviderId[] = ['claude', 'codex']
@@ -44,6 +48,18 @@ interface ActiveRun {
   killTimer: NodeJS.Timeout | null
 }
 
+export interface SupervisorOptions {
+  adapters?: AgentAdapter[]
+  policy?: RunPolicy
+  tasks?: TaskStore
+  /** MCP servers come from the registry; without it, runs get none. */
+  mcp?: { registry: McpRegistry; context: () => Promise<Omit<McpRunContext, 'artifactsDir'>> }
+}
+
+export interface StartOptions {
+  taskId?: string | null
+}
+
 export interface SupervisorEvents {
   event: [runId: string, event: RunEvent]
   update: [summary: RunSummary]
@@ -56,6 +72,7 @@ export interface SupervisorEvents {
 export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
   private readonly runsDir: string
   private readonly active = new Map<string, ActiveRun>() // keyed by projectId
+  private readonly starting = new Set<string>()
   private readonly cooldownUntil = new Map<ProviderId, number>()
   private readonly adapters: Partial<Record<ProviderId, AgentAdapter>> = {}
   private readonly policy: RunPolicy
@@ -63,7 +80,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
   constructor(
     appDataDir: string,
     private readonly projects: ProjectService,
-    opts: { adapters?: AgentAdapter[]; policy?: RunPolicy } = {}
+    private readonly opts: SupervisorOptions = {}
   ) {
     super()
     this.runsDir = join(appDataDir, 'runs')
@@ -75,47 +92,93 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     return Promise.all(DEFAULT_PREFERENCE.map((id) => this.adapters[id]?.detect() ?? Promise.resolve(missingAdapter(id))))
   }
 
-  /** Validates and starts a run; resolves once the child process has been spawned (or failed to). */
-  async start(projectId: string, prompt: string, requested: ProviderChoice): Promise<RunSummary> {
+  /**
+   * Validates, checkpoints and starts a run; resolves once the child process has
+   * been spawned (or the run failed before that).
+   */
+  async start(projectId: string, prompt: string, requested: ProviderChoice, opts: StartOptions = {}): Promise<RunSummary> {
     if (typeof prompt !== 'string' || !prompt.trim()) throw new Error('Prompt is empty')
     if (prompt.length > 100_000) throw new Error('Prompt is too long')
-    if (this.active.has(projectId)) throw new Error('An agent run is already active for this project')
-    const project = await this.projects.get(projectId)
-    if (project.status !== 'ok') throw new Error('Project folder is missing')
-
-    const { provider, rationale, status } = await this.selectProvider(requested)
-    const adapter = this.adapters[provider]!
-    const now = new Date().toISOString()
-    const record: RunRecord = {
-      id: randomUUID(),
-      projectId,
-      projectPath: project.path,
-      prompt,
-      provider,
-      selection: { requested, rationale },
-      status: 'queued',
-      createdAt: now,
-      startedAt: null,
-      endedAt: null,
-      exitCode: null,
-      error: null,
-      resultText: null,
-      currentAction: null,
-      usage: null,
-      permissionDenials: [],
-      gitBefore: null,
-      gitAfter: null,
-      events: []
-    }
-    const run: ActiveRun = { record, child: null, cancelRequested: false, killTimer: null }
-    this.active.set(projectId, run)
-    this.addEvent(run, { kind: 'status', text: `Provider: ${adapter.label}` })
-    await this.persist(record)
-    this.emitUpdate(record)
-
+    if (this.active.has(projectId) || this.starting.has(projectId)) throw new Error('An agent run is already active for this project')
+    this.starting.add(projectId)
+    let run: ActiveRun
     try {
-      record.gitBefore = await gitStatus(project.path)
-      const inv = adapter.buildInvocation({ executable: status.executable!, cwd: project.path, prompt, policy: this.policy })
+      const project = await this.projects.get(projectId)
+      if (project.status !== 'ok') throw new Error('Project folder is missing')
+      const gitBefore = await gitStatus(project.path)
+      if (!gitBefore) {
+        throw new Error('This project is not a Git repository. Initialize Git so Thinkerer can checkpoint the folder before an agent edits it.')
+      }
+      const { provider, rationale, status } = await this.selectProvider(requested)
+      const now = new Date().toISOString()
+      const record: RunRecord = {
+        id: randomUUID(),
+        projectId,
+        projectPath: project.path,
+        prompt,
+        taskId: opts.taskId ?? null,
+        checkpoint: null,
+        afterCommit: null,
+        changes: null,
+        mcpServers: [],
+        artifacts: [],
+        provider,
+        selection: { requested, rationale },
+        status: 'queued',
+        createdAt: now,
+        startedAt: null,
+        endedAt: null,
+        exitCode: null,
+        error: null,
+        resultText: null,
+        currentAction: null,
+        usage: null,
+        permissionDenials: [],
+        gitBefore,
+        gitAfter: null,
+        events: []
+      }
+      run = { record, child: null, cancelRequested: false, killTimer: null }
+      this.active.set(projectId, run)
+      this.addEvent(run, { kind: 'status', text: `Provider: ${this.adapters[provider]!.label}` })
+      await this.persist(record)
+      this.emitUpdate(record)
+      void this.launch(run, project, status)
+    } finally {
+      this.starting.delete(projectId)
+    }
+    return summarize(run.record)
+  }
+
+  private async launch(run: ActiveRun, project: Project, status: ProviderStatus): Promise<void> {
+    const record = run.record
+    const adapter = this.adapters[record.provider]!
+    try {
+      if (record.taskId && this.opts.tasks) {
+        await this.opts.tasks.attachRun(project.path, record.taskId, record.id)
+      }
+      // Recovery point first: nothing the agent does can be unrecoverable.
+      record.checkpoint = await createCheckpoint(project.path, record.id, `Thinkerer: before run — ${record.prompt.slice(0, 72)}`)
+      const dirty = record.gitBefore?.entries.length ?? 0
+      this.addEvent(run, {
+        kind: 'status',
+        text: `Checkpoint saved${dirty ? ` (includes ${dirty} uncommitted change${dirty === 1 ? '' : 's'} already in the folder)` : ''}`
+      })
+      if (run.cancelRequested) return void (await this.finish(run, 'cancelled', null, null))
+
+      const { servers, secretEnv } = await this.resolveMcp(project, record.id)
+      record.mcpServers = servers.map((s) => s.id)
+      this.addEvent(run, { kind: 'status', text: `MCP tools: ${record.mcpServers.join(', ') || 'none'}` })
+
+      const inv = adapter.buildInvocation({
+        executable: status.executable!,
+        cwd: project.path,
+        prompt: record.prompt,
+        policy: { ...this.policy, appendSystemPrompt: this.instructions(project, servers) },
+        mcp: servers,
+        secretEnv
+      })
+      if (run.cancelRequested) return void (await this.finish(run, 'cancelled', null, null))
       const child = spawn(inv.command, inv.args, {
         cwd: project.path,
         env: inv.env,
@@ -134,7 +197,49 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     } catch (err) {
       await this.finish(run, 'failed', null, (err as Error).message)
     }
-    return summarize(record)
+  }
+
+  private async resolveMcp(project: Project, runId: string): Promise<{ servers: ResolvedMcpServer[]; secretEnv: Record<string, string> }> {
+    if (!this.opts.mcp) return { servers: [], secretEnv: {} }
+    const ctx = await this.opts.mcp.context()
+    return this.opts.mcp.registry.resolveForRun(project, { ...ctx, artifactsDir: this.artifactsDir(runId) })
+  }
+
+  private instructions(project: Project, servers: ResolvedMcpServer[]): string {
+    const lines = [this.policy.appendSystemPrompt]
+    const preview = project.config?.website.previewUrl
+    if (servers.some((s) => s.id === 'playwright') && preview) {
+      lines.push(
+        `To check UI changes in a real browser, use the playwright MCP tools against ${preview} (served by the project's dev command, which the user starts from Thinkerer's Website tab; if it is not reachable, say so).`,
+        'Navigation is limited to that origin. Take a screenshot (browser_take_screenshot) of the verified state; screenshots are saved with the run, not in the project.',
+        'State clearly whether the browser check PASSED or FAILED.'
+      )
+    }
+    if (servers.some((s) => s.id === 'health')) lines.push('The health MCP server reports project health (git state, preview reachability).')
+    return lines.join(' ')
+  }
+
+  artifactsDir(runId: string): string {
+    return join(this.runsDir, `${runId}-artifacts`)
+  }
+
+  /** Image artifact as a data: URL for the renderer (no file paths cross IPC). */
+  async artifactDataUrl(runId: string, name: string): Promise<string> {
+    if (!/^[0-9a-f-]{36}$/.test(runId) || !/^[\w.-]+$/.test(name)) throw new Error('Invalid artifact')
+    const type = IMAGE_TYPES[name.slice(name.lastIndexOf('.')).toLowerCase()]
+    if (!type) throw new Error('Unsupported artifact type')
+    const data = await readFile(join(this.artifactsDir(runId), name))
+    return `data:${type};base64,${data.toString('base64')}`
+  }
+
+  private async scanArtifacts(runId: string): Promise<RunArtifact[]> {
+    try {
+      const dir = this.artifactsDir(runId)
+      const names = (await readdir(dir)).filter((n) => IMAGE_TYPES[n.slice(n.lastIndexOf('.')).toLowerCase()] && /^[\w.-]+$/.test(n))
+      return names.sort().map((name) => ({ name, mediaType: IMAGE_TYPES[name.slice(name.lastIndexOf('.')).toLowerCase()], at: new Date().toISOString() }))
+    } catch {
+      return []
+    }
   }
 
   cancel(projectId: string): boolean {
@@ -241,6 +346,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
             run.record.permissionDenials = u.result.denials
           }
           if (u.event) this.addEvent(run, u.event)
+          if (u.event?.kind === 'tool-result' && run.record.mcpServers.includes('playwright')) void this.refreshArtifacts(run)
         }
         if (run.record.usage?.rateLimitStatus === 'rejected') this.noteRateLimit(adapter.id, run.record.usage)
         this.emitUpdate(run.record)
@@ -268,6 +374,14 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     })
   }
 
+  private async refreshArtifacts(run: ActiveRun): Promise<void> {
+    const artifacts = await this.scanArtifacts(run.record.id)
+    if (artifacts.length !== run.record.artifacts.length) {
+      run.record.artifacts = artifacts
+      this.emitUpdate(run.record)
+    }
+  }
+
   private async finish(run: ActiveRun, status: RunRecord['status'], exitCode: number | null, error: string | null): Promise<void> {
     if (run.record.endedAt) return
     if (run.killTimer) clearTimeout(run.killTimer)
@@ -277,6 +391,15 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     run.record.error = error
     run.record.currentAction = null
     run.record.gitAfter = await gitStatus(run.record.projectPath)
+    if (run.record.checkpoint) {
+      try {
+        run.record.afterCommit = await recordAfter(run.record.projectPath, run.record.id)
+        run.record.changes = await diffSummary(run.record.projectPath, run.record.checkpoint.commit, run.record.afterCommit)
+      } catch (err) {
+        this.addEvent(run, { kind: 'error', text: `Could not record the run's changes: ${(err as Error).message}` })
+      }
+    }
+    run.record.artifacts = await this.scanArtifacts(run.record.id)
     this.addEvent(run, { kind: status === 'failed' ? 'error' : 'status', text: error ?? `Run ${status}` })
     this.active.delete(run.record.projectId)
     await this.persist(run.record).catch(() => {})

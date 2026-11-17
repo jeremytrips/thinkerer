@@ -1,5 +1,6 @@
 import type { ProviderStatus, UsageObservation } from '../../shared/types'
 import { childEnv, findExecutable, run } from './detect'
+import type { ResolvedMcpServer } from '../mcp'
 import type { AgentAdapter, ParsedUpdate, StreamParser } from './types'
 
 // File tools the agent gets. `--restricted` confines them to the working
@@ -7,7 +8,7 @@ import type { AgentAdapter, ParsedUpdate, StreamParser } from './types'
 const TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash']
 
 export const CLAUDE_POLICY_SUMMARY =
-  'Restricted mode: file reads and writes confined to the project folder; shell limited to the approved commands (npm scripts, tsc, vitest, Playwright tests, read-only git) — anything else is denied automatically. No MCP servers; your Claude settings files are not loaded.'
+  'Restricted mode: file reads and writes confined to the project folder; shell limited to the approved commands (npm scripts, tsc, vitest, Playwright tests, read-only git) — anything else is denied automatically. MCP: only the servers enabled for this project in Thinkerer; your own Claude MCP servers and settings files are not loaded.'
 
 export const claudeAdapter: AgentAdapter = {
   id: 'claude',
@@ -34,7 +35,7 @@ export const claudeAdapter: AgentAdapter = {
     return { ...base, installed: true, executable, version: version.code === 0 ? version.stdout.trim() : null, authenticated, detail }
   },
 
-  buildInvocation({ executable, prompt, policy }) {
+  buildInvocation({ executable, prompt, policy, mcp, secretEnv }) {
     return {
       command: executable,
       args: [
@@ -43,21 +44,38 @@ export const claudeAdapter: AgentAdapter = {
         '--verbose',
         '--restricted',
         '--tools', TOOLS.join(','),
-        '--allowedTools', ...policy.allowedCommands.map((c) => `Bash(${c})`),
+        '--allowedTools', ...policy.allowedCommands.map((c) => `Bash(${c})`), ...mcp.map((s) => `mcp__${s.id}`),
         '--permission-mode', 'acceptEdits',
         // Nothing can answer a prompt in Phase 0, so anything not allowed is denied.
         '--permission-prompts', 'none',
-        // Only Thinkerer-approved MCP servers (none yet) — never the user's global ones.
-        '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: {} }),
+        // Only the project's Thinkerer-approved MCP servers — never the user's global ones.
+        '--strict-mcp-config', '--mcp-config', JSON.stringify(claudeMcpConfig(mcp)),
         '--append-system-prompt', `${policy.appendSystemPrompt} Shell commands outside the approved list are denied automatically.`
       ],
       stdin: prompt,
-      env: childEnv()
+      env: { ...childEnv(), ...secretEnv }
     }
   },
 
   createParser(): StreamParser {
     return { parseLine: parseClaudeLine }
+  }
+}
+
+/** Secrets are referenced as ${NAME}; Claude expands them from its own environment. */
+export function claudeMcpConfig(servers: ResolvedMcpServer[]) {
+  return {
+    mcpServers: Object.fromEntries(
+      servers.map((s) => [
+        s.id,
+        {
+          type: 'stdio',
+          command: s.command,
+          args: s.args,
+          env: { ...s.env, ...Object.fromEntries(s.secretEnv.map((n) => [n, '${' + n + '}'])) }
+        }
+      ])
+    )
   }
 }
 
@@ -121,7 +139,7 @@ function rateLimitUsage(info: any): UsageObservation {
 }
 
 function summarizeToolInput(name: string, input: Record<string, unknown>): string {
-  const pick = input.command ?? input.file_path ?? input.pattern ?? input.path ?? input.description
+  const pick = input.command ?? input.file_path ?? input.pattern ?? input.path ?? input.url ?? input.element ?? input.filename ?? input.text ?? input.description
   return pick ? `${name}: ${truncate(String(pick), 200)}` : name
 }
 

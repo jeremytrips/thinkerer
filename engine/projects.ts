@@ -208,5 +208,12 @@ function applyPatch(config: ProjectConfig, patch: ProjectConfigPatch): ProjectCo
     if (!PROVIDERS.includes(patch.agent.provider)) throw new Error('Invalid provider')
     next.agent.provider = patch.agent.provider
   }
+  if (patch.agent?.enabledMcpServers !== undefined) {
+    const ids = patch.agent.enabledMcpServers
+    if (!Array.isArray(ids) || ids.length > 50 || ids.some((id) => typeof id !== 'string' || !/^[a-z][a-z0-9-]{0,30}$/.test(id))) {
+      throw new Error('Invalid MCP server list')
+    }
+    next.agent.enabledMcpServers = [...new Set(ids)]
+  }
   return next
 }

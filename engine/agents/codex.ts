@@ -1,14 +1,14 @@
 import type { ProviderStatus } from '../../shared/types'
 import { childEnv, findExecutable, run } from './detect'
+import type { ResolvedMcpServer } from '../mcp'
 import type { AgentAdapter, ParsedUpdate, StreamParser } from './types'
 
-// Codex tools that reach beyond the project and Thinkerer's (still empty) approved
-// tool catalog. ChatGPT connectors ("apps") in particular could reach the user's
+// Codex tools that reach beyond the project and Thinkerer's approved tool catalog. ChatGPT connectors ("apps") in particular could reach the user's
 // connected accounts.
 const DISABLED_FEATURES = ['apps', 'plugins', 'remote_plugin', 'browser_use', 'browser_use_external', 'computer_use', 'image_generation', 'hooks']
 
 export const CODEX_POLICY_SUMMARY =
-  'OS sandbox (workspace-write): writes limited to the project folder and temp directories, no network, no approval escalation. Reads are not confined by the sandbox. Connectors, plugins, browser/computer use, web search and your ~/.codex config are disabled for runs.'
+  'OS sandbox (workspace-write): writes limited to the project folder and temp directories, no network, no approval escalation. Reads are not confined by the sandbox. MCP: only the servers enabled for this project in Thinkerer. Connectors, plugins, built-in browser/computer use, web search and your ~/.codex config are disabled for runs.'
 
 export const codexAdapter: AgentAdapter = {
   id: 'codex',
@@ -32,7 +32,7 @@ export const codexAdapter: AgentAdapter = {
     }
   },
 
-  buildInvocation({ executable, cwd, prompt, policy }) {
+  buildInvocation({ executable, cwd, prompt, policy, mcp, secretEnv }) {
     return {
       command: executable,
       args: [
@@ -45,6 +45,7 @@ export const codexAdapter: AgentAdapter = {
         '-c', 'web_search="disabled"',
         '-c', `developer_instructions=${JSON.stringify(policy.appendSystemPrompt)}`,
         ...DISABLED_FEATURES.flatMap((f) => ['--disable', f]),
+        ...codexMcpArgs(mcp),
         // Never inherit the user's MCP servers, profiles, or exec-policy rules.
         '--ignore-user-config',
         '--ignore-rules',
@@ -52,13 +53,36 @@ export const codexAdapter: AgentAdapter = {
         '-' // read the prompt from stdin
       ],
       stdin: prompt,
-      env: childEnv()
+      env: { ...childEnv(), ...secretEnv }
     }
   },
 
   createParser(): StreamParser {
     return createCodexParser()
   }
+}
+
+/**
+ * MCP servers as `-c mcp_servers.<id>.*` overrides (values are TOML; JSON
+ * strings/arrays are valid TOML). Secrets are forwarded by name from Codex's own
+ * environment via `env_vars`, and kept out of the agent's shell environment.
+ */
+export function codexMcpArgs(servers: ResolvedMcpServer[]): string[] {
+  const args: string[] = []
+  const secrets: string[] = []
+  for (const s of servers) {
+    const k = `mcp_servers.${s.id}`
+    const env = Object.entries(s.env).map(([n, v]) => `${JSON.stringify(n)} = ${JSON.stringify(v)}`).join(', ')
+    args.push('-c', `${k}.command=${JSON.stringify(s.command)}`)
+    args.push('-c', `${k}.args=${JSON.stringify(s.args)}`)
+    args.push('-c', `${k}.env={ ${env} }`)
+    if (s.secretEnv.length) args.push('-c', `${k}.env_vars=${JSON.stringify(s.secretEnv)}`)
+    // Exec mode can't answer tool approval prompts; these servers are pre-approved by the user.
+    args.push('-c', `${k}.default_tools_approval_mode="approve"`)
+    secrets.push(...s.secretEnv)
+  }
+  if (secrets.length) args.push('-c', `shell_environment_policy.exclude=${JSON.stringify([...new Set(secrets)])}`)
+  return args
 }
 
 export function parseLoginStatus(code: number, output: string): Pick<ProviderStatus, 'authenticated' | 'detail'> {

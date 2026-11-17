@@ -1,16 +1,34 @@
 import type {
   AppInfo,
+  Checkpoint,
+  DevLogLine,
+  DevServerState,
+  EffectiveMcp,
+  FileChange,
   FileContent,
   FileEntry,
   GitStatus,
+  McpServerDef,
+  McpServerView,
+  PreviewEvent,
   Project,
   ProjectConfigPatch,
   ProviderChoice,
   ProviderStatus,
+  RestorePreview,
   RunEvent,
   RunRecord,
-  RunSummary
+  RunSummary,
+  Task,
+  TaskStatus
 } from './types'
+
+export interface Bounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
 
 /** The complete privileged surface available to the renderer (window.thinkerer). */
 export interface ThinkererApi {
@@ -33,16 +51,55 @@ export interface ThinkererApi {
   }
   git: {
     status(projectId: string): Promise<GitStatus | null>
+    init(projectId: string): Promise<boolean>
+    workingChanges(projectId: string): Promise<FileChange[]>
+    workingDiff(projectId: string, relPath: string): Promise<string>
+    runDiff(projectId: string, runId: string, relPath: string): Promise<string>
+  }
+  checkpoints: {
+    list(projectId: string): Promise<Checkpoint[]>
+    preview(projectId: string, checkpointId: string): Promise<RestorePreview>
+    restore(projectId: string, checkpointId: string): Promise<{ safetyCheckpoint: Checkpoint; changes: FileChange[] }>
+  }
+  tasks: {
+    list(projectId: string): Promise<Task[]>
+    create(projectId: string, title: string, notes?: string): Promise<Task>
+    update(projectId: string, taskId: string, patch: { title?: string; notes?: string; status?: TaskStatus }): Promise<Task>
+    remove(projectId: string, taskId: string): Promise<boolean>
+  }
+  mcp: {
+    list(): Promise<McpServerView[]>
+    upsert(def: McpServerDef): Promise<McpServerDef>
+    remove(serverId: string): Promise<boolean>
+    setSecret(serverId: string, name: string, value: string | null): Promise<boolean>
+    effective(projectId: string): Promise<EffectiveMcp[]>
+  }
+  website: {
+    state(projectId: string): Promise<DevServerState>
+    logs(projectId: string): Promise<DevLogLine[]>
+    start(projectId: string): Promise<DevServerState>
+    stop(projectId: string): Promise<boolean>
+    onLog(cb: (projectId: string, line: DevLogLine) => void): () => void
+    onState(cb: (state: DevServerState) => void): () => void
+  }
+  preview: {
+    show(projectId: string, bounds: Bounds): Promise<boolean>
+    setBounds(bounds: Bounds): Promise<boolean>
+    hide(): Promise<boolean>
+    reload(): Promise<boolean>
+    approve(projectId: string, url: string): Promise<boolean>
+    onEvent(cb: (projectId: string, event: PreviewEvent) => void): () => void
   }
   agents: {
     providers(): Promise<ProviderStatus[]>
   }
   runs: {
-    start(projectId: string, prompt: string, provider: ProviderChoice): Promise<RunSummary>
+    start(projectId: string, prompt: string, provider: ProviderChoice, taskId?: string | null): Promise<RunSummary>
     cancel(projectId: string): Promise<boolean>
     active(projectId: string): Promise<RunRecord | null>
     list(projectId: string): Promise<RunSummary[]>
     get(runId: string): Promise<RunRecord | null>
+    artifact(runId: string, name: string): Promise<string>
     onEvent(cb: (runId: string, event: RunEvent) => void): () => void
     onUpdate(cb: (summary: RunSummary) => void): () => void
   }
