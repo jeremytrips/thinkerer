@@ -106,9 +106,9 @@ deploy, publish or purchase. Each CLI enforces limits its own way, and the app s
 |---|---|---|
 | File writes | project folder only | project folder + temp dirs (OS sandbox) |
 | File reads | project folder only | **not confined** by the sandbox |
-| Shell | only `npm run *`, `npm test*`, `npx tsc/vitest/playwright test`, `git status/diff/log`; anything else denied | any command, inside the sandbox |
-| Network from shell | denied unless an allowed command does it | off |
-| Approvals | none; prompts are auto-denied and listed in the run | `approval_policy="never"`; no escalation |
+| Shell | `npm run *`, `npm test*`, `npx tsc/vitest/playwright test`, `git status/diff/log` pre-approved; anything else decided by Claude's auto-mode classifier (`--permission-mode auto`) | any command, inside the sandbox |
+| Network from shell | only if an allowed command does it or the classifier approves it | off |
+| Approvals | none; anything auto mode would ask about is denied and listed in the run | `approval_policy="never"`; no escalation |
 | MCP | only the project's enabled servers (`--strict-mcp-config`) | only the project's enabled servers; connectors, plugins, built-in browser/computer use, image generation, hooks and web search disabled |
 | User config | Claude settings files not loaded | `~/.codex/config.toml` and rules not loaded (login still used) |
 

@@ -4,11 +4,12 @@ import type { ResolvedMcpServer } from '../mcp'
 import type { AgentAdapter, ParsedUpdate, StreamParser } from './types'
 
 // File tools the agent gets. `--restricted` confines them to the working
-// directory; Bash is re-enabled explicitly and limited by `--allowedTools`.
+// directory; Bash is re-enabled explicitly. `--allowedTools` pre-approves the
+// policy's commands, and auto mode's classifier decides on anything else.
 const TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash']
 
 export const CLAUDE_POLICY_SUMMARY =
-  'Restricted mode: file reads and writes confined to the project folder; shell limited to the approved commands (npm scripts, tsc, vitest, Playwright tests, read-only git) — anything else is denied automatically. MCP: only the servers enabled for this project in Thinkerer; your own Claude MCP servers and settings files are not loaded.'
+  'Restricted mode: file reads and writes confined to the project folder; auto mode: the approved commands (npm scripts, tsc, vitest, Playwright tests, read-only git) always run, and the Claude safety classifier approves or denies any other shell command; nothing waits for a prompt. MCP: only the servers enabled for this project in Thinkerer; your own Claude MCP servers and settings files are not loaded.'
 
 export const claudeAdapter: AgentAdapter = {
   id: 'claude',
@@ -46,12 +47,12 @@ export const claudeAdapter: AgentAdapter = {
         '--restricted',
         '--tools', TOOLS.join(','),
         '--allowedTools', ...policy.allowedCommands.map((c) => `Bash(${c})`), ...mcp.map((s) => `mcp__${s.id}`),
-        '--permission-mode', 'acceptEdits',
-        // Nothing can answer a prompt in Phase 0, so anything not allowed is denied.
+        '--permission-mode', 'auto',
+        // Nothing can answer a prompt, so anything auto mode would ask about is denied.
         '--permission-prompts', 'none',
         // Only the project's Thinkerer-approved MCP servers — never the user's global ones.
         '--strict-mcp-config', '--mcp-config', JSON.stringify(claudeMcpConfig(mcp)),
-        '--append-system-prompt', `${policy.appendSystemPrompt} Shell commands outside the approved list are denied automatically.`
+        '--append-system-prompt', `${policy.appendSystemPrompt} Shell commands outside the approved list are checked by an automatic classifier and may be denied.`
       ],
       stdin: prompt,
       env: { ...childEnv(), ...secretEnv }

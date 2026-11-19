@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Component, Project, ProviderChoice, ProviderStatus, Target } from '../../shared/types'
 import { api, errorMessage } from '../api'
+import { ProviderList } from './ProviderList'
 
 const COMPONENTS: { id: Component; label: string; note?: string }[] = [
   { id: 'website', label: 'Website' },
@@ -18,10 +19,12 @@ export function SettingsTab({ project, onChanged, onRemoved }: { project: Projec
   const [provider, setProvider] = useState<ProviderChoice>(config.agent.provider)
   const [status, setStatus] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
   const [confirmRemove, setConfirmRemove] = useState(false)
-  const [providers, setProviders] = useState<ProviderStatus[]>([])
+  const [providers, setProviders] = useState<ProviderStatus[] | null>(null)
+
+  const detectProviders = () => api.agents.providers().then(setProviders, () => setProviders([]))
 
   useEffect(() => {
-    api.agents.providers().then(setProviders, () => {})
+    void detectProviders()
   }, [])
 
   async function save() {
@@ -93,19 +96,22 @@ export function SettingsTab({ project, onChanged, onRemoved }: { project: Projec
       </form>
 
       <div className="card form">
+        <h3>LLM providers</h3>
+        {providers ? <ProviderList providers={providers} /> : <p className="muted small">Detecting…</p>}
+        <div className="row">
+          <button className="small" onClick={() => void detectProviders()}>Re-check</button>
+        </div>
+      </div>
+
+      <div className="card form">
         <h3>Project folder</h3>
         <div className="row">
           <span className="mono small">{project.path}</span>
           <button className="small" onClick={() => api.projects.reveal(project.id)}>Show in folder</button>
         </div>
         <h3>Agent permissions</h3>
-        {providers.filter((p) => p.adapterAvailable).map((p) => (
-          <p key={p.id} className="small">
-            <strong>{p.label}:</strong> <span className="muted">{p.policy}</span>
-          </p>
-        ))}
         <p className="small muted">
-          npm scripts and other project commands run with your user permissions, so only use agents on projects whose scripts you trust.
+          Each provider's limits are under “What runs may do” above. npm scripts and other project commands run with your user permissions, so only use agents on projects whose scripts you trust.
         </p>
         <h3>Remove</h3>
         {confirmRemove ? (

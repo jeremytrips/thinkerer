@@ -16,7 +16,7 @@ import { RestoreDialog } from './Changes'
 import { ChatTurn, LIVE } from './ChatTurn'
 import { PreviewPane, type PreviewDevice } from './PreviewPane'
 import type { TabId } from './ProjectView'
-import { ProviderList, providerState } from './ProviderList'
+import { providerState } from './ProviderList'
 import { StatusPill, relativeTime } from './RunBits'
 
 // Share of the split given to the chat when the preview is shown.
@@ -372,7 +372,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   return (
     <section className={dragging ? 'agent dragging' : 'agent'} ref={sectionRef}>
       {showChats && (
-        <aside className="agent-side" aria-label="Chats and providers">
+        <aside className="agent-side" aria-label="Chats">
           <button type="button" className={chatId === null ? 'new-chat active' : 'new-chat'} onClick={() => (openChat(null), composerRef.current?.focus())}>
             + New chat
           </button>
@@ -400,9 +400,6 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
               ))}
             </ul>
           )}
-          <h3>Providers</h3>
-          {providers ? <ProviderList providers={providers} /> : <p className="muted small">Detecting…</p>}
-          <button className="small" onClick={() => api.agents.providers().then(setProviders, () => {})}>Re-check</button>
         </aside>
       )}
 
