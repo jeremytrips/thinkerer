@@ -14,5 +14,9 @@ Thinkerer is an Electron + React + TypeScript + Vite desktop app. The product sp
   `npm run dev:web` on http://localhost:5174 ("browser preview" mode: no `window.thinkerer`, so desktop
   features render empty); that is what the Playwright MCP browser can check.
 - Agent runs always start from a Git checkpoint; never rewrite history or touch `refs/thinkerer/*`.
+- Chats run in their own Git worktree and branch (`thinkerer/*`), outside the project folder, and
+  Thinkerer commits each turn there. Don't commit, push or switch branches yourself. Your edits reach the
+  project folder (and the running app's hot reload) only when the user runs `/merge`. Your ports are in
+  `$THINKERER_PORT_1`…; use them instead of 5173/5174.
 - Verify with: `npm run typecheck`, `npm test`, and for UI flows `npm run test:e2e`
   (Playwright drives the real built app; see `tests/e2e/app.spec.ts`).

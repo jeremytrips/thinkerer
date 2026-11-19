@@ -47,20 +47,30 @@ Support/Thinkerer` on macOS). Set `THINKERER_APP_DATA=/some/dir` to use a differ
    preview then shows Thinkerer's UI in "browser preview" mode, without desktop features.
 4. **Agent**: type “Add a visible About Thinkerer dialog, and test that it opens.” and press Enter
    (Shift+Enter adds a line).
-   - A **Git checkpoint** of the whole folder is saved first, including your uncommitted work.
+   - The chat gets its **own Git worktree and branch** (`thinkerer/<title>-<id>`), created from the
+     project's current branch under Thinkerer's app data, so parallel chats never touch each other's files
+     (uncommitted work in the project folder stays there). The project's **setup hook** runs in it first,
+     with its own ports (see Worktrees below).
+   - A **Git checkpoint** is saved before every message. When a message's turn ends, Thinkerer
+     **commits its changes on the chat branch** (the agent never commits or pushes).
    - The CLI streams its progress into the chat. **Stop** kills its whole process tree.
    - **Reply in the same chat** to keep going. A follow-up resumes the CLI's own session
      (`claude --resume`, `codex exec resume`), so the agent remembers the conversation; the provider
      and task stay the chat's. Every message gets its own checkpoint, so each can be rolled back.
      A message sent while the agent is working is queued and goes out when it finishes.
-   - Chats are listed on the left. **+ New chat** starts another conversation, which can run in parallel
-     (up to 4 per project) and be stopped on its own. Parallel chats share the same folder, so a message
-     that overlapped with others says so: its change list and checkpoint may include their edits.
-     Restoring is blocked while any chat is running.
+   - Open chats are listed on the left; **+ New chat** starts another, and up to 4 can work at once.
+     When you're happy, type **`/merge`** to merge the branch into its base branch in the project folder
+     (locally; nothing is pushed), then **`/cleanup`**: it checks nothing is left (no running turn, nothing
+     uncommitted, everything merged, no other unmerged branches or stashes from the chat), runs the
+     teardown hook and removes the worktree and branch. The chat moves to **Done**. A branch merged
+     outside Thinkerer is noticed too ("Merged · /cleanup"). **`/done`** files a chat away and keeps its
+     worktree; **`/discard`** deletes the worktree and branch, merged or not, after a confirmation.
+     Type `/` in the composer to see them.
    - The agent can drive a headless Chromium (Playwright MCP) against the preview. Its actions and
      screenshots appear in the run, and under **Website → Agent browser checks**.
-5. Review **N files changed** under each reply (per-file diffs). Renderer changes have already hot-reloaded
-   into the window. If main, preload or engine code changed, use **Restart now**.
+5. Review **N files changed** under each reply (per-file diffs). The running app hot-reloads from the
+   project folder, so a chat's renderer changes show up there after `/merge` (or in the chat's own preview
+   before that, see below). If main, preload or engine code changed, use **Restart now**.
 6. Not happy? **Restore checkpoint…** shows exactly which files will be reverted, deleted or recreated,
    and asks for confirmation. Your current state is checkpointed first, so a restore can be undone too.
 
@@ -74,13 +84,34 @@ The result is commit `8438cfd`; typecheck, unit and e2e tests passed when re-run
 | Tab | What it does |
 |---|---|
 | Overview | Component cards, Git state, providers, recent runs |
-| Agent | Chats with follow-ups (each message checkpointed), Auto / Claude / Codex, task link, the project's MCP tools, live progress, changes with diffs, restore, retry, screenshots |
+| Agent | Chats in their own worktrees, with follow-ups (each message checkpointed and committed on the chat branch), `/merge` `/cleanup` `/done` `/discard`, Auto / Claude / Codex, task link, the project's MCP tools, live progress, changes with diffs, restore, retry, screenshots, a preview of the chat's own dev server |
 | Website | Approved dev command runner with logs. Sandboxed embedded preview (Electron `WebContentsView`), locked to the preview origin, with other origins only after approval. Preview console. The agent's browser checks |
 | Tasks | To do / In progress / Done board in `.thinkerer/tasks.json`; runs attach to tasks |
 | Files | Read-only tree and preview, uncommitted changes with diffs, checkpoints with restore |
 | MCP | Global server registry (built-in + your own stdio servers, Keychain-encrypted secrets), per-project enable, and the tools each provider will actually get |
-| Settings | Name, components, target, dev command, preview URL, default provider, agent permissions |
+| Settings | Name, components, target, dev command, preview URL, chat worktree hooks and ports, default provider, LLM providers, agent permissions |
 | Marketing | Placeholder (post-MVP) |
+
+### Worktrees, ports and Docker
+
+Settings → **Chat worktrees** has a setup command, a teardown command and a number of ports. Each new
+chat gets that many free ports, kept until its worktree is removed. The setup command runs in the new
+worktree before the first message (a failure is shown in the chat, and the next message retries it);
+the teardown command runs when `/cleanup` or `/discard` removes it. Both, the dev command and the agent
+get:
+
+| Variable | Value |
+|---|---|
+| `THINKERER_PORT_1` … `_N`, `THINKERER_PORT` | the chat's ports (`THINKERER_PORT` = the first) |
+| `COMPOSE_PROJECT_NAME` | `thinkerer-<project>-<id>`, so each worktree's `docker compose` stack is separate |
+| `THINKERER_WORKTREE`, `THINKERER_BRANCH`, `THINKERER_CHAT_ID` | the worktree, its branch, the chat |
+| `THINKERER_PROJECT_ROOT` | the project folder (e.g. to copy an ignored `.env`) |
+
+For example: setup `cp "$THINKERER_PROJECT_ROOT/.env" . && npm ci && docker compose up -d`, teardown
+`docker compose down -v`, compose ports like `"${THINKERER_PORT_1:-5432}:5432"`. The preview URL may use
+`{port1}`…: with `http://localhost:{port1}` and a dev command such as `npm run dev -- --port
+$THINKERER_PORT_1`, the preview beside each chat runs and shows that chat's worktree. The Website tab
+runs the project folder, which has no worktree ports.
 
 The embedded preview and the agent's Playwright browser are **separate browser sessions** that visit
 the same dev server. They don't share cookies or login state; per the spec, a shared live session is
@@ -94,8 +125,15 @@ goes to `refs/thinkerer/checkpoints/<run>`, and the end state to `refs/thinkerer
 HEAD, branch, staging area and files are never touched. These local refs are not pushed by default.
 The newest 50 are kept. Agents run only in Git repositories; the Agent tab offers to initialize one.
 
-**Commands you configure.** The dev command lives in `.thinkerer/project.json`, which an agent could
-edit, so it runs only after you approve that exact text in a native dialog. Adding an MCP server also
+**Worktrees.** Each chat edits its own worktree, never the project folder; `/merge` is the only step
+that changes the project folder. It first checks for conflicts with `git merge-tree` (which touches no
+files), so a conflict leaves the folder untouched, and Git refuses a merge that would overwrite your
+uncommitted changes. Thinkerer never pushes. Worktree branches are deleted only by `/cleanup` (after
+checking they're merged) or by `/discard` (after you confirm in a native dialog).
+
+**Commands you configure.** The dev command and the worktree setup and teardown commands live in
+`.thinkerer/project.json`, which an agent could edit (Thinkerer reads it from the project folder, never
+from a worktree), so each runs only after you approve that exact text in a native dialog. Adding an MCP server also
 confirms the command in a native dialog. A compromised renderer cannot fake these dialogs.
 
 **Agent limits.** Both providers get the same instructions: stay in the project, and never push,
@@ -138,14 +176,16 @@ npm run typecheck
 npm test                   # engine integration: projects, files, git, checkpoints/restore, tasks, MCP registry +
                            # CLI translation, health MCP server, dev server, stream parsers, supervisor
 npm run test:e2e           # real Electron app: import this repo, Files/Agent, restart persistence; Website Studio
-                           # with a real dev server + embedded preview, blocked navigation, Tasks, MCP, diffs
+                           # with a real dev server + embedded preview, blocked navigation, Tasks, MCP, diffs;
+                           # a chat in its worktree with setup/teardown hooks, /merge and /cleanup
 npm run test:live:claude   # opt-in: REAL claude CLI on a throwaway folder (uses your quota)
 npm run test:live:codex    # opt-in: REAL codex CLI (needs `codex login`)
 ```
 
 The supervisor tests use a stand-in process that speaks Claude's stream-json format
 (`tests/fixtures/stand-in-agent.mjs`) to test cancellation and process-tree cleanup deterministically.
-The live tests check the real adapters. Nothing fake is wired into the app.
+The live tests check the real adapters. The chat e2e test runs the same stand-in through the real app
+via `THINKERER_E2E_AGENT`, which unpackaged builds only honor for tests; packaged apps ignore it.
 
 ## Architecture
 
@@ -159,7 +199,11 @@ engine/              Privileged services, Electron-free (unit-testable)
   git.ts, checkpoints.ts  status; checkpoints, run diffs, restore
   tasks.ts             task board store
   mcp.ts               MCP registry, per-project grants, run-time resolution
-  devserver.ts         approved dev command runner
+  devserver.ts         approved dev command runner (project folder, and one per chat worktree)
+  approvals.ts         exact-text approvals for dev, setup and teardown commands
+  chats.ts             chat records: worktree, state (active / merged / done), notes
+  worktrees.ts         worktrees, ports, hooks, commits and merges
+  chatCommands.ts      /merge, /cleanup, /done, /discard
   agents/              adapter interface, Claude + Codex adapters, supervisor
 mcp/                 bundled MCP: thinkerer-health (demo), Playwright launcher
 shared/              Types shared by engine and renderer

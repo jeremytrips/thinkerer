@@ -24,8 +24,8 @@ export function WebsiteTab({ project }: { project: Project }) {
   useEffect(() => {
     api.website.logs(project.id).then(setLogs, () => {})
     void loadCheck()
-    const offLog = api.website.onLog((id, line) => id === project.id && setLogs((cur) => [...cur.slice(-1999), line]))
-    const offPreview = api.preview.onEvent((id, e) => id === project.id && setEvents((cur) => [...cur.slice(-499), e]))
+    const offLog = api.website.onLog((id, chatId, line) => id === project.id && !chatId && setLogs((cur) => [...cur.slice(-1999), line]))
+    const offPreview = api.preview.onEvent((id, chatId, e) => id === project.id && !chatId && setEvents((cur) => [...cur.slice(-499), e]))
     const offRuns = api.runs.onUpdate((s) => s.projectId === project.id && s.endedAt && void loadCheck())
     return () => {
       offLog()
@@ -91,7 +91,7 @@ export function WebsiteTab({ project }: { project: Project }) {
                 <li key={i} className={`console-${e.kind === 'console' ? e.level : e.kind}`}>
                   <span className="mono small">{e.text}</span>
                   {e.kind === 'navigation-blocked' && e.url && (
-                    <button className="small" onClick={() => act(() => api.preview.approve(project.id, e.url!))}>Allow & open…</button>
+                    <button className="small" onClick={() => act(() => api.preview.approve(project.id, null, e.url!))}>Allow & open…</button>
                   )}
                 </li>
               ))}

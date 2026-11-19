@@ -4,8 +4,15 @@ import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 
 // GUI-launched apps on macOS get a minimal PATH, so also look in the usual
-// install locations for CLIs.
-const EXTRA_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', join(homedir(), '.local/bin'), join(homedir(), '.npm-global/bin'), join(homedir(), '.claude/local')]
+// install locations for CLIs (Docker Desktop's included, for worktree hooks).
+const EXTRA_DIRS = [
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+  join(homedir(), '.local/bin'),
+  join(homedir(), '.npm-global/bin'),
+  join(homedir(), '.claude/local'),
+  '/Applications/Docker.app/Contents/Resources/bin'
+]
 
 export function searchPath(): string {
   const dirs = (process.env.PATH ?? '').split(delimiter).filter(Boolean)

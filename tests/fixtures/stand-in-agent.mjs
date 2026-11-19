@@ -1,5 +1,5 @@
 // Test stand-in for a provider CLI: emits Claude-style stream-json on stdout.
-// Used only by tests/supervisor.test.ts to exercise process lifecycle.
+// Used by tests/supervisor.test.ts and tests/worktrees.test.ts to exercise process lifecycle.
 import { spawn } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
 
@@ -18,6 +18,8 @@ process.stdin.on('end', () => {
     return
   }
   writeFileSync('made.txt', input)
+  // In a chat worktree, record the ports and compose project the agent was given.
+  if (process.env.THINKERER_PORT_1) writeFileSync('agent-env.txt', `${process.env.THINKERER_PORT_1} ${process.env.COMPOSE_PROJECT_NAME}`)
   out({ type: 'user', message: { content: [{ type: 'tool_result', content: 'ok' }] } })
   out({ type: 'result', subtype: 'success', is_error: false, result: 'Wrote made.txt', usage: { input_tokens: 3, output_tokens: 5 }, permission_denials: [] })
 })

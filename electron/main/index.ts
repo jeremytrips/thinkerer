@@ -1,7 +1,9 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, session, shell } from 'electron'
 import { findExecutable } from '../../engine/agents/detect'
+import { scriptAdapter } from '../../engine/agents/script'
 import { AgentSupervisor } from '../../engine/agents/supervisor'
+import { Approvals } from '../../engine/approvals'
 import { DevServerManager } from '../../engine/devserver'
 import { McpRegistry } from '../../engine/mcp'
 import { ProjectService } from '../../engine/projects'
@@ -21,9 +23,14 @@ const appData = app.getPath('userData')
 const projects = new ProjectService(appData)
 const tasks = new TaskStore()
 const mcp = new McpRegistry(appData, new SafeSecretStore(appData))
-const devServers = new DevServerManager(appData)
+const approvals = new Approvals(appData)
+const devServers = new DevServerManager(appData, approvals)
+// End-to-end tests drive chats with a stand-in agent script; never in a packaged app.
+const e2eAgent = !app.isPackaged ? process.env.THINKERER_E2E_AGENT : undefined
 const supervisor = new AgentSupervisor(appData, projects, {
+  adapters: e2eAgent ? [scriptAdapter(e2eAgent)] : undefined,
   tasks,
+  approvals,
   mcp: {
     registry: mcp,
     // Bundled MCP scripts live in the app root (mcp/, node_modules/).
@@ -39,7 +46,7 @@ const supervisor = new AgentSupervisor(appData, projects, {
 let mainWindow: BrowserWindow | null = null
 const preview = new PreviewManager(
   () => mainWindow,
-  (projectId, event) => mainWindow?.webContents.send('preview:event', projectId, event)
+  (scope, event) => mainWindow?.webContents.send('preview:event', scope.projectId, scope.chatId, event)
 )
 
 function rendererOrigin(): string {
@@ -98,6 +105,7 @@ app.whenReady().then(() => {
     tasks,
     mcp,
     devServers,
+    approvals,
     preview,
     isDev,
     getWindow: () => mainWindow,

@@ -17,6 +17,9 @@ export function SettingsTab({ project, onChanged, onRemoved }: { project: Projec
   const [devCommand, setDevCommand] = useState(config.website.devCommand)
   const [previewUrl, setPreviewUrl] = useState(config.website.previewUrl)
   const [provider, setProvider] = useState<ProviderChoice>(config.agent.provider)
+  const [setupCommand, setSetupCommand] = useState(config.worktrees.setupCommand)
+  const [teardownCommand, setTeardownCommand] = useState(config.worktrees.teardownCommand)
+  const [ports, setPorts] = useState(String(config.worktrees.ports))
   const [status, setStatus] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
   const [confirmRemove, setConfirmRemove] = useState(false)
   const [providers, setProviders] = useState<ProviderStatus[] | null>(null)
@@ -30,7 +33,14 @@ export function SettingsTab({ project, onChanged, onRemoved }: { project: Projec
   async function save() {
     setStatus(null)
     try {
-      await api.projects.update(project.id, { name, components, target, website: { devCommand, previewUrl }, agent: { provider } })
+      await api.projects.update(project.id, {
+        name,
+        components,
+        target,
+        website: { devCommand, previewUrl },
+        agent: { provider },
+        worktrees: { setupCommand, teardownCommand, ports: Number(ports) }
+      })
       await onChanged()
       setStatus({ tone: 'ok', text: 'Saved to .thinkerer/project.json' })
     } catch (err) {
@@ -75,12 +85,47 @@ export function SettingsTab({ project, onChanged, onRemoved }: { project: Projec
         <label>
           Development command
           <input className="mono" value={devCommand} onChange={(e) => setDevCommand(e.target.value)} placeholder="npm run dev" />
-          <span className="small muted">Used by Website Studio (Phase 1). Not run by Phase 0.</span>
+          <span className="small muted">
+            Runs the site for the preview: in the project folder from the Website tab, and in each chat’s worktree from the preview beside
+            the chat. Worktree ports are in <span className="mono">$THINKERER_PORT_1</span>…, e.g.{' '}
+            <span className="mono">npm run dev -- --port $THINKERER_PORT_1</span>.
+          </span>
         </label>
         <label>
           Preview URL
           <input className="mono" value={previewUrl} onChange={(e) => setPreviewUrl(e.target.value)} placeholder="http://localhost:5173" />
+          <span className="small muted">
+            Use <span className="mono">{'{port1}'}</span> for a worktree’s own port, e.g. <span className="mono">{'http://localhost:{port1}'}</span>.
+          </span>
         </label>
+        <fieldset>
+          <legend>Chat worktrees</legend>
+          <p className="small muted">
+            Every chat works in its own Git worktree and branch. These commands run there (with your user permissions; each one asks for
+            approval when it changes): setup when the chat starts, teardown when <span className="mono">/cleanup</span> or{' '}
+            <span className="mono">/discard</span> removes it. They get <span className="mono">THINKERER_PORT_1…N</span>,{' '}
+            <span className="mono">COMPOSE_PROJECT_NAME</span>, <span className="mono">THINKERER_WORKTREE</span>,{' '}
+            <span className="mono">THINKERER_PROJECT_ROOT</span> and <span className="mono">THINKERER_BRANCH</span>; so does the agent.
+          </p>
+          <label>
+            Setup command
+            <input
+              className="mono"
+              value={setupCommand}
+              onChange={(e) => setSetupCommand(e.target.value)}
+              placeholder='cp "$THINKERER_PROJECT_ROOT/.env" . && npm ci && docker compose up -d'
+            />
+          </label>
+          <label>
+            Teardown command
+            <input className="mono" value={teardownCommand} onChange={(e) => setTeardownCommand(e.target.value)} placeholder="docker compose down -v" />
+          </label>
+          <label>
+            Ports per worktree
+            <input type="number" min={0} max={10} value={ports} onChange={(e) => setPorts(e.target.value)} />
+            <span className="small muted">Free ports Thinkerer reserves for each chat (0–10).</span>
+          </label>
+        </fieldset>
         <label>
           Default agent provider
           <select value={provider} onChange={(e) => setProvider(e.target.value as ProviderChoice)}>

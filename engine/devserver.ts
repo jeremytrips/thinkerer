@@ -1,9 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { join } from 'node:path'
 import type { DevLogLine, DevServerState, Project } from '../shared/types'
 import { childEnv } from './agents/detect'
-import { readJson, writeJson } from './store'
+import { Approvals } from './approvals'
 
 const MAX_LOG_LINES = 2000
 const KILL_GRACE_MS = 3000
@@ -20,34 +19,53 @@ interface Server {
 }
 
 export interface DevServerEvents {
-  log: [projectId: string, line: DevLogLine]
+  log: [projectId: string, chatId: string | null, line: DevLogLine]
   state: [state: DevServerState]
 }
 
+/** Where a dev server runs: the project folder, or a chat's worktree with its own ports. */
+export interface DevTarget {
+  chatId: string | null
+  cwd: string
+  env: Record<string, string>
+  /** Preview URL for this target (ports filled in); null when it has none. */
+  url: string | null
+}
+
+export function projectTarget(project: Project): DevTarget {
+  const url = project.config?.website.previewUrl || null
+  // A URL with {portN} placeholders belongs to chat worktrees; the project folder has no such ports.
+  return { chatId: null, cwd: project.path, env: {}, url: url && !/\{port\d+\}/.test(url) ? url : null }
+}
+
+const scopeKey = (projectId: string, chatId: string | null) => (chatId ? `${projectId}:${chatId}` : projectId)
+
 /**
- * Runs each project's configured dev command (Website Studio, spec F5). The
- * command comes from .thinkerer/project.json — which an agent can edit — so a
- * command only runs after the user has approved that exact text.
+ * Runs the project's configured dev command (Website Studio, spec F5), once for
+ * the project folder and once per chat worktree. The command comes from
+ * .thinkerer/project.json — which an agent can edit — so it only runs after the
+ * user has approved that exact text.
  */
 export class DevServerManager extends EventEmitter<DevServerEvents> {
   private readonly servers = new Map<string, Server>()
-  private readonly approvalsFile: string
+  private readonly approvals: Approvals
 
-  constructor(appDataDir: string) {
+  constructor(appDataDir: string, approvals?: Approvals) {
     super()
-    this.approvalsFile = join(appDataDir, 'approved-dev-commands.json')
+    this.approvals = approvals ?? new Approvals(appDataDir)
   }
 
-  async state(project: Project): Promise<DevServerState> {
-    const s = this.servers.get(project.id)
+  async state(project: Project, target: DevTarget = projectTarget(project)): Promise<DevServerState> {
+    const s = this.servers.get(scopeKey(project.id, target.chatId))
     const command = project.config?.website.devCommand || null
     const needsApproval = !!command && !(await this.isApproved(project.id, command))
     if (s && s.state.status !== 'stopped' && s.state.status !== 'exited') return { ...s.state, needsApproval: false }
     return {
       projectId: project.id,
+      chatId: target.chatId,
       status: s?.state.status ?? 'stopped',
       command,
-      url: project.config?.website.previewUrl || null,
+      url: target.url,
       pid: null,
       exitCode: s?.state.exitCode ?? null,
       startedAt: null,
@@ -55,48 +73,49 @@ export class DevServerManager extends EventEmitter<DevServerEvents> {
     }
   }
 
-  logs(projectId: string): DevLogLine[] {
-    return this.servers.get(projectId)?.logs ?? []
+  logs(projectId: string, chatId: string | null = null): DevLogLine[] {
+    return this.servers.get(scopeKey(projectId, chatId))?.logs ?? []
   }
 
-  async isApproved(projectId: string, command: string): Promise<boolean> {
-    const approvals = (await readJson<Record<string, string>>(this.approvalsFile).catch(() => null)) ?? {}
-    return approvals[projectId] === command
+  isApproved(projectId: string, command: string): Promise<boolean> {
+    return this.approvals.isApproved(projectId, 'dev', command)
   }
 
-  async approve(projectId: string, command: string): Promise<void> {
-    const approvals = (await readJson<Record<string, string>>(this.approvalsFile).catch(() => null)) ?? {}
-    approvals[projectId] = command
-    await writeJson(this.approvalsFile, approvals)
+  approve(projectId: string, command: string): Promise<void> {
+    return this.approvals.approve(projectId, 'dev', command)
   }
 
-  async start(project: Project): Promise<DevServerState> {
+  async start(project: Project, target: DevTarget = projectTarget(project)): Promise<DevServerState> {
     const command = project.config?.website.devCommand?.trim()
-    const url = project.config?.website.previewUrl || null
+    const url = target.url
+    const { chatId } = target
+    const key = scopeKey(project.id, chatId)
     if (!command) throw new Error('Set a development command in Settings first')
     if (!(await this.isApproved(project.id, command))) throw new Error('This dev command has not been approved')
-    const existing = this.servers.get(project.id)
+    const existing = this.servers.get(key)
     if (existing?.child) return existing.state
 
     const server: Server = existing ?? { state: null as unknown as DevServerState, child: null, logs: [], poll: null, killTimer: null }
-    this.servers.set(project.id, server)
+    this.servers.set(key, server)
+    const log = (stream: DevLogLine['stream'], text: string) => this.log(project.id, chatId, stream, text)
     if (url && (await responds(url))) {
-      server.state = { projectId: project.id, status: 'external', command, url, pid: null, exitCode: null, startedAt: null, needsApproval: false }
-      this.log(project.id, 'system', `${url} is already being served by another process; previewing it without starting the dev command.`)
+      server.state = { projectId: project.id, chatId, status: 'external', command, url, pid: null, exitCode: null, startedAt: null, needsApproval: false }
+      log('system', `${url} is already being served by another process; previewing it without starting the dev command.`)
       this.emit('state', server.state)
       return server.state
     }
 
     const shell = process.platform === 'win32' ? { cmd: 'cmd.exe', args: ['/d', '/s', '/c', command] } : { cmd: '/bin/sh', args: ['-c', command] }
     const child = spawn(shell.cmd, shell.args, {
-      cwd: project.path,
-      env: { ...childEnv(), BROWSER: 'none', FORCE_COLOR: '0' },
+      cwd: target.cwd,
+      env: { ...childEnv(), ...target.env, BROWSER: 'none', FORCE_COLOR: '0' },
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: process.platform !== 'win32'
     })
     server.child = child
     server.state = {
       projectId: project.id,
+      chatId,
       status: 'starting',
       command,
       url,
@@ -105,7 +124,7 @@ export class DevServerManager extends EventEmitter<DevServerEvents> {
       startedAt: new Date().toISOString(),
       needsApproval: false
     }
-    this.log(project.id, 'system', `$ ${command}`)
+    log('system', `$ ${command}${target.cwd !== project.path ? `   (in ${target.cwd})` : ''}`)
     this.emit('state', server.state)
 
     const pipe = (stream: 'stdout' | 'stderr') => {
@@ -115,13 +134,13 @@ export class DevServerManager extends EventEmitter<DevServerEvents> {
         buf += chunk
         const lines = buf.split(/\r?\n/)
         buf = lines.pop() ?? ''
-        for (const l of lines) this.log(project.id, stream, l)
+        for (const l of lines) log(stream, l)
       })
     }
     pipe('stdout')
     pipe('stderr')
 
-    child.on('error', (err) => this.log(project.id, 'system', `Failed to start: ${err.message}`))
+    child.on('error', (err) => log('system', `Failed to start: ${err.message}`))
     child.on('close', (code, signal) => {
       if (server.poll) clearInterval(server.poll)
       if (server.killTimer) clearTimeout(server.killTimer)
@@ -129,7 +148,7 @@ export class DevServerManager extends EventEmitter<DevServerEvents> {
       server.poll = null
       const stopped = server.state.status === 'stopped'
       server.state = { ...server.state, status: stopped ? 'stopped' : 'exited', pid: null, exitCode: code }
-      this.log(project.id, 'system', stopped ? 'Dev server stopped.' : `Dev server exited (${signal ?? `code ${code}`}).`)
+      log('system', stopped ? 'Dev server stopped.' : `Dev server exited (${signal ?? `code ${code}`}).`)
       this.emit('state', server.state)
     })
 
@@ -140,7 +159,7 @@ export class DevServerManager extends EventEmitter<DevServerEvents> {
           if (server.poll) clearInterval(server.poll)
           server.poll = null
           server.state = { ...server.state, status: 'running' }
-          this.log(project.id, 'system', `Ready at ${url}`)
+          log('system', `Ready at ${url}`)
           this.emit('state', server.state)
         }
       }, READY_POLL_MS)
@@ -148,8 +167,8 @@ export class DevServerManager extends EventEmitter<DevServerEvents> {
     return server.state
   }
 
-  stop(projectId: string): void {
-    const server = this.servers.get(projectId)
+  stop(projectId: string, chatId: string | null = null): void {
+    const server = this.servers.get(scopeKey(projectId, chatId))
     if (!server) return
     if (server.state.status === 'external') {
       server.state = { ...server.state, status: 'stopped' }
@@ -162,17 +181,22 @@ export class DevServerManager extends EventEmitter<DevServerEvents> {
     server.killTimer = setTimeout(() => server.child && killGroup(server.child, 'SIGKILL'), KILL_GRACE_MS)
   }
 
-  stopAll(): void {
-    for (const id of this.servers.keys()) this.stop(id)
+  /** Every server of a project: its folder's and all its chats'. */
+  stopProject(projectId: string): void {
+    for (const s of this.servers.values()) if (s.state?.projectId === projectId) this.stop(projectId, s.state.chatId)
   }
 
-  private log(projectId: string, stream: DevLogLine['stream'], text: string): void {
-    const server = this.servers.get(projectId)
+  stopAll(): void {
+    for (const s of this.servers.values()) if (s.state) this.stop(s.state.projectId, s.state.chatId)
+  }
+
+  private log(projectId: string, chatId: string | null, stream: DevLogLine['stream'], text: string): void {
+    const server = this.servers.get(scopeKey(projectId, chatId))
     if (!server) return
     const line: DevLogLine = { at: new Date().toISOString(), stream, text: text.replace(ANSI, '') }
     server.logs.push(line)
     if (server.logs.length > MAX_LOG_LINES) server.logs.splice(0, server.logs.length - MAX_LOG_LINES)
-    this.emit('log', projectId, line)
+    this.emit('log', projectId, chatId, line)
   }
 }
 

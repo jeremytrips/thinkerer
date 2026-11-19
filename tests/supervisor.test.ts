@@ -63,6 +63,8 @@ function waitFor(sup: AgentSupervisor, pred: (s: RunSummary) => boolean): Promis
 const done = (s: RunSummary) => !!s.endedAt
 
 describe('AgentSupervisor', () => {
+  // These repos have no commits, so there's nothing to start a worktree from: chats
+  // work in the project folder (worktree chats: tests/worktrees.test.ts).
   it('runs in the project folder, records the run, and captures git changes', async () => {
     const sup = new AgentSupervisor(join(tmp, 'appdata'), projects, { adapters: [standIn('ok')] })
     const finished = waitFor(sup, done)
@@ -71,7 +73,9 @@ describe('AgentSupervisor', () => {
     const final = await finished
 
     expect(final.status).toBe('succeeded')
+    expect(final.cwd).toBe(repo)
     expect(readFileSync(join(repo, 'made.txt'), 'utf8')).toBe('hello from prompt')
+    expect((await sup.chats.get(final.id))).toMatchObject({ state: 'active', worktree: null, notes: [expect.objectContaining({ title: 'Working in the project folder' })] })
     expect(final.usage).toMatchObject({ inputTokens: 3, outputTokens: 5 })
     expect(final.gitAfter!.entries.map((e) => e.path)).toContain('made.txt')
     // Checkpoint before, exact changes after, and the run can be rolled back.

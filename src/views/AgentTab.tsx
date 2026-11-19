@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type {
   AppInfo,
+  ChatCommand,
+  ChatNote,
+  ChatRecord,
   EffectiveMcp,
   PreviewCapture,
   Project,
@@ -13,6 +16,7 @@ import type {
 } from '../../shared/types'
 import { api, errorMessage, loadState, saveState } from '../api'
 import { RestoreDialog } from './Changes'
+import { ChatNoteView, SlashMenu, commandOf, matchingCommands } from './ChatBits'
 import { ChatTurn, LIVE } from './ChatTurn'
 import { PreviewPane, type PreviewDevice } from './PreviewPane'
 import type { TabId } from './ProjectView'
@@ -53,13 +57,14 @@ interface Props {
   prefill?: AgentPrefill | null
 }
 
-/** A conversation: runs sharing a chatId, oldest first. */
+/** A conversation: runs sharing a chatId, oldest first, with its chat record (worktree, state, notes). */
 interface Chat {
   id: string
   title: string
   turns: RunSummary[]
   last: RunSummary
   live: boolean
+  record: ChatRecord | null
 }
 
 /** A message typed while the chat was working; it is sent when the agent finishes. */
@@ -71,21 +76,35 @@ interface Queued {
 const byCreated = (a: { createdAt: string }, b: { createdAt: string }) => a.createdAt.localeCompare(b.createdAt)
 const chatOf = (r: RunSummary) => r.chatId ?? r.id
 
-function groupChats(runs: RunSummary[]): Chat[] {
+function groupChats(runs: RunSummary[], records: ChatRecord[]): Chat[] {
   const by = new Map<string, RunSummary[]>()
   for (const r of runs) by.set(chatOf(r), [...(by.get(chatOf(r)) ?? []), r])
+  const recordOf = new Map(records.map((c) => [c.id, c]))
   return [...by.entries()]
     .map(([id, list]) => {
       const turns = list.sort(byCreated)
-      return { id, title: turns[0].prompt, turns, last: turns[turns.length - 1], live: turns.some((t) => LIVE.includes(t.status)) }
+      const record = recordOf.get(id) ?? null
+      return { id, title: record?.title ?? turns[0].prompt, turns, last: turns[turns.length - 1], live: turns.some((t) => LIVE.includes(t.status)), record }
     })
     .sort((a, b) => byCreated(b.last, a.last))
+}
+
+/** Done chats leave the main list (a live one stays until it stops). */
+const isDone = (c: Chat) => c.record?.state === 'done' && !c.live
+
+function chatHint(c: Chat): string | null {
+  if (c.live) return null
+  if (c.record?.state === 'setting-up') return 'Setup failed · send to retry'
+  if (c.record?.state === 'merged') return 'Merged · /cleanup'
+  return null
 }
 
 export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   const [providers, setProviders] = useState<ProviderStatus[] | null>(null)
   const [choice, setChoice] = useState<ProviderChoice>(project.config!.agent.provider)
   const [runs, setRuns] = useState<RunSummary[]>([])
+  const [records, setRecords] = useState<ChatRecord[]>([])
+  const [menuIndex, setMenuIndex] = useState(0)
   // The open chat (null: a new one) and its turns with their events.
   const [chatId, setChatId] = useState<string | null>(null)
   const chatRef = useRef<string | null>(null)
@@ -126,13 +145,22 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const reloadedFor = useRef(new Set<string>())
 
-  const chats = groupChats(runs)
+  const chats = groupChats(runs, records)
   const chat = chats.find((c) => c.id === chatId) ?? null
+  const activeChats = chats.filter((c) => !isDone(c))
+  const doneChats = chats.filter(isDone)
   const liveChats = chats.filter((c) => c.live)
-  const anyLive = liveChats.length > 0
+  const record = chat?.record ?? null
+  const worktree = record?.worktree && !record.worktreeRemoved ? record.worktree : null
+  const finished = !!record?.worktreeRemoved
+  // A chat with a worktree has its own dev server, ports and preview.
+  const previewChat = worktree ? chatId : null
   const draftKey = chatId ?? NEW
   const draft = drafts[draftKey] ?? ''
   const setDraft = (text: string, key = draftKey) => setDrafts((cur) => ({ ...cur, [key]: text }))
+  const menu = chatId && !finished ? matchingCommands(draft) : []
+  /** Live runs working in a folder: only they can conflict with restoring a checkpoint there. */
+  const liveIn = (folder: string) => runs.some((r) => LIVE.includes(r.status) && (r.cwd ?? r.projectPath) === folder)
 
   function openChat(id: string | null) {
     chatRef.current = id
@@ -161,11 +189,16 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
       .finally(() => fetching.current.delete(runId))
   }
 
+  const refreshChats = useCallback(() => {
+    api.chats.list(project.id).then(setRecords, () => {})
+  }, [project.id])
+
   const refreshContext = useCallback(() => {
+    refreshChats()
     api.git.status(project.id).then((s) => setIsGit(!!s), () => setIsGit(null))
     api.tasks.list(project.id).then(setTasks, () => {})
     api.mcp.effective(project.id).then(setMcp, () => {})
-  }, [project.id])
+  }, [project.id, refreshChats])
 
   useEffect(() => {
     api.agents.providers().then(setProviders, (e) => setError(errorMessage(e)))
@@ -179,6 +212,9 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
       else openChat(saved && list.some((r) => chatOf(r) === saved) ? saved : null)
     }, () => openChat(null))
 
+    const offChat = api.chats.onUpdate((c) => {
+      if (c.projectId === project.id) setRecords((cur) => [c, ...cur.filter((x) => x.id !== c.id)])
+    })
     const offEvent = api.runs.onEvent((runId: string, event: RunEvent) => {
       setTurns((cur) => (cur.some((t) => t.id === runId) ? cur.map((t) => (t.id === runId ? { ...t, events: [...t.events, event] } : t)) : cur))
     })
@@ -197,6 +233,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
       }
     })
     return () => {
+      offChat()
       offEvent()
       offUpdate()
     }
@@ -212,7 +249,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   useLayoutEffect(() => {
     const el = scrollRef.current
     if (el && stick.current) el.scrollTop = el.scrollHeight
-  }, [turns, chatId, pending, queued])
+  }, [turns, chatId, pending, queued, record?.notes.length])
 
   // Send queued follow-ups once their chat finishes. A stopped chat gives the message back instead.
   useEffect(() => {
@@ -262,9 +299,31 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
     }
   }
 
+  async function runCommand(name: ChatCommand) {
+    if (!chatId) return
+    setError(null)
+    setNotice(null)
+    setDraft('')
+    setStarting(true)
+    stick.current = true
+    try {
+      const updated = await api.chats.command(project.id, chatId, name)
+      setRecords((cur) => [updated, ...cur.filter((x) => x.id !== updated.id)])
+    } catch (err) {
+      if (errorMessage(err) !== 'Cancelled') setError(errorMessage(err))
+    } finally {
+      setStarting(false)
+    }
+  }
+
   function submit() {
     const text = draft
-    if (!text.trim() || starting || isGit === false) return
+    if (!text.trim() || starting || isGit === false || finished) return
+    const command = commandOf(text)
+    if (command) {
+      if (!chatId) return setError('Slash commands act on a chat; open one first.')
+      return void runCommand(command)
+    }
     const target = chatId
     const attach = attachments
     setDraft('')
@@ -345,7 +404,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
     setError(null)
     try {
       if (!showPreview) togglePreview()
-      await api.preview.navigate(project.id, url)
+      await api.preview.navigate(project.id, previewChat, url)
     } catch (err) {
       setError(errorMessage(err))
     }
@@ -369,6 +428,37 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   const waiting = chatId ? queued[chatId] : undefined
   const liveTurn = turns.find((t) => LIVE.includes(t.status))
 
+  function chatItem(c: Chat) {
+    const hint = chatHint(c)
+    return (
+      <li key={c.id}>
+        <button
+          className={chatId === c.id ? 'history-item active' : 'history-item'}
+          aria-current={chatId === c.id ? 'true' : undefined}
+          onClick={() => chatId !== c.id && openChat(c.id)}
+          title={c.title}
+        >
+          <span className="ellipsis">{c.title}</span>
+          <span className="row small">
+            {c.live ? <span className="spinner" aria-label="Working" /> : <StatusPill status={c.last.status} />}
+            <span className="muted">{relativeTime(c.last.createdAt)}</span>
+            {c.turns.length > 1 && <span className="muted">{c.turns.length} messages</span>}
+            {queued[c.id] && <span className="muted">· 1 queued</span>}
+          </span>
+          {hint && <span className="small chat-hint">{hint}</span>}
+        </button>
+      </li>
+    )
+  }
+
+  // Turns and notes (hook output, slash command results) in the order they happened.
+  const items: ({ at: string; turn: RunRecord } | { at: string; note: ChatNote })[] = [
+    // A turn counts from when its agent started, so the worktree setup it waited for comes first.
+    ...turns.map((t) => ({ at: t.startedAt ?? t.createdAt, turn: t })),
+    ...(record?.notes ?? []).map((n) => ({ at: n.at, note: n }))
+  ].sort((a, b) => a.at.localeCompare(b.at))
+  const lastTurnId = turns.at(-1)?.id
+
   return (
     <section className={dragging ? 'agent dragging' : 'agent'} ref={sectionRef}>
       {showChats && (
@@ -376,36 +466,42 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
           <button type="button" className={chatId === null ? 'new-chat active' : 'new-chat'} onClick={() => (openChat(null), composerRef.current?.focus())}>
             + New chat
           </button>
-          {chats.length === 0 ? (
-            <p className="muted small">No chats yet.</p>
+          {activeChats.length === 0 ? (
+            <p className="muted small">{doneChats.length ? 'No open chats.' : 'No chats yet.'}</p>
           ) : (
-            <ul className="history" aria-label="Chats">
-              {chats.map((c) => (
-                <li key={c.id}>
-                  <button
-                    className={chatId === c.id ? 'history-item active' : 'history-item'}
-                    aria-current={chatId === c.id ? 'true' : undefined}
-                    onClick={() => chatId !== c.id && openChat(c.id)}
-                    title={c.title}
-                  >
-                    <span className="ellipsis">{c.title}</span>
-                    <span className="row small">
-                      {c.live ? <span className="spinner" aria-label="Working" /> : <StatusPill status={c.last.status} />}
-                      <span className="muted">{relativeTime(c.last.createdAt)}</span>
-                      {c.turns.length > 1 && <span className="muted">{c.turns.length} messages</span>}
-                      {queued[c.id] && <span className="muted">· 1 queued</span>}
-                    </span>
-                  </button>
-                </li>
-              ))}
+            <ul className="history" aria-label="Open chats">
+              {activeChats.map((c) => chatItem(c))}
             </ul>
+          )}
+          {doneChats.length > 0 && (
+            <details className="done-chats" open={!!chat && isDone(chat)}>
+              <summary className="small muted">Done ({doneChats.length})</summary>
+              <ul className="history" aria-label="Done chats">
+                {doneChats.map((c) => chatItem(c))}
+              </ul>
+            </details>
           )}
         </aside>
       )}
 
       <div className="agent-main" ref={mainRef} style={showPreview ? { flex: `0 0 calc((100% - ${showChats ? SIDE_WIDTH : 0}px) * ${split})` } : undefined}>
         <div className="agent-head">
-          <h1 className="chat-title ellipsis" title={chat?.title}>{chat ? chat.title : 'New chat'}</h1>
+          <div className="chat-head">
+            <h1 className="chat-title ellipsis" title={chat?.title}>{chat ? chat.title : 'New chat'}</h1>
+            {worktree ? (
+              <div className="row small muted chat-meta">
+                <span className="mono" title={`From ${worktree.base} at ${worktree.baseCommit.slice(0, 7)}`}>{worktree.branch}</span>
+                {record!.ports.length > 0 && <span className="mono">ports {record!.ports.join(', ')}</span>}
+                <button type="button" className="link small" onClick={() => api.chats.reveal(project.id, chatId!).catch((e) => setError(errorMessage(e)))}>
+                  Show worktree
+                </button>
+              </div>
+            ) : (
+              chat && (
+                <div className="small muted chat-meta">{finished ? `Worktree removed (${record?.doneReason === 'discarded' ? 'discarded' : 'cleaned up'})` : 'Works in the project folder'}</div>
+              )
+            )}
+          </div>
           <div className="row">
             <button type="button" className={showChats ? 'small toggle on' : 'small toggle'} aria-pressed={showChats} onClick={toggleChats}>
               Chats
@@ -437,42 +533,50 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
                 <div className="bubble-user">{pending}</div>
                 <div className="agent-reply">
                   <div className="working">
-                    <span className="spinner" aria-hidden /> <span className="mono">Saving a checkpoint…</span>
+                    <span className="spinner" aria-hidden /> <span className="mono">Setting up the chat’s worktree…</span>
                   </div>
                 </div>
               </article>
             ) : (
               <div className="empty">
                 <p className="muted">
-                  Describe a change. The agent works directly in <span className="mono">{project.path}</span>, and you can keep talking to it
-                  in this chat. A Git checkpoint is saved before every message, so each one can be reviewed and rolled back.
+                  Describe a change. Each chat gets its own Git worktree and branch from the project’s current branch, so chats never step on
+                  each other. Thinkerer commits every message’s changes on the chat’s branch, and a checkpoint before each one lets you roll it back.
                 </p>
-                {anyLive && (
+                <p className="muted">
+                  When you’re happy, type <span className="mono">/merge</span> to merge the branch into{' '}
+                  <span className="mono">{isGit ? 'its base branch' : 'main'}</span>, then <span className="mono">/cleanup</span> to check nothing
+                  is left and remove the worktree.
+                </p>
+                {liveChats.length > 0 && (
                   <p className="muted">
-                    {liveChats.length} chat{liveChats.length === 1 ? ' is' : 's are'} already working in this folder. A new chat runs alongside{' '}
-                    {liveChats.length === 1 ? 'it' : 'them'}, so give them separate areas of the code to avoid conflicting edits.
+                    {liveChats.length} chat{liveChats.length === 1 ? ' is' : 's are'} working right now.
                   </p>
                 )}
               </div>
             )
           ) : (
             <>
-              {turns.map((t, i) => (
-                <ChatTurn
-                  key={t.id}
-                  turn={t}
-                  projectId={project.id}
-                  root={project.path}
-                  isLast={i === turns.length - 1}
-                  anyLive={anyLive}
-                  info={info}
-                  isSelf={isSelf}
-                  taskTitle={chatTask}
-                  onRestore={setRestoreFor}
-                  onRetry={retry}
-                  onCancel={cancel}
-                />
-              ))}
+              {items.map((item) =>
+                'note' in item ? (
+                  <ChatNoteView key={`note-${item.at}-${item.note.kind}`} note={item.note} />
+                ) : (
+                  <ChatTurn
+                    key={item.turn.id}
+                    turn={item.turn}
+                    projectId={project.id}
+                    root={item.turn.cwd ?? project.path}
+                    isLast={item.turn.id === lastTurnId}
+                    anyLive={liveIn(item.turn.cwd ?? item.turn.projectPath) || finished}
+                    info={info}
+                    isSelf={isSelf}
+                    taskTitle={chatTask}
+                    onRestore={setRestoreFor}
+                    onRetry={retry}
+                    onCancel={cancel}
+                  />
+                )
+              )}
               {waiting && (
                 <article className="turn queued">
                   <div className="bubble-user">
@@ -526,28 +630,45 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
               ))}
             </ul>
           )}
+          <SlashMenu items={menu} active={Math.min(menuIndex, menu.length - 1)} onPick={(name) => void runCommand(name)} />
           <div className="composer-box">
             <textarea
               ref={composerRef}
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              onChange={(e) => {
+                setDraft(e.target.value)
+                setMenuIndex(0)
+              }}
               onKeyDown={(e) => {
+                if (menu.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+                  e.preventDefault()
+                  setMenuIndex((i) => (Math.min(i, menu.length - 1) + (e.key === 'ArrowDown' ? 1 : menu.length - 1)) % menu.length)
+                  return
+                }
+                if (menu.length && e.key === 'Tab') {
+                  e.preventDefault()
+                  setDraft(`/${menu[Math.min(menuIndex, menu.length - 1)].name}`)
+                  return
+                }
                 // Enter sends; Shift+Enter is a new line. Not while an IME is composing.
                 if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault()
+                  if (menu.length && !commandOf(draft)) return void runCommand(menu[Math.min(menuIndex, menu.length - 1)].name)
                   submit()
                 }
               }}
               placeholder={
-                chat?.live
+                finished
+                  ? 'This chat is finished and its worktree was removed. Start a new chat to keep going.'
+                  : chat?.live
                   ? 'Queue a follow-up for when the agent finishes…'
                   : chat
-                    ? 'Reply to the agent…'
+                    ? 'Reply to the agent, or type / for commands…'
                     : attachments.length
                       ? 'Describe what to change on this page…'
                       : 'Describe a change, e.g. “Add a visible About dialog, and test that it opens.”'
               }
-              disabled={isGit === false}
+              disabled={isGit === false || finished}
               rows={2}
               aria-label="Message to the agent"
             />
@@ -557,8 +678,8 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
                   Stop
                 </button>
               )}
-              <button type="submit" className="primary small" disabled={!draft.trim() || starting || isGit === false}>
-                {starting ? 'Sending…' : chat?.live ? 'Queue' : 'Send'}
+              <button type="submit" className="primary small" disabled={!draft.trim() || starting || isGit === false || finished}>
+                {starting ? 'Sending…' : commandOf(draft) ? 'Run' : chat?.live ? 'Queue' : 'Send'}
               </button>
             </div>
           </div>
@@ -651,6 +772,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
             </div>
             <PreviewPane
               project={project}
+              chatId={previewChat}
               onCapture={attach}
               suspended={dragging}
               reloadNonce={reloadNonce}
