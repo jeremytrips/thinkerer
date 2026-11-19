@@ -37,10 +37,10 @@ export function ProjectView({ project, info, tab, onTab, onBack, onChanged }: Pr
   const [prefill, setPrefill] = useState<AgentPrefill | null>(null)
   return (
     <div className="project">
-      <nav className="sidebar" aria-label="Project">
+      <nav className="topbar" aria-label="Project">
         <button className="link back" onClick={onBack}>← Projects</button>
-        <div className="sidebar-project">
-          <div className="sidebar-name">{project.config?.name}</div>
+        <div className="topbar-project">
+          <div className="topbar-name">{project.config?.name}</div>
           <div className="row">
             {project.config?.components.map((c) => <span key={c} className="badge">{c}</span>)}
             <span className="badge">{project.config?.target}</span>
@@ -56,7 +56,7 @@ export function ProjectView({ project, info, tab, onTab, onBack, onChanged }: Pr
             </li>
           ))}
         </ul>
-        <div className="sidebar-foot">
+        <div className="topbar-foot">
           <RestartButton info={info} />
         </div>
       </nav>
