@@ -18,9 +18,17 @@ describe('Codex adapter', () => {
     expect(inv.args).not.toContain('--not-a-flag')
   })
 
+  it('resumes a chat with the same sandbox and policy, passing it as config since `exec resume` has no --sandbox', () => {
+    const inv = codexAdapter.buildInvocation({ executable: '/bin/codex', cwd: '/p', prompt: 'more', resumeSessionId: 't1', policy: DEFAULT_POLICY, mcp: [], secretEnv: {} })
+    expect(inv.args.slice(0, 5)).toEqual(['exec', 'resume', '--json', '-c', 'sandbox_mode="workspace-write"'])
+    expect(inv.args).toEqual(expect.arrayContaining(['approval_policy="never"', 'sandbox_workspace_write.network_access=false', '--ignore-user-config', '--ignore-rules']))
+    expect(inv.args).not.toContain('--cd')
+    expect(inv.args.slice(-2)).toEqual(['t1', '-'])
+  })
+
   it('maps exec events to run updates', () => {
     const p = createCodexParser()
-    expect(p.parseLine(line({ type: 'thread.started', thread_id: 't1' }))[0].event).toMatchObject({ kind: 'status' })
+    expect(p.parseLine(line({ type: 'thread.started', thread_id: 't1' }))[0]).toMatchObject({ sessionId: 't1', event: { kind: 'status' } })
     expect(p.parseLine(line({ type: 'turn.started' }))).toEqual([])
 
     const started = p.parseLine(line({ type: 'item.started', item: { id: 'i1', type: 'command_execution', command: 'bash -lc ls', aggregated_output: '', exit_code: null, status: 'in_progress' } }))

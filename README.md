@@ -45,15 +45,21 @@ Support/Thinkerer` on macOS). Set `THINKERER_APP_DATA=/some/dir` to use a differ
    a renderer-only Vite server on http://localhost:5174. Playwright and health MCP servers are enabled.
 3. **Website → Start dev server.** The first time, a native dialog asks you to approve the command. The
    preview then shows Thinkerer's UI in "browser preview" mode, without desktop features.
-4. **Agent**: enter “Add a visible About Thinkerer dialog, and test that it opens.” and run it.
+4. **Agent**: type “Add a visible About Thinkerer dialog, and test that it opens.” and press Enter
+   (Shift+Enter adds a line).
    - A **Git checkpoint** of the whole folder is saved first, including your uncommitted work.
-   - The CLI streams its progress. **Stop run** kills its whole process tree.
-   - **+ New chat** starts another run in parallel (up to 4 per project). Each chat gets a tab and can be
-     stopped on its own. Parallel chats share the same folder, so a chat that overlapped with others says so:
-     its change list and checkpoint may include their edits. Restoring is blocked while any chat is running.
+   - The CLI streams its progress into the chat. **Stop** kills its whole process tree.
+   - **Reply in the same chat** to keep going. A follow-up resumes the CLI's own session
+     (`claude --resume`, `codex exec resume`), so the agent remembers the conversation; the provider
+     and task stay the chat's. Every message gets its own checkpoint, so each can be rolled back.
+     A message sent while the agent is working is queued and goes out when it finishes.
+   - Chats are listed on the left. **+ New chat** starts another conversation, which can run in parallel
+     (up to 4 per project) and be stopped on its own. Parallel chats share the same folder, so a message
+     that overlapped with others says so: its change list and checkpoint may include their edits.
+     Restoring is blocked while any chat is running.
    - The agent can drive a headless Chromium (Playwright MCP) against the preview. Its actions and
      screenshots appear in the run, and under **Website → Agent browser checks**.
-5. Review **Changes made by this run** (per-file diffs). Renderer changes have already hot-reloaded
+5. Review **N files changed** under each reply (per-file diffs). Renderer changes have already hot-reloaded
    into the window. If main, preload or engine code changed, use **Restart now**.
 6. Not happy? **Restore checkpoint…** shows exactly which files will be reverted, deleted or recreated,
    and asks for confirmation. Your current state is checkpointed first, so a restore can be undone too.
@@ -68,7 +74,7 @@ The result is commit `8438cfd`; typecheck, unit and e2e tests passed when re-run
 | Tab | What it does |
 |---|---|
 | Overview | Component cards, Git state, providers, recent runs |
-| Agent | Auto / Claude / Codex, task link, the project's MCP tools, live run log, changes with diffs, restore, retry, screenshots |
+| Agent | Chats with follow-ups (each message checkpointed), Auto / Claude / Codex, task link, the project's MCP tools, live progress, changes with diffs, restore, retry, screenshots |
 | Website | Approved dev command runner with logs. Sandboxed embedded preview (Electron `WebContentsView`), locked to the preview origin, with other origins only after approval. Preview console. The agent's browser checks |
 | Tasks | To do / In progress / Done board in `.thinkerer/tasks.json`; runs attach to tasks |
 | Files | Read-only tree and preview, uncommitted changes with diffs, checkpoints with restore |

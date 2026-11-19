@@ -30,6 +30,7 @@ const MAX_EVENTS = 5000
 const KILL_GRACE_MS = 3000
 /** Parallel runs (chats) allowed per project. They share the project folder. */
 export const MAX_PARALLEL_RUNS = 4
+const RUN_ID = /^[0-9a-f-]{36}$/
 const IMAGE_TYPES: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' }
 
 /** Preference used by Auto when no comparable consumption signal is available. */
@@ -60,6 +61,8 @@ interface ActiveRun {
   child: ChildProcess | null
   cancelRequested: boolean
   killTimer: NodeJS.Timeout | null
+  /** Provider session this turn continues; null for a chat's first turn (or when it can't be resumed). */
+  resumeSessionId: string | null
 }
 
 export interface SupervisorOptions {
@@ -74,6 +77,8 @@ export interface StartOptions {
   taskId?: string | null
   /** Preview screenshots already saved in the project (see engine/attachments). */
   attachments?: PromptAttachment[]
+  /** Send this as a follow-up in an existing chat. It keeps that chat's provider and task. */
+  chatId?: string | null
 }
 
 export interface SupervisorEvents {
@@ -82,7 +87,9 @@ export interface SupervisorEvents {
 }
 
 /**
- * Owns provider CLI processes. Several runs may work in the same project folder
+ * Owns provider CLI processes. A run is one turn of a chat; a follow-up turn
+ * resumes the provider session of the chat's latest turn, so the agent keeps the
+ * conversation, and still gets its own checkpoint. Several runs may work in the same project folder
  * at once (up to MAX_PARALLEL_RUNS); runs that overlap in time are recorded in
  * `concurrentRunIds`, because their checkpoints and diffs can then include each
  * other's edits. Every run is recorded to <appData>/runs/<id>.json.
@@ -91,6 +98,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
   private readonly runsDir: string
   private readonly active = new Map<string, ActiveRun>() // keyed by runId
   private readonly starting = new Map<string, number>() // projectId → starts in flight
+  private readonly startingChats = new Set<string>() // chatId → follow-up start in flight
   private readonly cooldownUntil = new Map<ProviderId, number>()
   private readonly adapters: Partial<Record<ProviderId, AgentAdapter>> = {}
   private readonly policy: RunPolicy
@@ -118,11 +126,15 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     if (typeof prompt !== 'string' || !prompt.trim()) throw new Error('Prompt is empty')
     if (prompt.length > 100_000) throw new Error('Prompt is too long')
     if (opts.attachments?.some((a) => !ATTACHMENT_ID.test(a.id))) throw new Error('Invalid attachment')
+    const chatId = opts.chatId ?? null
+    if (chatId !== null && !RUN_ID.test(chatId)) throw new Error('Invalid chat')
+    if (chatId && this.startingChats.has(chatId)) throw new Error('This chat is already sending a message')
     const inFlight = this.starting.get(projectId) ?? 0
     if (this.activeRuns(projectId).length + inFlight >= MAX_PARALLEL_RUNS) {
       throw new Error(`This project already has ${MAX_PARALLEL_RUNS} agent runs in progress; stop one or wait for it to finish`)
     }
     this.starting.set(projectId, inFlight + 1)
+    if (chatId) this.startingChats.add(chatId)
     let run: ActiveRun
     try {
       const project = await this.projects.get(projectId)
@@ -131,15 +143,21 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       if (!gitBefore) {
         throw new Error('This project is not a Git repository. Initialize Git so Thinkerer can checkpoint the folder before an agent edits it.')
       }
-      const { provider, rationale, status } = await this.selectProvider(requested)
+      const chat = chatId ? await this.continuation(projectId, chatId) : null
+      const selected = await this.selectProvider(chat ? chat.provider : requested)
+      const { provider, status } = selected
+      const rationale = chat ? `Continuing this chat with ${this.adapters[provider]!.label}` : selected.rationale
       const now = new Date().toISOString()
       const others = this.activeRuns(projectId)
+      const id = randomUUID()
       const record: RunRecord = {
-        id: randomUUID(),
+        id,
         projectId,
         projectPath: project.path,
+        chatId: chatId ?? id,
+        sessionId: null,
         prompt,
-        taskId: opts.taskId ?? null,
+        taskId: chat ? chat.taskId : (opts.taskId ?? null),
         checkpoint: null,
         afterCommit: null,
         changes: null,
@@ -163,13 +181,22 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
         concurrentRunIds: others.map((r) => r.id),
         events: []
       }
-      run = { record, child: null, cancelRequested: false, killTimer: null }
+      run = { record, child: null, cancelRequested: false, killTimer: null, resumeSessionId: chat?.sessionId ?? null }
       for (const other of others) {
         other.concurrentRunIds = [...(other.concurrentRunIds ?? []), record.id]
         this.emitUpdate(other)
       }
       this.active.set(record.id, run)
       this.addEvent(run, { kind: 'status', text: `Provider: ${this.adapters[provider]!.label}` })
+      if (chat) {
+        this.addEvent(run, {
+          kind: 'status',
+          text: chat.sessionId
+            ? 'Continuing the conversation from the previous message'
+            : 'The previous message has no session to resume, so the agent starts this one without the earlier conversation',
+          meta: chat.sessionId ? undefined : { notice: true }
+        })
+      }
       await this.persist(record)
       this.emitUpdate(record)
       void this.launch(run, project, status)
@@ -177,6 +204,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       const left = (this.starting.get(projectId) ?? 1) - 1
       if (left > 0) this.starting.set(projectId, left)
       else this.starting.delete(projectId)
+      if (chatId) this.startingChats.delete(chatId)
     }
     return summarize(run.record)
   }
@@ -210,6 +238,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
         executable: status.executable!,
         cwd: project.path,
         prompt: record.prompt + attachmentNote(record.attachments ?? []),
+        resumeSessionId: run.resumeSessionId,
         policy: { ...this.policy, appendSystemPrompt: this.instructions(project, servers) },
         mcp: servers,
         secretEnv
@@ -265,7 +294,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
 
   /** Image artifact as a data: URL for the renderer (no file paths cross IPC). */
   async artifactDataUrl(runId: string, name: string): Promise<string> {
-    if (!/^[0-9a-f-]{36}$/.test(runId) || !/^[\w.-]+$/.test(name)) throw new Error('Invalid artifact')
+    if (!RUN_ID.test(runId) || !/^[\w.-]+$/.test(name)) throw new Error('Invalid artifact')
     const type = IMAGE_TYPES[name.slice(name.lastIndexOf('.')).toLowerCase()]
     if (!type) throw new Error('Unsupported artifact type')
     const data = await readFile(join(this.artifactsDir(runId), name))
@@ -274,7 +303,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
 
   /** A screenshot the user attached to the run's prompt, as a data: URL. */
   async attachmentDataUrl(runId: string, id: string): Promise<string> {
-    if (!/^[0-9a-f-]{36}$/.test(runId) || !ATTACHMENT_ID.test(id)) throw new Error('Invalid attachment')
+    if (!RUN_ID.test(runId) || !ATTACHMENT_ID.test(id)) throw new Error('Invalid attachment')
     const data = await readFile(join(this.inputsDir(runId), `${id}.png`))
     return `data:image/png;base64,${data.toString('base64')}`
   }
@@ -315,32 +344,59 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
   async getRun(runId: string): Promise<RunRecord | null> {
     const live = this.active.get(runId)
     if (live) return live.record
-    if (!/^[0-9a-f-]{36}$/.test(runId)) return null
+    if (!RUN_ID.test(runId)) return null
     return readJson<RunRecord>(join(this.runsDir, `${runId}.json`))
   }
 
   /** Most recent first. Runs interrupted by an app exit are reported as failed. */
-  async listRuns(projectId: string, limit = 50): Promise<RunSummary[]> {
+  async listRuns(projectId: string, limit = 300): Promise<RunSummary[]> {
+    const records = await this.readRuns(projectId)
+    return records.map(summarize).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit)
+  }
+
+  /** Every turn of a chat with its events, oldest first. */
+  async getChat(projectId: string, chatId: string): Promise<RunRecord[]> {
+    if (!RUN_ID.test(chatId)) throw new Error('Invalid chat')
+    const turns = (await this.readRuns(projectId)).filter((r) => (r.chatId ?? r.id) === chatId)
+    return turns.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  }
+
+  /** Live runs come from memory (their files lag behind); the rest from disk. */
+  private async readRuns(projectId: string): Promise<RunRecord[]> {
     let files: string[] = []
     try {
       files = (await readdir(this.runsDir)).filter((f) => f.endsWith('.json'))
     } catch {
       return []
     }
-    const activeIds = new Set(this.active.keys())
-    const out: RunSummary[] = []
+    const out: RunRecord[] = []
     for (const f of files) {
+      const live = this.active.get(f.slice(0, -'.json'.length))
+      if (live) {
+        if (live.record.projectId === projectId) out.push(live.record)
+        continue
+      }
       const rec = await readJson<RunRecord>(join(this.runsDir, f)).catch(() => null)
       if (!rec || rec.projectId !== projectId) continue
-      if (!activeIds.has(rec.id) && (rec.status === 'running' || rec.status === 'queued')) {
+      if (rec.status === 'running' || rec.status === 'queued') {
         rec.status = 'failed'
         rec.error = 'Thinkerer exited while this run was active'
         rec.endedAt ??= new Date().toISOString()
         await this.persist(rec)
       }
-      out.push(summarize(rec))
+      out.push(rec)
     }
-    return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit)
+    return out
+  }
+
+  /** What a follow-up in this chat continues: the latest turn's provider, and its session if it reported one. */
+  private async continuation(projectId: string, chatId: string): Promise<{ provider: ProviderId; sessionId: string | null; taskId: string | null }> {
+    const turns = await this.getChat(projectId, chatId)
+    if (!turns.length) throw new Error('Chat not found')
+    if (turns.some((t) => this.active.has(t.id))) throw new Error('This chat is still working; wait for it to finish or stop it first')
+    const last = turns[turns.length - 1]
+    const resumable = turns.filter((t) => t.provider === last.provider && t.sessionId).at(-1)
+    return { provider: last.provider, sessionId: resumable?.sessionId ?? null, taskId: turns[0].taskId }
   }
 
   private async selectProvider(requested: ProviderChoice): Promise<{ provider: ProviderId; rationale: string; status: ProviderStatus }> {
@@ -388,6 +444,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
         buffer = buffer.slice(nl + 1)
         for (const u of parser.parseLine(line)) {
           if (u.currentAction) run.record.currentAction = u.currentAction
+          if (u.sessionId) run.record.sessionId = u.sessionId
           if (u.usage) run.record.usage = mergeUsage(run.record.usage, u.usage)
           if (u.result) {
             sawResult = { isError: u.result.isError }

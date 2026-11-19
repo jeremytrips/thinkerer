@@ -32,14 +32,15 @@ export const codexAdapter: AgentAdapter = {
     }
   },
 
-  buildInvocation({ executable, cwd, prompt, policy, mcp, secretEnv }) {
+  buildInvocation({ executable, cwd, prompt, resumeSessionId, policy, mcp, secretEnv }) {
+    // `exec resume` has no --cd/--sandbox flags: it runs in the spawn cwd (the project) and takes the sandbox as config.
+    const start = resumeSessionId
+      ? ['exec', 'resume', '--json', '-c', 'sandbox_mode="workspace-write"']
+      : ['exec', '--json', '--cd', cwd, '--sandbox', 'workspace-write']
     return {
       command: executable,
       args: [
-        'exec',
-        '--json',
-        '--cd', cwd,
-        '--sandbox', 'workspace-write',
+        ...start,
         '-c', 'approval_policy="never"',
         '-c', 'sandbox_workspace_write.network_access=false',
         '-c', 'web_search="disabled"',
@@ -50,6 +51,7 @@ export const codexAdapter: AgentAdapter = {
         '--ignore-user-config',
         '--ignore-rules',
         '--skip-git-repo-check',
+        ...(resumeSessionId ? [resumeSessionId] : []),
         '-' // read the prompt from stdin
       ],
       stdin: prompt,
@@ -130,7 +132,12 @@ export function createCodexParser(): StreamParser {
       }
       switch (msg.type) {
         case 'thread.started':
-          return [{ event: { kind: 'status', text: 'Session started', meta: { threadId: msg.thread_id ?? null } } }]
+          return [
+            {
+              sessionId: typeof msg.thread_id === 'string' ? msg.thread_id : undefined,
+              event: { kind: 'status', text: 'Session started', meta: { threadId: msg.thread_id ?? null } }
+            }
+          ]
         case 'item.started':
           return itemStarted(msg.item ?? {})
         case 'item.completed':

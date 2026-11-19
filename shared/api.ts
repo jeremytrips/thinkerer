@@ -103,12 +103,22 @@ export interface ThinkererApi {
     providers(): Promise<ProviderStatus[]>
   }
   runs: {
-    start(projectId: string, prompt: string, provider: ProviderChoice, taskId?: string | null, attachmentIds?: string[]): Promise<RunSummary>
+    /** With a chatId, sends a follow-up in that chat (same provider and task; `provider` and `taskId` are ignored). */
+    start(
+      projectId: string,
+      prompt: string,
+      provider: ProviderChoice,
+      taskId?: string | null,
+      attachmentIds?: string[],
+      chatId?: string | null
+    ): Promise<RunSummary>
     cancel(runId: string): Promise<boolean>
     /** Live runs for the project, oldest first. */
     active(projectId: string): Promise<RunRecord[]>
     list(projectId: string): Promise<RunSummary[]>
     get(runId: string): Promise<RunRecord | null>
+    /** Every turn of a chat with its events, oldest first. */
+    chat(projectId: string, chatId: string): Promise<RunRecord[]>
     artifact(runId: string, name: string): Promise<string>
     attachment(runId: string, attachmentId: string): Promise<string>
     onEvent(cb: (runId: string, event: RunEvent) => void): () => void

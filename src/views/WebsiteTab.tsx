@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DevLogLine, PreviewEvent, Project, RunRecord } from '../../shared/types'
 import { api, errorMessage } from '../api'
-import { ArtifactGallery } from './AgentTab'
+import { ArtifactGallery } from './RunMedia'
 import { PreviewPane } from './PreviewPane'
 import { StatusPill, relativeTime } from './RunBits'
 

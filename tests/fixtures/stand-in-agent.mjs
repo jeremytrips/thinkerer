@@ -8,7 +8,7 @@ let input = ''
 process.stdin.on('data', (d) => (input += d))
 process.stdin.on('end', () => {
   const out = (o) => process.stdout.write(JSON.stringify(o) + '\n')
-  out({ type: 'system', subtype: 'init', model: 'stand-in' })
+  out({ type: 'system', subtype: 'init', model: 'stand-in', session_id: `session-${process.pid}` })
   out({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Write', input: { file_path: 'made.txt' } }] } })
   if (mode === 'hang') {
     // Spawn a grandchild so the test can check the whole tree is killed.

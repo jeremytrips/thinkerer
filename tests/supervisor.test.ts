@@ -125,6 +125,44 @@ describe('AgentSupervisor', () => {
     expect(sup.hasActiveRuns()).toBe(false)
   })
 
+  it('continues a chat: follow-ups resume the provider session and keep the chat, provider and task', async () => {
+    const tasks = new TaskStore()
+    const task = await tasks.create(repo, 'Chat task')
+    const seen: InvocationOptions[] = []
+    const sup = new AgentSupervisor(join(tmp, 'appdata'), projects, { adapters: [standIn('ok', '', seen)], tasks })
+    let finished = waitFor(sup, done)
+    const first = await sup.start(projectId, 'first message', 'auto', { taskId: task.id })
+    const firstDone = await finished
+    expect(first.chatId).toBe(first.id)
+    expect(firstDone.sessionId).toMatch(/^session-\d+$/)
+    expect(seen[0].resumeSessionId).toBeNull()
+
+    finished = waitFor(sup, done)
+    const second = await sup.start(projectId, 'follow-up', 'codex', { chatId: first.id })
+    const secondDone = await finished
+    expect(secondDone).toMatchObject({ chatId: first.id, provider: 'claude', taskId: task.id, status: 'succeeded' })
+    expect(secondDone.selection.rationale).toMatch(/Continuing this chat/)
+    expect(seen[1].resumeSessionId).toBe(firstDone.sessionId)
+    // Each turn is still its own checkpointed run.
+    expect(secondDone.checkpoint?.id).toBe(second.id)
+
+    const chat = await sup.getChat(projectId, first.id)
+    expect(chat.map((r) => r.id)).toEqual([first.id, second.id])
+    expect(chat[1].events.some((e) => /Continuing the conversation/.test(e.text))).toBe(true)
+    // A chat with no turns, or an invalid id, is refused.
+    await expect(sup.start(projectId, 'x', 'claude', { chatId: '00000000-0000-4000-8000-000000000000' })).rejects.toThrow(/Chat not found/)
+    await expect(sup.start(projectId, 'x', 'claude', { chatId: '../x' })).rejects.toThrow(/Invalid chat/)
+  })
+
+  it('refuses a follow-up while the chat is still working', async () => {
+    const sup = new AgentSupervisor(join(tmp, 'appdata'), projects, { adapters: [standIn('hang', join(tmp, 'p'))] })
+    const first = await sup.start(projectId, 'hang', 'claude')
+    await expect(sup.start(projectId, 'more', 'claude', { chatId: first.id })).rejects.toThrow(/still working/)
+    const finished = waitFor(sup, done)
+    sup.cancel(first.id)
+    await finished
+  })
+
   it('refuses a manually selected provider that is unavailable instead of switching silently', async () => {
     const sup = new AgentSupervisor(join(tmp, 'appdata'), projects, { adapters: [standIn('ok')] })
     await expect(sup.start(projectId, 'x', 'codex')).rejects.toThrow(/Codex is unavailable/)

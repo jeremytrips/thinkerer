@@ -84,11 +84,13 @@ const api: ThinkererApi = {
     providers: () => call('agents:providers')
   },
   runs: {
-    start: (projectId, prompt, provider, taskId, attachmentIds) => call('runs:start', projectId, prompt, provider, taskId ?? null, attachmentIds ?? []),
+    start: (projectId, prompt, provider, taskId, attachmentIds, chatId) =>
+      call('runs:start', projectId, prompt, provider, taskId ?? null, attachmentIds ?? [], chatId ?? null),
     cancel: (runId) => call('runs:cancel', runId),
     active: (projectId) => call('runs:active', projectId),
     list: (projectId) => call('runs:list', projectId),
     get: (runId) => call('runs:get', runId),
+    chat: (projectId, chatId) => call('runs:chat', projectId, chatId),
     artifact: (runId, name) => call('runs:artifact', runId, name),
     attachment: (runId, attachmentId) => call('runs:attachment', runId, attachmentId),
     onEvent: (cb) => subscribe<[string, RunEvent]>('runs:event', cb),

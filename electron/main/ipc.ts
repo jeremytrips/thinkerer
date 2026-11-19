@@ -292,7 +292,7 @@ export function registerIpc(deps: Deps): void {
 
   // Agent runs
   handle('agents:providers', () => supervisor.providers())
-  handle('runs:start', async (id: unknown, prompt: unknown, provider: unknown, taskId: unknown, attachmentIds: unknown) => {
+  handle('runs:start', async (id: unknown, prompt: unknown, provider: unknown, taskId: unknown, attachmentIds: unknown, chatId: unknown) => {
     if (!PROVIDERS.includes(provider as ProviderChoice)) throw new Error('Invalid provider')
     const projectId = str(id, 'project id', 100)
     const ids = attachmentIds === undefined || attachmentIds === null ? [] : attachmentIds
@@ -305,7 +305,8 @@ export function registerIpc(deps: Deps): void {
     })
     const summary = await supervisor.start(projectId, str(prompt, 'prompt', 100_000), provider as ProviderChoice, {
       taskId: taskId ? str(taskId, 'task id', 100) : null,
-      attachments
+      attachments,
+      chatId: chatId ? str(chatId, 'chat id', 100) : null
     })
     for (const a of attachments) captures.delete(a.id)
     return summary
@@ -314,6 +315,7 @@ export function registerIpc(deps: Deps): void {
   handle('runs:active', (id: unknown) => supervisor.activeRuns(str(id, 'project id', 100)))
   handle('runs:list', (id: unknown) => supervisor.listRuns(str(id, 'project id', 100)))
   handle('runs:get', (runId: unknown) => supervisor.getRun(str(runId, 'run id', 100)))
+  handle('runs:chat', (id: unknown, chatId: unknown) => supervisor.getChat(str(id, 'project id', 100), str(chatId, 'chat id', 100)))
   handle('runs:artifact', (runId: unknown, name: unknown) => supervisor.artifactDataUrl(str(runId, 'run id', 100), str(name, 'artifact', 200)))
   handle('runs:attachment', (runId: unknown, attachmentId: unknown) =>
     supervisor.attachmentDataUrl(str(runId, 'run id', 100), str(attachmentId, 'attachment id', 100))

@@ -202,10 +202,19 @@ export interface PreviewEvent {
   url?: string
 }
 
+/**
+ * One turn of a chat: the user's message and the agent's work on it. A chat is
+ * the runs sharing a chatId, oldest first; follow-ups resume the provider's
+ * session so the agent keeps the conversation.
+ */
 export interface RunRecord {
   id: string
   projectId: string
   projectPath: string
+  /** The chat this turn belongs to (the id of its first turn). Absent on older runs: a chat of one. */
+  chatId?: string
+  /** The provider's own session/thread id, as reported by its CLI. Used to resume the chat. */
+  sessionId?: string | null
   prompt: string
   taskId: string | null
   checkpoint: Checkpoint | null

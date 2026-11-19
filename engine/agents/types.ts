@@ -12,6 +12,8 @@ export interface Invocation {
 export interface ParsedUpdate {
   event?: Omit<RunEvent, 'at'>
   currentAction?: string
+  /** The CLI's session/thread id, for resuming the conversation in the next turn. */
+  sessionId?: string
   usage?: UsageObservation
   result?: { text: string; isError: boolean; denials: { tool: string; input: string }[] }
 }
@@ -31,6 +33,8 @@ export interface InvocationOptions {
   executable: string
   cwd: string
   prompt: string
+  /** Continue this provider session (a follow-up in a chat) instead of starting a new one. */
+  resumeSessionId?: string | null
   policy: RunPolicy
   /** The project's approved MCP servers — identical for every provider (spec F4). */
   mcp: ResolvedMcpServer[]

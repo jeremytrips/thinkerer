@@ -1,35 +1,30 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type {
   AppInfo,
   EffectiveMcp,
   PreviewCapture,
   Project,
-  PromptAttachment,
   ProviderChoice,
   ProviderStatus,
-  RunArtifact,
   RunEvent,
   RunRecord,
   RunSummary,
   Task
 } from '../../shared/types'
 import { api, errorMessage, loadState, saveState } from '../api'
-import { useOverlay } from '../overlay'
-import { ChangeList, RestoreDialog } from './Changes'
+import { RestoreDialog } from './Changes'
+import { ChatTurn, LIVE } from './ChatTurn'
 import { PreviewPane, type PreviewDevice } from './PreviewPane'
 import type { TabId } from './ProjectView'
 import { ProviderList, providerState } from './ProviderList'
-import { RestartButton } from './RestartButton'
-import { Elapsed, EventLine, StatusPill, UsageView, relativeTime } from './RunBits'
+import { StatusPill, relativeTime } from './RunBits'
 
-const LIVE: RunSummary['status'][] = ['queued', 'running', 'awaiting-approval']
-// Paths in Thinkerer's own repo that only take effect after a main-process restart.
-const NEEDS_RESTART = /^(electron|engine|shared|mcp)\/|^package\.json$|^electron\.vite\.config\.ts$/
 // Share of the split given to the chat when the preview is shown.
 const SPLIT_MIN = 0.25
 const SPLIT_MAX = 0.75
 const clampSplit = (v: number) => Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, v))
-const SIDE_WIDTH = 280 // .agent-side width in styles.css
+const SIDE_WIDTH = 260 // .agent-side width in styles.css
+const NEW = 'new' // draft key for the "New chat" composer
 
 // What the preview panel beside the chat can show. Add new surfaces here.
 type SurfaceId = 'web' | 'mobile'
@@ -58,13 +53,51 @@ interface Props {
   prefill?: AgentPrefill | null
 }
 
+/** A conversation: runs sharing a chatId, oldest first. */
+interface Chat {
+  id: string
+  title: string
+  turns: RunSummary[]
+  last: RunSummary
+  live: boolean
+}
+
+/** A message typed while the chat was working; it is sent when the agent finishes. */
+interface Queued {
+  text: string
+  attachments: PreviewCapture[]
+}
+
+const byCreated = (a: { createdAt: string }, b: { createdAt: string }) => a.createdAt.localeCompare(b.createdAt)
+const chatOf = (r: RunSummary) => r.chatId ?? r.id
+
+function groupChats(runs: RunSummary[]): Chat[] {
+  const by = new Map<string, RunSummary[]>()
+  for (const r of runs) by.set(chatOf(r), [...(by.get(chatOf(r)) ?? []), r])
+  return [...by.entries()]
+    .map(([id, list]) => {
+      const turns = list.sort(byCreated)
+      return { id, title: turns[0].prompt, turns, last: turns[turns.length - 1], live: turns.some((t) => LIVE.includes(t.status)) }
+    })
+    .sort((a, b) => byCreated(b.last, a.last))
+}
+
 export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   const [providers, setProviders] = useState<ProviderStatus[] | null>(null)
   const [choice, setChoice] = useState<ProviderChoice>(project.config!.agent.provider)
   const [runs, setRuns] = useState<RunSummary[]>([])
-  const [selected, setSelected] = useState<RunRecord | null>(null)
-  const selectedId = useRef<string | null>(null)
-  const [prompt, setPrompt] = useState('')
+  // The open chat (null: a new one) and its turns with their events.
+  const [chatId, setChatId] = useState<string | null>(null)
+  const chatRef = useRef<string | null>(null)
+  const [turns, setTurns] = useState<RunRecord[]>([])
+  const turnsRef = useRef<RunRecord[]>([])
+  turnsRef.current = turns
+  const fetching = useRef(new Set<string>())
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [queued, setQueued] = useState<Record<string, Queued>>({})
+  const sendingQueued = useRef(new Set<string>())
+  // The first message of a new chat, shown while its checkpoint is being saved.
+  const [pending, setPending] = useState<string | null>(null)
   const [taskId, setTaskId] = useState<string>('')
   const [tasks, setTasks] = useState<Task[]>([])
   const [mcp, setMcp] = useState<EffectiveMcp[]>([])
@@ -73,9 +106,6 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [restoreFor, setRestoreFor] = useState<RunRecord | null>(null)
-  const [retryAsk, setRetryAsk] = useState(false)
-  // Chat tabs stay open after their run finishes, until the user closes them.
-  const [openIds, setOpenIds] = useState<string[]>([])
   const [attachments, setAttachments] = useState<PreviewCapture[]>([])
   const [showPreview, setShowPreview] = useState(() => loadState('agent.preview', true))
   const [surface, setSurface] = useState<SurfaceId>(() => {
@@ -84,31 +114,51 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   })
   const [deviceId, setDeviceId] = useState(() => loadState('agent.device', DEVICES[0].id))
   const device = DEVICES.find((d) => d.id === deviceId) ?? DEVICES[0]
-  const [showHistory, setShowHistory] = useState(() => loadState('agent.history', false))
+  const [showChats, setShowChats] = useState(() => loadState('agent.chats', true))
   const [split, setSplit] = useState(() => clampSplit(loadState('agent.split', 0.5)))
   const [dragging, setDragging] = useState(false)
   const [reloadNonce, setReloadNonce] = useState(0)
-  const logEnd = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  // Follow new output only while the user is at the bottom of the transcript.
+  const stick = useRef(true)
   const sectionRef = useRef<HTMLElement>(null)
   const mainRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const reloadedFor = useRef(new Set<string>())
 
-  function select(record: RunRecord | null) {
-    selectedId.current = record?.id ?? null
-    setSelected(record)
-    setRetryAsk(false)
-    if (record) setOpenIds((cur) => (cur.includes(record.id) ? cur : [...cur, record.id]))
+  const chats = groupChats(runs)
+  const chat = chats.find((c) => c.id === chatId) ?? null
+  const liveChats = chats.filter((c) => c.live)
+  const anyLive = liveChats.length > 0
+  const draftKey = chatId ?? NEW
+  const draft = drafts[draftKey] ?? ''
+  const setDraft = (text: string, key = draftKey) => setDrafts((cur) => ({ ...cur, [key]: text }))
+
+  function openChat(id: string | null) {
+    chatRef.current = id
+    stick.current = true
+    setChatId(id)
+    setTurns([])
+    saveState(`agent.chat.${project.id}`, id)
+    if (!id) return
+    api.runs.chat(project.id, id).then(
+      (loaded) => chatRef.current === id && setTurns((cur) => [...loaded, ...cur.filter((t) => !loaded.some((l) => l.id === t.id))].sort(byCreated)),
+      (e) => setError(errorMessage(e))
+    )
   }
 
-  function closeTab(id: string) {
-    const idx = openIds.indexOf(id)
-    const rest = openIds.filter((x) => x !== id)
-    setOpenIds(rest)
-    if (selectedId.current !== id) return
-    const next = rest[Math.min(idx, rest.length - 1)]
-    if (next) void openRun(next)
-    else select(null)
+  /** Loads a turn of the open chat that the transcript doesn't have yet (a follow-up that just started). */
+  function ensureTurn(runId: string) {
+    if (fetching.current.has(runId) || turnsRef.current.some((t) => t.id === runId)) return
+    fetching.current.add(runId)
+    const forChat = chatRef.current
+    api.runs
+      .get(runId)
+      .then((rec) => {
+        if (!rec || chatRef.current !== forChat) return
+        setTurns((cur) => (cur.some((t) => t.id === rec.id) ? cur : [...cur, rec].sort(byCreated)))
+      }, () => {})
+      .finally(() => fetching.current.delete(runId))
   }
 
   const refreshContext = useCallback(() => {
@@ -118,21 +168,27 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   }, [project.id])
 
   useEffect(() => {
-    setOpenIds([])
     api.agents.providers().then(setProviders, (e) => setError(errorMessage(e)))
-    api.runs.list(project.id).then(setRuns, () => {})
     refreshContext()
-    // Re-attach to the newest live chat after a renderer reload.
-    api.runs.active(project.id).then((live) => live.length && select(live[live.length - 1]), () => {})
+    // Reopen the newest working chat (e.g. after a renderer reload), else the one open last time.
+    Promise.all([api.runs.list(project.id), api.runs.active(project.id)]).then(([list, live]) => {
+      setRuns(list)
+      const saved = loadState<string | null>(`agent.chat.${project.id}`, null)
+      const newest = live[live.length - 1]
+      if (newest) openChat(newest.chatId ?? newest.id)
+      else openChat(saved && list.some((r) => chatOf(r) === saved) ? saved : null)
+    }, () => openChat(null))
 
-    const offEvent = api.runs.onEvent((runId, event) => {
-      if (runId !== selectedId.current) return
-      setSelected((cur) => (cur && cur.id === runId ? { ...cur, events: [...cur.events, event] } : cur))
+    const offEvent = api.runs.onEvent((runId: string, event: RunEvent) => {
+      setTurns((cur) => (cur.some((t) => t.id === runId) ? cur.map((t) => (t.id === runId ? { ...t, events: [...t.events, event] } : t)) : cur))
     })
     const offUpdate = api.runs.onUpdate((summary) => {
       if (summary.projectId !== project.id) return
-      setRuns((cur) => [summary, ...cur.filter((r) => r.id !== summary.id)].sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
-      if (summary.id === selectedId.current) setSelected((cur) => (cur ? { ...cur, ...summary } : cur))
+      setRuns((cur) => [summary, ...cur.filter((r) => r.id !== summary.id)])
+      if (chatOf(summary) === chatRef.current) {
+        if (turnsRef.current.some((t) => t.id === summary.id)) setTurns((cur) => cur.map((t) => (t.id === summary.id ? { ...t, ...summary } : t)))
+        else ensureTurn(summary.id)
+      }
       if (summary.endedAt) refreshContext()
       // Show the result: reload the preview once when a run that changed files finishes.
       if (summary.endedAt && summary.changes?.length && !reloadedFor.current.has(summary.id)) {
@@ -148,60 +204,98 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
 
   useEffect(() => {
     if (!prefill) return
-    select(null)
-    setPrompt(prefill.prompt)
+    openChat(null)
+    setDraft(prefill.prompt, NEW)
     setTaskId(prefill.taskId)
   }, [prefill?.nonce])
 
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (el && stick.current) el.scrollTop = el.scrollHeight
+  }, [turns, chatId, pending, queued])
+
+  // Send queued follow-ups once their chat finishes. A stopped chat gives the message back instead.
   useEffect(() => {
-    if (selected && LIVE.includes(selected.status)) logEnd.current?.scrollIntoView({ block: 'end' })
-  }, [selected?.events.length, selected?.status])
+    for (const [id, q] of Object.entries(queued)) {
+      const c = chats.find((x) => x.id === id)
+      if (!c || c.live || sendingQueued.current.has(id)) continue
+      sendingQueued.current.add(id)
+      setQueued(({ [id]: _sent, ...rest }) => rest)
+      if (c.last.status === 'cancelled') {
+        giveBack(id, q)
+        sendingQueued.current.delete(id)
+        continue
+      }
+      void send(id, q.text, q.attachments)
+        .then((ok) => ok || giveBack(id, q))
+        .finally(() => sendingQueued.current.delete(id))
+    }
+  }, [runs, queued])
 
-  // Chats that are still working, oldest first; each one is a separate agent run.
-  const liveRuns = runs.filter((r) => LIVE.includes(r.status)).reverse()
-  const anyLive = liveRuns.length > 0
-  const liveKey = liveRuns.map((r) => r.id).join()
-
-  // Every live chat gets a tab; finished ones keep theirs until closed.
-  useEffect(() => {
-    setOpenIds((cur) => {
-      const add = liveRuns.map((r) => r.id).filter((id) => !cur.includes(id))
-      return add.length ? [...cur, ...add] : cur
-    })
-  }, [liveKey])
-
-  const chatTabs = openIds
-    .map((id) => runs.find((r) => r.id === id) ?? (selected?.id === id ? selected : null))
-    .filter((r): r is RunSummary => !!r)
+  /** Puts an unsent message back into its chat's composer. */
+  function giveBack(id: string, q: Queued) {
+    setDrafts((cur) => ({ ...cur, [id]: cur[id]?.trim() ? `${q.text}\n\n${cur[id]}` : q.text }))
+    if (q.attachments.length) setAttachments((cur) => [...q.attachments, ...cur])
+  }
 
   function cancel(runId: string) {
     api.runs.cancel(runId).catch((e) => setError(errorMessage(e)))
   }
 
-  /** Retries pass the old prompt and don't take the composer's screenshots with them. */
-  async function start(text = prompt, attach = attachments) {
-    if (!text.trim() || starting) return
-    setStarting(true)
+  /** Starts a run: a new chat when `target` is null, else a follow-up in that chat. */
+  async function send(target: string | null, text: string, attach: PreviewCapture[]): Promise<boolean> {
     setError(null)
     setNotice(null)
     try {
-      const summary = await api.runs.start(project.id, text, choice, taskId || null, attach.map((a) => a.id))
-      if (text === prompt) setPrompt('')
-      if (attach.length) setAttachments((cur) => cur.filter((a) => !attach.includes(a)))
-      select(await api.runs.get(summary.id))
+      const summary = await api.runs.start(project.id, text, choice, target ? null : taskId || null, attach.map((a) => a.id), target)
+      if (!target) {
+        setTaskId('')
+        openChat(chatOf(summary))
+      } else if (chatRef.current === target) {
+        stick.current = true
+        ensureTurn(summary.id)
+      }
+      return true
     } catch (err) {
       setError(errorMessage(err))
-    } finally {
-      setStarting(false)
+      return false
     }
   }
 
-  async function openRun(id: string) {
-    try {
-      select(await api.runs.get(id))
-    } catch (err) {
-      setError(errorMessage(err))
+  function submit() {
+    const text = draft
+    if (!text.trim() || starting || isGit === false) return
+    const target = chatId
+    const attach = attachments
+    setDraft('')
+    setAttachments([])
+    if (target && chat?.live) {
+      setQueued((cur) => ({
+        ...cur,
+        [target]: cur[target] ? { text: `${cur[target].text}\n\n${text}`, attachments: [...cur[target].attachments, ...attach] } : { text, attachments: attach }
+      }))
+      return
     }
+    setStarting(true)
+    if (!target) setPending(text)
+    void send(target, text, attach)
+      .then((ok) => ok || giveBack(target ?? NEW, { text, attachments: attach }))
+      .finally(() => {
+        setStarting(false)
+        setPending(null)
+      })
+  }
+
+  function unqueue(id: string) {
+    const q = queued[id]
+    if (!q) return
+    setQueued(({ [id]: _removed, ...rest }) => rest)
+    giveBack(id, q)
+    composerRef.current?.focus()
+  }
+
+  function retry(turn: RunRecord) {
+    void send(chatOf(turn), turn.prompt, [])
   }
 
   function attach(capture: PreviewCapture) {
@@ -228,11 +322,11 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
     saveState('agent.device', id)
   }
 
-  function toggleHistory() {
-    setShowHistory((v) => (saveState('agent.history', !v), !v))
+  function toggleChats() {
+    setShowChats((v) => (saveState('agent.chats', !v), !v))
   }
 
-  /** The split covers everything right of the history panel: chat, divider, preview. */
+  /** The split covers everything right of the chat list: chat, divider, preview. */
   function resizeTo(clientX: number) {
     const left = mainRef.current?.getBoundingClientRect().left
     const right = sectionRef.current?.getBoundingClientRect().right
@@ -266,32 +360,40 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
     }
   }
 
-  const finished = selected && !LIVE.includes(selected.status)
-  const changes = selected?.changes ?? null
-  const needsRestart = isSelf && changes?.some((c) => NEEDS_RESTART.test(c.path))
-  const rendererChanged = isSelf && changes?.some((c) => c.path.startsWith('src/'))
-  const effective = mcp.find((m) => m.provider === (choice === 'auto' ? 'claude' : choice))
+  const chatProvider = chat ? chat.last.provider : choice === 'auto' ? 'claude' : choice
+  const effective = mcp.find((m) => m.provider === chatProvider)
   const includedTools = effective?.servers.filter((s) => s.included) ?? []
   const excludedTools = effective?.servers.filter((s) => !s.included) ?? []
-  const agentPage = selected ? lastAgentPage(selected.events) : null
+  const agentPage = lastAgentPage(turns.flatMap((t) => t.events))
+  const chatTask = chat?.turns[0].taskId ? (tasks.find((t) => t.id === chat.turns[0].taskId)?.title ?? 'removed task') : null
+  const waiting = chatId ? queued[chatId] : undefined
+  const liveTurn = turns.find((t) => LIVE.includes(t.status))
 
   return (
     <section className={dragging ? 'agent dragging' : 'agent'} ref={sectionRef}>
-      {showHistory && (
-        <aside className="agent-side" aria-label="Run history and providers">
-          <h3>Run history</h3>
-          {runs.length === 0 ? (
-            <p className="muted small">No runs yet.</p>
+      {showChats && (
+        <aside className="agent-side" aria-label="Chats and providers">
+          <button type="button" className={chatId === null ? 'new-chat active' : 'new-chat'} onClick={() => (openChat(null), composerRef.current?.focus())}>
+            + New chat
+          </button>
+          {chats.length === 0 ? (
+            <p className="muted small">No chats yet.</p>
           ) : (
-            <ul className="history">
-              {runs.map((r) => (
-                <li key={r.id}>
-                  <button className={selected?.id === r.id ? 'history-item active' : 'history-item'} onClick={() => openRun(r.id)}>
-                    <span className="ellipsis">{r.prompt}</span>
+            <ul className="history" aria-label="Chats">
+              {chats.map((c) => (
+                <li key={c.id}>
+                  <button
+                    className={chatId === c.id ? 'history-item active' : 'history-item'}
+                    aria-current={chatId === c.id ? 'true' : undefined}
+                    onClick={() => chatId !== c.id && openChat(c.id)}
+                    title={c.title}
+                  >
+                    <span className="ellipsis">{c.title}</span>
                     <span className="row small">
-                      <StatusPill status={r.status} />
-                      <span className="muted">{relativeTime(r.createdAt)}</span>
-                      {r.changes && r.changes.length > 0 && <span className="muted">{r.changes.length} file{r.changes.length === 1 ? '' : 's'}</span>}
+                      {c.live ? <span className="spinner" aria-label="Working" /> : <StatusPill status={c.last.status} />}
+                      <span className="muted">{relativeTime(c.last.createdAt)}</span>
+                      {c.turns.length > 1 && <span className="muted">{c.turns.length} messages</span>}
+                      {queued[c.id] && <span className="muted">· 1 queued</span>}
                     </span>
                   </button>
                 </li>
@@ -304,23 +406,12 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
         </aside>
       )}
 
-      <div className="agent-main" ref={mainRef} style={showPreview ? { flex: `0 0 calc((100% - ${showHistory ? SIDE_WIDTH : 0}px) * ${split})` } : undefined}>
+      <div className="agent-main" ref={mainRef} style={showPreview ? { flex: `0 0 calc((100% - ${showChats ? SIDE_WIDTH : 0}px) * ${split})` } : undefined}>
         <div className="agent-head">
-          <h1>Agent</h1>
+          <h1 className="chat-title ellipsis" title={chat?.title}>{chat ? chat.title : 'New chat'}</h1>
           <div className="row">
-            <label className="inline">
-              Provider
-              <select value={choice} onChange={(e) => setChoice(e.target.value as ProviderChoice)}>
-                <option value="auto">Auto</option>
-                {(providers ?? []).map((p) => (
-                  <option key={p.id} value={p.id} disabled={providerState(p).tone === 'off'}>
-                    {p.label} {providerState(p).tone === 'ok' ? '' : `(${providerState(p).label.toLowerCase()})`}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button type="button" className={showHistory ? 'small toggle on' : 'small toggle'} aria-pressed={showHistory} onClick={toggleHistory}>
-              History
+            <button type="button" className={showChats ? 'small toggle on' : 'small toggle'} aria-pressed={showChats} onClick={toggleChats}>
+              Chats
             </button>
             <button type="button" className={showPreview ? 'small toggle on' : 'small toggle'} aria-pressed={showPreview} onClick={togglePreview}>
               Preview
@@ -330,184 +421,96 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
 
         {isGit === false && (
           <div className="banner banner-info row space">
-            <span>Agents need Git so Thinkerer can checkpoint the folder before every run and let you roll back.</span>
+            <span>Agents need Git so Thinkerer can checkpoint the folder before every message and let you roll back.</span>
             <button className="small primary" onClick={initGit}>Initialize Git repository</button>
           </div>
         )}
-        {error && <div className="banner banner-error">{error}</div>}
-        {notice && <div className="banner banner-info">{notice}</div>}
 
-        {(chatTabs.length > 0 || selected) && (
-          <div className="chat-tabs" role="tablist" aria-label="Chats">
-            {chatTabs.map((r) => (
-              <div key={r.id} className={selected?.id === r.id ? 'chat-tab-wrap active' : 'chat-tab-wrap'}>
-                <button
-                  role="tab"
-                  aria-selected={selected?.id === r.id}
-                  className="chat-tab"
-                  onClick={() => selected?.id !== r.id && openRun(r.id)}
-                  title={r.prompt}
-                >
-                  {LIVE.includes(r.status) ? <span className="spinner" aria-label="Running" /> : <StatusPill status={r.status} />}
-                  <span className="ellipsis">{r.prompt}</span>
-                </button>
-                {!LIVE.includes(r.status) && (
-                  <button type="button" className="chat-tab-close" onClick={() => closeTab(r.id)} aria-label={`Close chat: ${r.prompt.slice(0, 60)}`} title="Close chat">
-                    ×
-                  </button>
+        <div
+          className="transcript"
+          ref={scrollRef}
+          onScroll={(e) => {
+            const el = e.currentTarget
+            stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+          }}
+        >
+          {!chatId ? (
+            pending ? (
+              <article className="turn">
+                <div className="bubble-user">{pending}</div>
+                <div className="agent-reply">
+                  <div className="working">
+                    <span className="spinner" aria-hidden /> <span className="mono">Saving a checkpoint…</span>
+                  </div>
+                </div>
+              </article>
+            ) : (
+              <div className="empty">
+                <p className="muted">
+                  Describe a change. The agent works directly in <span className="mono">{project.path}</span>, and you can keep talking to it
+                  in this chat. A Git checkpoint is saved before every message, so each one can be reviewed and rolled back.
+                </p>
+                {anyLive && (
+                  <p className="muted">
+                    {liveChats.length} chat{liveChats.length === 1 ? ' is' : 's are'} already working in this folder. A new chat runs alongside{' '}
+                    {liveChats.length === 1 ? 'it' : 'them'}, so give them separate areas of the code to avoid conflicting edits.
+                  </p>
                 )}
               </div>
-            ))}
-            <button role="tab" aria-selected={!selected} className={!selected ? 'chat-tab active' : 'chat-tab'} onClick={() => select(null)}>
-              + New chat
-            </button>
-          </div>
-        )}
-
-        <div className="run-view">
-          {!selected ? (
-            <div className="empty">
-              <p className="muted">
-                Describe a change. The agent works directly in <span className="mono">{project.path}</span>. A Git checkpoint
-                is saved before it starts, so every run can be reviewed and rolled back.
-              </p>
-              {anyLive && (
-                <p className="muted">
-                  {liveRuns.length} chat{liveRuns.length === 1 ? ' is' : 's are'} already running in this folder. A new chat runs
-                  alongside {liveRuns.length === 1 ? 'it' : 'them'}, so give them separate areas of the code to avoid conflicting edits.
-                </p>
-              )}
-            </div>
+            )
           ) : (
             <>
-              <div className="bubble-user">
-                {selected.prompt}
-                {(selected.attachments?.length ?? 0) > 0 && <SentAttachments runId={selected.id} attachments={selected.attachments!} />}
-              </div>
-              <div className="run-meta">
-                <StatusPill status={selected.status} />
-                <span>{selected.provider === 'claude' ? 'Claude Code' : 'Codex'}</span>
-                <span className="muted">·</span>
-                <Elapsed startedAt={selected.startedAt} endedAt={selected.endedAt} />
-                {selected.exitCode !== null && <span className="muted">· exit {selected.exitCode}</span>}
-                <span className="muted">·</span>
-                <UsageView usage={selected.usage} />
-                {LIVE.includes(selected.status) && (
-                  <button type="button" className="small danger push-right" onClick={() => cancel(selected.id)}>
-                    Stop run
-                  </button>
-                )}
-              </div>
-              <div className="small muted">
-                {selected.selection.rationale}
-                {selected.taskId && <> · task: {tasks.find((t) => t.id === selected.taskId)?.title ?? 'removed task'}</>}
-              </div>
-              {agentPage && (
-                <div className="agent-page small">
-                  <span className="muted">Agent’s browser is on</span>
-                  <span className="mono ellipsis" title={agentPage}>{agentPage}</span>
-                  <button type="button" className="small" onClick={() => void showInPreview(agentPage)}>
-                    Show in my preview
-                  </button>
-                </div>
-              )}
-              {selected.currentAction && LIVE.includes(selected.status) && (
-                <div className="current-action">
-                  <span className="spinner" aria-hidden /> {selected.currentAction}
-                </div>
-              )}
-              <div className="events">
-                {selected.events.map((e, i) => <EventLine key={i} event={e} root={project.path} />)}
-                <div ref={logEnd} />
-              </div>
-
-              {selected.artifacts.length > 0 && <ArtifactGallery runId={selected.id} artifacts={selected.artifacts} />}
-
-              {finished && (
-                <div className="run-summary card">
-                  {selected.resultText && !selected.events.some((e) => e.kind === 'text' && e.text.trim() === selected.resultText!.trim()) && (
-                    <>
-                      <h3>Agent summary</h3>
-                      <div className="ev-text">{selected.resultText}</div>
-                    </>
-                  )}
-                  {selected.error && <div className="banner banner-error">{selected.error}</div>}
-                  {selected.permissionDenials.length > 0 && (
-                    <>
-                      <h3>Denied by policy</h3>
-                      <ul className="mono small">
-                        {selected.permissionDenials.map((d, i) => <li key={i}>{d.tool}: {d.input}</li>)}
-                      </ul>
-                    </>
-                  )}
-                  <h3>Changes made by this run</h3>
-                  {(selected.concurrentRunIds?.length ?? 0) > 0 && (
-                    <div className="banner banner-info">
-                      Ran alongside {selected.concurrentRunIds!.length} other chat{selected.concurrentRunIds!.length === 1 ? '' : 's'} in
-                      this folder, so this list and its checkpoint may include their edits too.
-                    </div>
-                  )}
-                  {changes === null ? (
-                    <p className="muted">Not recorded for this run.</p>
-                  ) : changes.length === 0 ? (
-                    <p className="muted">No files changed.</p>
-                  ) : (
-                    <ChangeList changes={changes} loadDiff={(path) => api.git.runDiff(project.id, selected.id, path)} />
-                  )}
-
-                  <div className="row run-actions">
-                    {selected.checkpoint && (
-                      <button
-                        className="small"
-                        onClick={() => setRestoreFor(selected)}
-                        disabled={anyLive}
-                        title={anyLive ? 'Stop or wait for the running chats first' : undefined}
-                      >
-                        Restore checkpoint…
-                      </button>
-                    )}
-                    {(selected.status === 'failed' || selected.status === 'cancelled') && !retryAsk && (
-                      <button
-                        className="small"
-                        onClick={() => (changes && changes.length > 0 ? setRetryAsk(true) : void start(selected.prompt, []))}
-                      >
-                        Retry
-                      </button>
+              {turns.map((t, i) => (
+                <ChatTurn
+                  key={t.id}
+                  turn={t}
+                  projectId={project.id}
+                  root={project.path}
+                  isLast={i === turns.length - 1}
+                  anyLive={anyLive}
+                  info={info}
+                  isSelf={isSelf}
+                  taskTitle={chatTask}
+                  onRestore={setRestoreFor}
+                  onRetry={retry}
+                  onCancel={cancel}
+                />
+              ))}
+              {waiting && (
+                <article className="turn queued">
+                  <div className="bubble-user">
+                    {waiting.text}
+                    {waiting.attachments.length > 0 && (
+                      <div className="small muted">+ {waiting.attachments.length} screenshot{waiting.attachments.length === 1 ? '' : 's'}</div>
                     )}
                   </div>
-                  {retryAsk && (
-                    <div className="banner banner-info">
-                      <p>
-                        This run already changed {changes!.length} file{changes!.length === 1 ? '' : 's'}. Retrying won’t undo them.
-                      </p>
-                      <div className="row">
-                        <button className="small" onClick={() => setRetryAsk(false)}>Cancel</button>
-                        <button className="small" onClick={() => setRestoreFor(selected)} disabled={anyLive}>Restore checkpoint first…</button>
-                        <button className="small primary" onClick={() => void start(selected.prompt, [])}>
-                          Retry on top with {choice === 'auto' ? 'Auto' : choice === 'claude' ? 'Claude Code' : 'Codex'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {needsRestart && (
-                    <div className="banner banner-info row space">
-                      <span>This run changed Electron main/preload/engine code. Restart Thinkerer to load it.</span>
-                      <RestartButton info={info} label="Restart now" />
-                    </div>
-                  )}
-                  {rendererChanged && !needsRestart && <div className="banner banner-info">UI changes were hot-reloaded into this window.</div>}
-                </div>
+                  <div className="queued-note small muted">
+                    Queued · sends when the agent finishes
+                    <button type="button" className="link small" onClick={() => unqueue(chatId)}>Edit</button>
+                  </div>
+                </article>
               )}
             </>
           )}
         </div>
 
+        {error && <div className="banner banner-error">{error}</div>}
+        {notice && <div className="banner banner-info">{notice}</div>}
+        {agentPage && (
+          <div className="agent-page small">
+            <span className="muted">Agent’s browser is on</span>
+            <span className="mono ellipsis" title={agentPage}>{agentPage}</span>
+            <button type="button" className="small" onClick={() => void showInPreview(agentPage)}>
+              Show in my preview
+            </button>
+          </div>
+        )}
+
         <form
           className="composer"
           onSubmit={(e) => {
             e.preventDefault()
-            void start()
+            submit()
           }}
         >
           {attachments.length > 0 && (
@@ -526,46 +529,77 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
               ))}
             </ul>
           )}
-          <textarea
-            ref={composerRef}
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault()
-                void start()
+          <div className="composer-box">
+            <textarea
+              ref={composerRef}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                // Enter sends; Shift+Enter is a new line. Not while an IME is composing.
+                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault()
+                  submit()
+                }
+              }}
+              placeholder={
+                chat?.live
+                  ? 'Queue a follow-up for when the agent finishes…'
+                  : chat
+                    ? 'Reply to the agent…'
+                    : attachments.length
+                      ? 'Describe what to change on this page…'
+                      : 'Describe a change, e.g. “Add a visible About dialog, and test that it opens.”'
               }
-            }}
-            placeholder={
-              attachments.length
-                ? 'Describe what to change on this page…'
-                : anyLive
-                  ? 'Start another chat in parallel…'
-                  : 'e.g. Add a visible About Thinkerer dialog, and test that it opens.'
-            }
-            disabled={isGit === false}
-            rows={3}
-            aria-label="Instruction for the agent"
-          />
-          <div className="row space">
-            <div className="row small">
-              <label className="inline">
-                Task
-                <select value={taskId} onChange={(e) => setTaskId(e.target.value)}>
-                  <option value="">None</option>
-                  {tasks.filter((t) => t.status !== 'done').map((t) => (
-                    <option key={t.id} value={t.id}>{t.title}</option>
-                  ))}
-                </select>
-              </label>
-              <button type="button" className="link small" onClick={() => onTab('mcp')} title="Tools this provider will receive">
-                MCP tools: {includedTools.length ? includedTools.map((s) => s.id).join(', ') : 'none'}
-                {excludedTools.length > 0 && ` (${excludedTools.length} unavailable)`}
+              disabled={isGit === false}
+              rows={2}
+              aria-label="Message to the agent"
+            />
+            <div className="composer-actions">
+              {liveTurn && (
+                <button type="button" className="small danger" onClick={() => cancel(liveTurn.id)}>
+                  Stop
+                </button>
+              )}
+              <button type="submit" className="primary small" disabled={!draft.trim() || starting || isGit === false}>
+                {starting ? 'Sending…' : chat?.live ? 'Queue' : 'Send'}
               </button>
             </div>
-            <button type="submit" className="primary" disabled={!prompt.trim() || starting || isGit === false}>
-              {starting ? 'Starting…' : anyLive ? 'Run in parallel' : 'Run agent'}
+          </div>
+          <div className="row small composer-foot">
+            {chat ? (
+              <span className="muted">
+                {chat.last.provider === 'claude' ? 'Claude Code' : 'Codex'}
+                {chatTask && <> · task: {chatTask}</>}
+              </span>
+            ) : (
+              <>
+                <label className="inline">
+                  Provider
+                  <select value={choice} onChange={(e) => setChoice(e.target.value as ProviderChoice)}>
+                    <option value="auto">Auto</option>
+                    {(providers ?? []).map((p) => (
+                      <option key={p.id} value={p.id} disabled={providerState(p).tone === 'off'}>
+                        {p.label} {providerState(p).tone === 'ok' ? '' : `(${providerState(p).label.toLowerCase()})`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="inline">
+                  Task
+                  <select value={taskId} onChange={(e) => setTaskId(e.target.value)}>
+                    <option value="">None</option>
+                    {tasks.filter((t) => t.status !== 'done').map((t) => (
+                      <option key={t.id} value={t.id}>{t.title}</option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            )}
+            <button type="button" className="link small" onClick={() => onTab('mcp')} title="Tools this provider will receive">
+              MCP tools: {includedTools.length ? includedTools.map((s) => s.id).join(', ') : 'none'}
+              {excludedTools.length > 0 && ` (${excludedTools.length} unavailable)`}
             </button>
+            <span className="muted push-right">Enter to send · Shift+Enter for a new line</span>
           </div>
         </form>
       </div>
@@ -637,74 +671,12 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
           onClose={() => setRestoreFor(null)}
           onRestored={(msg) => {
             setRestoreFor(null)
-            setRetryAsk(false)
             setNotice(msg)
             refreshContext()
           }}
         />
       )}
     </section>
-  )
-}
-
-/** Screenshots captured by the agent's browser during the run. */
-export function ArtifactGallery({ runId, artifacts }: { runId: string; artifacts: RunArtifact[] }) {
-  const [urls, setUrls] = useState<Record<string, string>>({})
-  const [zoom, setZoom] = useState<string | null>(null)
-  const requested = useRef(new Set<string>())
-
-  useEffect(() => {
-    for (const a of artifacts) {
-      const key = `${runId}/${a.name}`
-      if (requested.current.has(key)) continue
-      requested.current.add(key)
-      api.runs.artifact(runId, a.name).then((u) => setUrls((cur) => ({ ...cur, [a.name]: u })), () => {})
-    }
-  }, [runId, artifacts])
-
-  return (
-    <div className="artifacts card">
-      <h3>Browser screenshots ({artifacts.length})</h3>
-      <div className="artifact-grid">
-        {artifacts.map((a) => (
-          <button key={a.name} className="artifact" onClick={() => setZoom(a.name)} title={a.name}>
-            {urls[a.name] ? <img src={urls[a.name]} alt={`Screenshot ${a.name}`} /> : <span className="muted small">Loading…</span>}
-            <span className="small mono ellipsis">{a.name}</span>
-          </button>
-        ))}
-      </div>
-      {zoom && urls[zoom] && <ZoomedImage src={urls[zoom]} alt={`Screenshot ${zoom}`} onClose={() => setZoom(null)} />}
-    </div>
-  )
-}
-
-function ZoomedImage({ src, alt, onClose }: { src: string; alt: string; onClose: () => void }) {
-  useOverlay()
-  return (
-    <div className="modal-backdrop" role="presentation" onClick={onClose}>
-      <img className="artifact-zoom" src={src} alt={alt} />
-    </div>
-  )
-}
-
-/** Preview screenshots the user sent with a prompt, shown in their message. */
-function SentAttachments({ runId, attachments }: { runId: string; attachments: PromptAttachment[] }) {
-  const [urls, setUrls] = useState<Record<string, string>>({})
-  const [zoom, setZoom] = useState<string | null>(null)
-
-  useEffect(() => {
-    for (const a of attachments) api.runs.attachment(runId, a.id).then((u) => setUrls((cur) => ({ ...cur, [a.id]: u })), () => {})
-  }, [runId, attachments.length])
-
-  return (
-    <div className="sent-attachments">
-      {attachments.map((a) => (
-        <button key={a.id} type="button" className="sent-attachment" onClick={() => setZoom(a.id)} title={[a.url, ...a.consoleErrors].filter(Boolean).join('\n')}>
-          {urls[a.id] ? <img src={urls[a.id]} alt={`Screenshot of ${a.url ?? 'the preview'}`} /> : <span className="muted small">Loading…</span>}
-        </button>
-      ))}
-      {zoom && urls[zoom] && <ZoomedImage src={urls[zoom]} alt="Sent screenshot" onClose={() => setZoom(null)} />}
-    </div>
   )
 }
 

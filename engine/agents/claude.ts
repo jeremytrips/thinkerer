@@ -35,11 +35,12 @@ export const claudeAdapter: AgentAdapter = {
     return { ...base, installed: true, executable, version: version.code === 0 ? version.stdout.trim() : null, authenticated, detail }
   },
 
-  buildInvocation({ executable, prompt, policy, mcp, secretEnv }) {
+  buildInvocation({ executable, prompt, resumeSessionId, policy, mcp, secretEnv }) {
     return {
       command: executable,
       args: [
         '-p',
+        ...(resumeSessionId ? ['--resume', resumeSessionId] : []),
         '--output-format', 'stream-json',
         '--verbose',
         '--restricted',
@@ -91,7 +92,12 @@ export function parseClaudeLine(line: string): ParsedUpdate[] {
   switch (msg.type) {
     case 'system':
       if (msg.subtype === 'init') {
-        return [{ event: { kind: 'status', text: `Session started · model ${msg.model ?? 'unknown'}`, meta: { model: msg.model ?? null } } }]
+        return [
+          {
+            sessionId: typeof msg.session_id === 'string' ? msg.session_id : undefined,
+            event: { kind: 'status', text: `Session started · model ${msg.model ?? 'unknown'}`, meta: { model: msg.model ?? null } }
+          }
+        ]
       }
       return []
     case 'assistant':
