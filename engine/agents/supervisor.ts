@@ -1,9 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { copyFile, mkdir, readdir, readFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type {
+  ChatRecord,
   Project,
   PromptAttachment,
   ProviderChoice,
@@ -15,20 +16,33 @@ import type {
   RunSummary,
   UsageObservation
 } from '../../shared/types'
+import { Approvals } from '../approvals'
 import { ATTACHMENT_ID, attachmentPath, attachmentRelPath, removeAttachment } from '../attachments'
+import { ChatStore, chatTitle, newChat } from '../chats'
 import { createCheckpoint, diffSummary, recordAfter } from '../checkpoints'
 import { gitStatus } from '../git'
 import type { McpRegistry, McpRunContext, ResolvedMcpServer } from '../mcp'
 import type { ProjectService } from '../projects'
 import { readJson, writeJson } from '../store'
 import type { TaskStore } from '../tasks'
+import {
+  allocatePorts,
+  commitAll,
+  composeProjectName,
+  createWorktree,
+  currentBranch,
+  headCommit,
+  resolvePreviewUrl,
+  runHook,
+  worktreeEnv
+} from '../worktrees'
 import { claudeAdapter } from './claude'
 import { codexAdapter } from './codex'
 import type { AgentAdapter, RunPolicy } from './types'
 
 const MAX_EVENTS = 5000
 const KILL_GRACE_MS = 3000
-/** Parallel runs (chats) allowed per project. They share the project folder. */
+/** Parallel runs (chats) allowed per project. Each chat has its own worktree. */
 export const MAX_PARALLEL_RUNS = 4
 const RUN_ID = /^[0-9a-f-]{36}$/
 const IMAGE_TYPES: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' }
@@ -49,7 +63,7 @@ export const DEFAULT_POLICY: RunPolicy = {
   ],
   appendSystemPrompt: [
     'You are running inside Thinkerer, a desktop app that supervises coding agents.',
-    'Your working directory is the selected project; stay inside it.',
+    'Stay inside your working directory.',
     'Never push, deploy, publish, or purchase anything. Do not commit unless explicitly asked.',
     'If a command or file access is denied, say so instead of trying workarounds.',
     'Finish with a short summary of what you changed and how you verified it.'
@@ -63,6 +77,16 @@ interface ActiveRun {
   killTimer: NodeJS.Timeout | null
   /** Provider session this turn continues; null for a chat's first turn (or when it can't be resumed). */
   resumeSessionId: string | null
+  /** A new chat gets a worktree; false in a repo with no commits (it works in the project folder). */
+  wantsWorktree: boolean
+}
+
+/** Where a turn runs and what it gets: the chat's worktree, ports and preview, or the project folder. */
+interface Workspace {
+  chat: ChatRecord | null
+  cwd: string
+  env: Record<string, string>
+  previewUrl: string | null
 }
 
 export interface SupervisorOptions {
@@ -71,6 +95,8 @@ export interface SupervisorOptions {
   tasks?: TaskStore
   /** MCP servers come from the registry; without it, runs get none. */
   mcp?: { registry: McpRegistry; context: () => Promise<Omit<McpRunContext, 'artifactsDir'>> }
+  chats?: ChatStore
+  approvals?: Approvals
 }
 
 export interface StartOptions {
@@ -89,10 +115,12 @@ export interface SupervisorEvents {
 /**
  * Owns provider CLI processes. A run is one turn of a chat; a follow-up turn
  * resumes the provider session of the chat's latest turn, so the agent keeps the
- * conversation, and still gets its own checkpoint. Several runs may work in the same project folder
- * at once (up to MAX_PARALLEL_RUNS); runs that overlap in time are recorded in
- * `concurrentRunIds`, because their checkpoints and diffs can then include each
- * other's edits. Every run is recorded to <appData>/runs/<id>.json.
+ * conversation, and still gets its own checkpoint. Each chat works in its own Git
+ * worktree and branch (set up by the project's setup hook, with its own ports),
+ * and Thinkerer commits every turn's changes there. Chats that work in the
+ * project folder (older chats, or a repo with no commits) can overlap; such runs
+ * are recorded in `concurrentRunIds`, because their checkpoints and diffs can
+ * then include each other's edits. Every run is recorded to <appData>/runs/<id>.json.
  */
 export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
   private readonly runsDir: string
@@ -102,6 +130,9 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
   private readonly cooldownUntil = new Map<ProviderId, number>()
   private readonly adapters: Partial<Record<ProviderId, AgentAdapter>> = {}
   private readonly policy: RunPolicy
+  private readonly worktreesDir: string
+  private readonly approvals: Approvals
+  readonly chats: ChatStore
 
   constructor(
     appDataDir: string,
@@ -110,6 +141,9 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
   ) {
     super()
     this.runsDir = join(appDataDir, 'runs')
+    this.worktreesDir = join(appDataDir, 'worktrees')
+    this.chats = opts.chats ?? new ChatStore(appDataDir)
+    this.approvals = opts.approvals ?? new Approvals(appDataDir)
     this.policy = opts.policy ?? DEFAULT_POLICY
     for (const a of opts.adapters ?? [claudeAdapter, codexAdapter]) this.adapters[a.id] = a
   }
@@ -143,17 +177,24 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       if (!gitBefore) {
         throw new Error('This project is not a Git repository. Initialize Git so Thinkerer can checkpoint the folder before an agent edits it.')
       }
+      const stored = chatId ? await this.chats.get(chatId) : null
+      if (stored?.worktreeRemoved) throw new Error('This chat is finished and its worktree was removed; start a new chat')
       const chat = chatId ? await this.continuation(projectId, chatId) : null
+      // A worktree needs a branch with a commit to start from.
+      const wantsWorktree = chatId ? !!stored?.worktree || stored?.state === 'setting-up' : !!(await currentBranch(project.path)) && !!(await headCommit(project.path))
       const selected = await this.selectProvider(chat ? chat.provider : requested)
       const { provider, status } = selected
       const rationale = chat ? `Continuing this chat with ${this.adapters[provider]!.label}` : selected.rationale
       const now = new Date().toISOString()
-      const others = this.activeRuns(projectId)
+      // Only runs in the same folder can see each other's edits.
+      const others = wantsWorktree ? [] : this.activeRuns(projectId).filter((r) => !r.cwd || r.cwd === project.path)
       const id = randomUUID()
       const record: RunRecord = {
         id,
         projectId,
         projectPath: project.path,
+        cwd: project.path,
+        commit: null,
         chatId: chatId ?? id,
         sessionId: null,
         prompt,
@@ -181,7 +222,8 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
         concurrentRunIds: others.map((r) => r.id),
         events: []
       }
-      run = { record, child: null, cancelRequested: false, killTimer: null, resumeSessionId: chat?.sessionId ?? null }
+      run = { record, child: null, cancelRequested: false, killTimer: null, resumeSessionId: chat?.sessionId ?? null, wantsWorktree }
+      if (!chatId) this.chats.emit('update', await this.chats.create(newChat(id, projectId, chatTitle(prompt))))
       for (const other of others) {
         other.concurrentRunIds = [...(other.concurrentRunIds ?? []), record.id]
         this.emitUpdate(other)
@@ -216,13 +258,23 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       if (record.taskId && this.opts.tasks) {
         await this.opts.tasks.attachRun(project.path, record.taskId, record.id)
       }
-      // Keep a copy with the run, so the chat can still show it after the project copy is removed.
+      const ws = await this.prepareWorkspace(run, project)
+      if (run.cancelRequested) return void (await this.finish(run, 'cancelled', null, null))
+      record.cwd = ws.cwd
+      if (ws.cwd !== project.path) record.gitBefore = await gitStatus(ws.cwd)
       for (const a of record.attachments ?? []) {
+        // Keep a copy with the run, so the chat can still show it after the project copy is removed.
         await mkdir(this.inputsDir(record.id), { recursive: true })
         await copyFile(attachmentPath(project.path, a.id), join(this.inputsDir(record.id), `${a.id}.png`))
+        // The agent reads it at the same relative path inside its worktree (an ignored folder, so it isn't committed).
+        if (ws.cwd !== project.path) {
+          await mkdir(join(ws.cwd, '.thinkerer', 'attachments'), { recursive: true })
+          await writeFile(join(ws.cwd, '.thinkerer', 'attachments', '.gitignore'), '*\n')
+          await copyFile(attachmentPath(project.path, a.id), attachmentPath(ws.cwd, a.id))
+        }
       }
       // Recovery point first: nothing the agent does can be unrecoverable.
-      record.checkpoint = await createCheckpoint(project.path, record.id, `Thinkerer: before run — ${record.prompt.slice(0, 72)}`)
+      record.checkpoint = await createCheckpoint(ws.cwd, record.id, `Thinkerer: before run — ${record.prompt.slice(0, 72)}`)
       const dirty = record.gitBefore?.entries.length ?? 0
       this.addEvent(run, {
         kind: 'status',
@@ -230,23 +282,23 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       })
       if (run.cancelRequested) return void (await this.finish(run, 'cancelled', null, null))
 
-      const { servers, secretEnv } = await this.resolveMcp(project, record.id)
+      const { servers, secretEnv } = await this.resolveMcp(project, record.id, ws)
       record.mcpServers = servers.map((s) => s.id)
       this.addEvent(run, { kind: 'status', text: `MCP tools: ${record.mcpServers.join(', ') || 'none'}` })
 
       const inv = adapter.buildInvocation({
         executable: status.executable!,
-        cwd: project.path,
+        cwd: ws.cwd,
         prompt: record.prompt + attachmentNote(record.attachments ?? []),
         resumeSessionId: run.resumeSessionId,
-        policy: { ...this.policy, appendSystemPrompt: this.instructions(project, servers) },
+        policy: { ...this.policy, appendSystemPrompt: this.instructions(servers, ws) },
         mcp: servers,
         secretEnv
       })
       if (run.cancelRequested) return void (await this.finish(run, 'cancelled', null, null))
       const child = spawn(inv.command, inv.args, {
-        cwd: project.path,
-        env: inv.env,
+        cwd: ws.cwd,
+        env: { ...inv.env, ...ws.env },
         stdio: ['pipe', 'pipe', 'pipe'],
         // Own process group so cancel can take down the whole tree.
         detached: process.platform !== 'win32'
@@ -257,25 +309,123 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       child.stdin!.end(inv.stdin)
       record.status = 'running'
       record.startedAt = new Date().toISOString()
-      this.addEvent(run, { kind: 'status', text: `Started in ${project.path}` })
+      this.addEvent(run, { kind: 'status', text: `Started in ${ws.cwd}` })
       this.emitUpdate(record)
     } catch (err) {
       await this.finish(run, 'failed', null, (err as Error).message)
     }
   }
 
-  private async resolveMcp(project: Project, runId: string): Promise<{ servers: ResolvedMcpServer[]; secretEnv: Record<string, string> }> {
-    if (!this.opts.mcp) return { servers: [], secretEnv: {} }
-    const ctx = await this.opts.mcp.context()
-    return this.opts.mcp.registry.resolveForRun(project, { ...ctx, artifactsDir: this.artifactsDir(runId) })
+  /**
+   * The folder this turn runs in. A chat's first turn creates its worktree and
+   * branch, reserves its ports and runs the project's setup hook; if setup
+   * fails, the next message in the chat retries it.
+   */
+  private async prepareWorkspace(run: ActiveRun, project: Project): Promise<Workspace> {
+    const chatId = run.record.chatId!
+    let chat = await this.chats.get(chatId)
+    const config = project.config!
+    if (!chat) return { chat: null, cwd: project.path, env: {}, previewUrl: resolvePreviewUrl(config.website.previewUrl, []) }
+    const save = async (fn: (c: ChatRecord) => void) => {
+      chat = await this.chats.update(chatId, fn)
+      this.chats.emit('update', chat)
+      return chat
+    }
+
+    if (chat.state === 'setting-up') {
+      if (!chat.worktree && !run.wantsWorktree) {
+        await save((c) => (c.state = 'active'))
+        await this.chats.addNote(chatId, {
+          kind: 'info',
+          ok: true,
+          title: 'Working in the project folder',
+          lines: ['This repository has no commit to start a worktree from, so this chat edits the project folder directly.']
+        })
+      } else {
+        if (!chat.worktree) {
+          run.record.currentAction = 'Creating the worktree…'
+          this.emitUpdate(run.record)
+          const wt = await createWorktree(project.path, join(this.worktreesDir, project.id), chatId, chat.title)
+          await save((c) => {
+            c.worktree = wt
+            c.composeProject = composeProjectName(project, chatId)
+          })
+          const dirty = run.record.gitBefore?.entries.length ?? 0
+          this.addEvent(run, {
+            kind: 'status',
+            text: `Worktree ready: branch ${wt.branch} from ${wt.base} (${wt.baseCommit.slice(0, 7)})${dirty ? `. ${dirty} uncommitted change${dirty === 1 ? '' : 's'} in the project folder ${dirty === 1 ? 'is' : 'are'} not included` : ''}`,
+            meta: dirty ? { notice: true } : undefined
+          })
+        }
+        const wanted = config.worktrees.ports
+        if (chat.ports.length < wanted) {
+          const ports = await allocatePorts(wanted - chat.ports.length, [...chat.ports, ...(await this.chats.takenPorts())])
+          await save((c) => (c.ports = [...c.ports, ...ports]))
+          this.addEvent(run, { kind: 'status', text: `Ports for this chat: ${chat.ports.map((p, i) => `THINKERER_PORT_${i + 1}=${p}`).join(', ')}` })
+        }
+        const setup = config.worktrees.setupCommand.trim()
+        if (setup) await this.runSetup(run, project, chat, setup)
+        await save((c) => (c.state = 'active'))
+      }
+    } else if (chat.state !== 'active' && !chat.worktreeRemoved) {
+      // A new message in a merged or done chat is new work.
+      await save((c) => {
+        c.state = 'active'
+        c.doneReason = null
+        c.doneAt = null
+      })
+    }
+    const cwd = chat.worktree?.path ?? project.path
+    return { chat, cwd, env: worktreeEnv(project, chat), previewUrl: resolvePreviewUrl(config.website.previewUrl, chat.ports) }
   }
 
-  private instructions(project: Project, servers: ResolvedMcpServer[]): string {
+  private async runSetup(run: ActiveRun, project: Project, chat: ChatRecord, command: string): Promise<void> {
+    if (!(await this.approvals.isApproved(project.id, 'setup', command))) {
+      throw new Error('The worktree setup command has not been approved; send the message again to review it')
+    }
+    run.record.currentAction = 'Running the worktree setup command…'
+    this.emitUpdate(run.record)
+    this.addEvent(run, { kind: 'status', text: `Setting up the worktree: $ ${command}` })
+    const lines: string[] = []
+    const res = await runHook(command, chat.worktree!.path, worktreeEnv(project, chat), (line) => {
+      lines.push(line)
+      this.addEvent(run, { kind: 'log', text: line, meta: { hook: 'setup' } })
+    })
+    const ok = res.code === 0 && !res.timedOut
+    await this.chats.addNote(chat.id, {
+      kind: 'setup',
+      ok,
+      title: ok ? 'Worktree set up' : `Setup failed (${res.timedOut ? 'timed out' : `exit code ${res.code}`})`,
+      lines: [`$ ${command}`, ...lines]
+    })
+    this.chats.emit('update', (await this.chats.get(chat.id))!)
+    if (!ok) throw new Error(`The worktree setup command failed (${res.timedOut ? 'timed out' : `exit code ${res.code}`}); send another message to retry it`)
+  }
+
+  private async resolveMcp(project: Project, runId: string, ws: Workspace): Promise<{ servers: ResolvedMcpServer[]; secretEnv: Record<string, string> }> {
+    if (!this.opts.mcp) return { servers: [], secretEnv: {} }
+    const ctx = await this.opts.mcp.context()
+    return this.opts.mcp.registry.resolveForRun(project, { ...ctx, artifactsDir: this.artifactsDir(runId), cwd: ws.cwd, previewUrl: ws.previewUrl })
+  }
+
+  private instructions(servers: ResolvedMcpServer[], ws: Workspace): string {
     const lines = [this.policy.appendSystemPrompt]
-    const preview = project.config?.website.previewUrl
+    const wt = ws.chat?.worktree
+    if (wt) {
+      lines.push(
+        `This chat has its own Git worktree on branch ${wt.branch} (created from ${wt.base}); other chats work in other worktrees.`,
+        'Thinkerer commits your changes on this branch after each turn, so do not commit, push, or switch branches yourself.'
+      )
+      if (ws.chat!.ports.length) {
+        lines.push(
+          `Ports reserved for this worktree: ${ws.chat!.ports.map((p, i) => `THINKERER_PORT_${i + 1}=${p}`).join(', ')} (also in your environment, with COMPOSE_PROJECT_NAME=${ws.chat!.composeProject}). Use them instead of the project's default ports.`
+        )
+      }
+    }
+    const preview = ws.previewUrl
     if (servers.some((s) => s.id === 'playwright') && preview) {
       lines.push(
-        `To check UI changes in a real browser, use the playwright MCP tools against ${preview} (served by the project's dev command, which the user starts from Thinkerer's Website tab; if it is not reachable, say so).`,
+        `To check UI changes in a real browser, use the playwright MCP tools against ${preview} (served by the project's dev command, which the user starts from Thinkerer's preview; if it is not reachable, say so).`,
         'Navigation is limited to that origin. Take a screenshot (browser_take_screenshot) of the verified state; screenshots are saved with the run, not in the project.',
         'State clearly whether the browser check PASSED or FAILED.'
       )
@@ -496,21 +646,42 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     run.record.exitCode = exitCode
     run.record.error = error
     run.record.currentAction = null
-    run.record.gitAfter = await gitStatus(run.record.projectPath)
+    const cwd = run.record.cwd ?? run.record.projectPath
+    for (const a of run.record.attachments ?? []) {
+      await removeAttachment(run.record.projectPath, a.id).catch(() => {})
+      if (cwd !== run.record.projectPath) await rm(attachmentPath(cwd, a.id), { force: true }).catch(() => {})
+    }
     if (run.record.checkpoint) {
       try {
-        run.record.afterCommit = await recordAfter(run.record.projectPath, run.record.id)
-        run.record.changes = await diffSummary(run.record.projectPath, run.record.checkpoint.commit, run.record.afterCommit)
+        run.record.afterCommit = await recordAfter(cwd, run.record.id)
+        run.record.changes = await diffSummary(cwd, run.record.checkpoint.commit, run.record.afterCommit)
       } catch (err) {
         this.addEvent(run, { kind: 'error', text: `Could not record the run's changes: ${(err as Error).message}` })
       }
     }
+    if (run.record.changes?.length && cwd !== run.record.projectPath) await this.commitTurn(run, cwd)
+    run.record.gitAfter = await gitStatus(cwd)
     run.record.artifacts = await this.scanArtifacts(run.record.id)
-    for (const a of run.record.attachments ?? []) await removeAttachment(run.record.projectPath, a.id).catch(() => {})
     this.addEvent(run, { kind: status === 'failed' ? 'error' : 'status', text: error ?? `Run ${status}` })
     this.active.delete(run.record.id)
     await this.persist(run.record).catch(() => {})
     this.emitUpdate(run.record)
+  }
+
+  /** Commits the turn's changes on the chat branch. A failure (e.g. a pre-commit hook) is reported, not fatal. */
+  private async commitTurn(run: ActiveRun, cwd: string): Promise<void> {
+    const subject = chatTitle(run.record.prompt).slice(0, 72)
+    try {
+      run.record.commit = await commitAll(cwd, subject, `Thinkerer-Chat: ${run.record.chatId}\nThinkerer-Run: ${run.record.id}`)
+      if (run.record.commit) this.addEvent(run, { kind: 'status', text: `Committed ${run.record.commit.slice(0, 7)} on this chat's branch` })
+    } catch (err) {
+      this.addEvent(run, { kind: 'error', text: `Could not commit this turn's changes: ${(err as Error).message.split('\n').slice(0, 6).join(' ')}` })
+    }
+  }
+
+  /** Whether any turn of the chat is running or starting. */
+  isChatLive(chatId: string): boolean {
+    return this.startingChats.has(chatId) || [...this.active.values()].some((r) => r.record.chatId === chatId)
   }
 
   private noteRateLimit(id: ProviderId, usage: UsageObservation): void {

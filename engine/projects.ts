@@ -144,9 +144,12 @@ async function detectDefaults(folder: string): Promise<ProjectConfig> {
       previewUrl: 'http://localhost:5173'
     },
     agent: { provider: 'auto', enabledMcpServers: [] },
+    worktrees: { setupCommand: '', teardownCommand: '', ports: 0 },
     marketing: { enabled: true }
   }
 }
+
+export const MAX_WORKTREE_PORTS = 10
 
 export function normalizeConfig(raw: Partial<ProjectConfig> | null, fallbackName: string): ProjectConfig {
   const r = raw ?? {}
@@ -164,6 +167,11 @@ export function normalizeConfig(raw: Partial<ProjectConfig> | null, fallbackName
       enabledMcpServers: Array.isArray(r.agent?.enabledMcpServers)
         ? r.agent!.enabledMcpServers.filter((s) => typeof s === 'string')
         : []
+    },
+    worktrees: {
+      setupCommand: typeof r.worktrees?.setupCommand === 'string' ? r.worktrees.setupCommand : '',
+      teardownCommand: typeof r.worktrees?.teardownCommand === 'string' ? r.worktrees.teardownCommand : '',
+      ports: Number.isInteger(r.worktrees?.ports) ? Math.min(MAX_WORKTREE_PORTS, Math.max(0, r.worktrees!.ports)) : 0
     },
     marketing: { enabled: r.marketing?.enabled !== false }
   }
@@ -194,7 +202,8 @@ function applyPatch(config: ProjectConfig, patch: ProjectConfigPatch): ProjectCo
     if (url !== '') {
       let parsed: URL
       try {
-        parsed = new URL(url)
+        // {portN} placeholders are filled per chat worktree; check the rest of the URL.
+        parsed = new URL(url.replace(/\{port([1-9]|10)\}/g, '1'))
       } catch {
         throw new Error('Preview URL must be a valid URL')
       }
@@ -214,6 +223,17 @@ function applyPatch(config: ProjectConfig, patch: ProjectConfigPatch): ProjectCo
       throw new Error('Invalid MCP server list')
     }
     next.agent.enabledMcpServers = [...new Set(ids)]
+  }
+  for (const key of ['setupCommand', 'teardownCommand'] as const) {
+    const v = patch.worktrees?.[key]
+    if (v === undefined) continue
+    if (typeof v !== 'string' || v.length > 500) throw new Error(`Invalid ${key === 'setupCommand' ? 'setup' : 'teardown'} command`)
+    next.worktrees[key] = v
+  }
+  if (patch.worktrees?.ports !== undefined) {
+    const n = patch.worktrees.ports
+    if (!Number.isInteger(n) || n < 0 || n > MAX_WORKTREE_PORTS) throw new Error(`Ports must be a whole number from 0 to ${MAX_WORKTREE_PORTS}`)
+    next.worktrees.ports = n
   }
   return next
 }

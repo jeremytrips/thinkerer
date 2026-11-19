@@ -29,6 +29,10 @@ export interface McpRunContext {
   /** Command used to run Node scripts. */
   node: { command: string; env: Record<string, string> }
   artifactsDir: string
+  /** Where the agent works (a chat's worktree); defaults to the project folder. */
+  cwd?: string
+  /** Preview URL resolved for that worktree's ports; defaults to the configured one. */
+  previewUrl?: string | null
 }
 
 const ID = /^[a-z][a-z0-9-]{0,30}$/
@@ -138,11 +142,12 @@ export class McpRegistry {
     for (const id of project.config?.agent.enabledMcpServers ?? []) {
       const def = await this.get(id)
       if (!def || (await this.exclusionReason(def, project))) continue
-      const preview = project.config!.website.previewUrl
+      const preview = ctx.previewUrl !== undefined ? (ctx.previewUrl ?? '') : project.config!.website.previewUrl
+      if (def.id === 'playwright' && !preview) continue
       const vars: Record<string, string> = {
         appRoot: ctx.appRoot,
         artifacts: ctx.artifactsDir,
-        project: project.path,
+        project: ctx.cwd ?? project.path,
         previewUrl: preview,
         previewOrigin: preview ? new URL(preview).origin : ''
       }

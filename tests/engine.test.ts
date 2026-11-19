@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { parseClaudeLine } from '../engine/agents/claude'
+import { claudeAdapter, parseClaudeLine } from '../engine/agents/claude'
+import { DEFAULT_POLICY } from '../engine/agents/supervisor'
 import { listDir, readFilePreview } from '../engine/files'
 import { gitStatus } from '../engine/git'
 import { ProjectService } from '../engine/projects'
@@ -124,6 +125,15 @@ describe('git status', () => {
     const status = await gitStatus(repo)
     expect(status!.branch).toBe('main')
     expect(status!.entries.map((e) => e.path).sort()).toEqual(['package.json', 'src/a.ts'])
+  })
+})
+
+describe('Claude invocation', () => {
+  it('runs in auto mode, restricted, with nobody to answer prompts', () => {
+    const inv = claudeAdapter.buildInvocation({ executable: '/bin/claude', cwd: '/p', prompt: 'hi', policy: DEFAULT_POLICY, mcp: [], secretEnv: {} })
+    expect(inv.args.join(' ')).toContain('--permission-mode auto')
+    expect(inv.args.join(' ')).toContain('--permission-prompts none')
+    expect(inv.args).toEqual(expect.arrayContaining(['-p', '--restricted', '--strict-mcp-config', 'Bash(npm run *)']))
   })
 })
 

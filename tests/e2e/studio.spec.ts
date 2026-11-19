@@ -40,6 +40,7 @@ http.createServer((q, s) => { s.setHeader('content-type', 'text/html'); s.end(pa
       target: 'web',
       website: { devCommand: 'node server.mjs', previewUrl: `http://localhost:${port}` },
       agent: { provider: 'auto', enabledMcpServers: [] },
+      worktrees: { setupCommand: '', teardownCommand: '', ports: 0 },
       marketing: { enabled: true }
     })
   )

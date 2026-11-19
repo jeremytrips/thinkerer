@@ -11,9 +11,18 @@ export interface ProjectConfig {
   name: string
   components: Component[]
   target: Target
+  /** previewUrl may use {port1}…{portN}: the ports Thinkerer gives each chat's worktree. */
   website: { devCommand: string; previewUrl: string }
   agent: { provider: ProviderChoice; enabledMcpServers: string[] }
+  /** Hooks run in every chat's worktree (e.g. docker compose up / down), and how many free ports it gets. */
+  worktrees: WorktreeConfig
   marketing: { enabled: boolean }
+}
+
+export interface WorktreeConfig {
+  setupCommand: string
+  teardownCommand: string
+  ports: number
 }
 
 export interface Project {
@@ -31,6 +40,7 @@ export interface ProjectConfigPatch {
   target?: Target
   website?: { devCommand?: string; previewUrl?: string }
   agent?: { provider?: ProviderChoice; enabledMcpServers?: string[] }
+  worktrees?: Partial<WorktreeConfig>
 }
 
 export interface FileEntry {
@@ -178,6 +188,8 @@ export type DevServerStatus = 'stopped' | 'starting' | 'running' | 'exited' | 'e
 
 export interface DevServerState {
   projectId: string
+  /** The chat whose worktree this server runs in; null for the project folder. */
+  chatId: string | null
   status: DevServerStatus
   command: string | null
   url: string | null
@@ -211,6 +223,10 @@ export interface RunRecord {
   id: string
   projectId: string
   projectPath: string
+  /** Where the agent worked: the chat's worktree, or the project folder. Absent on older runs (= projectPath). */
+  cwd?: string
+  /** Commit Thinkerer made on the chat branch with this turn's changes. */
+  commit?: string | null
   /** The chat this turn belongs to (the id of its first turn). Absent on older runs: a chat of one. */
   chatId?: string
   /** The provider's own session/thread id, as reported by its CLI. Used to resume the chat. */
@@ -249,6 +265,50 @@ export interface RunRecord {
 }
 
 export type RunSummary = Omit<RunRecord, 'events'>
+
+export type ChatState = 'setting-up' | 'active' | 'merged' | 'done'
+export type ChatCommand = 'merge' | 'cleanup' | 'done' | 'discard'
+
+/** A system message in a chat: hook output, or the result of a slash command. */
+export interface ChatNote {
+  at: string
+  kind: 'setup' | 'teardown' | 'info' | ChatCommand
+  ok: boolean
+  title: string
+  lines: string[]
+}
+
+export interface ChatWorktree {
+  path: string
+  branch: string
+  /** Branch the worktree was created from, and its commit at that time. */
+  base: string
+  baseCommit: string
+  /** Local branches that existed when the chat started (to spot new ones at cleanup). */
+  branchesAtStart: string[]
+}
+
+/**
+ * A conversation with an agent. Each chat works in its own Git worktree and
+ * branch; Thinkerer commits every turn there. Chats from before worktrees, or in
+ * a repo with no commits, work in the project folder (worktree: null).
+ */
+export interface ChatRecord {
+  id: string
+  projectId: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  state: ChatState
+  doneReason: 'cleanup' | 'manual' | 'discarded' | null
+  doneAt: string | null
+  worktree: ChatWorktree | null
+  /** True once /cleanup or /discard removed the worktree; the chat is then read-only. */
+  worktreeRemoved: boolean
+  ports: number[]
+  composeProject: string | null
+  notes: ChatNote[]
+}
 
 export interface AppInfo {
   version: string

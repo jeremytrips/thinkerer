@@ -47,15 +47,18 @@ test('import this repository, browse read-only files, see providers, persist acr
     await expect(page.locator('textarea, [contenteditable="true"]')).toHaveCount(0) // nothing editable
     await page.screenshot({ path: join(shots, 'files.png') })
 
+    await page.getByRole('tab', { name: 'Settings' }).click()
+    await expect(page.locator('.settings .providers')).toContainText('Claude Code')
+    await expect(page.locator('.settings .providers')).toContainText('Codex')
+    await page.locator('.settings .provider-policy').first().locator('summary').click()
+    await page.screenshot({ path: join(shots, 'settings.png') })
+
     await page.getByRole('tab', { name: 'Agent' }).click()
     await expect(page.locator('.agent-preview .preview-pane')).toBeVisible() // website shown beside the chat by default
     // Chats are listed beside the conversation (open by default), with a New chat composer.
     await expect(page.getByRole('button', { name: 'Chats', pressed: true })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'New chat' })).toBeVisible()
     await expect(page.getByRole('textbox', { name: 'Message to the agent' })).toBeVisible()
-    await expect(page.locator('.agent-side .providers')).toContainText('Claude Code')
-    await expect(page.locator('.agent-side .providers')).toContainText('Codex')
-    await page.locator('.agent-side .provider-policy').first().locator('summary').click()
     await page.screenshot({ path: join(shots, 'agent.png') })
 
     await app.close()

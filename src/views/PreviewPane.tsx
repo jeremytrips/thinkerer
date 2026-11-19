@@ -20,6 +20,8 @@ export interface PreviewDevice {
 
 interface Props {
   project: Project
+  /** Preview this chat's worktree (its own dev server and ports) instead of the project folder. */
+  chatId?: string | null
   /** Shows "Send to agent" and receives the screenshot of what the user sees. */
   onCapture?: (capture: PreviewCapture) => void
   /** Steps the native view aside, e.g. while the user drags a divider across it. */
@@ -31,7 +33,7 @@ interface Props {
 }
 
 /** The project's live website: dev server controls and the sandboxed native preview. */
-export function PreviewPane({ project, onCapture, suspended = false, reloadNonce = 0, device = null }: Props) {
+export function PreviewPane({ project, chatId = null, onCapture, suspended = false, reloadNonce = 0, device = null }: Props) {
   const [state, setState] = useState<DevServerState | null>(null)
   const [url, setUrl] = useState<string | null>(null)
   const [capturing, setCapturing] = useState(false)
@@ -43,17 +45,20 @@ export function PreviewPane({ project, onCapture, suspended = false, reloadNonce
   const shown = previewing && !overlay && !suspended
 
   useEffect(() => {
-    api.website.state(project.id).then(setState, (e) => setError(errorMessage(e)))
-    api.preview.url(project.id).then((u) => u && setUrl(u), () => {})
-    const offState = api.website.onState((s) => s.projectId === project.id && setState(s))
-    const offPreview = api.preview.onEvent((id, e) => {
-      if (id === project.id && (e.kind === 'loaded' || e.kind === 'navigated') && e.url) setUrl(e.url)
+    setState(null)
+    setUrl(null)
+    setError(null)
+    api.website.state(project.id, chatId).then(setState, (e) => setError(errorMessage(e)))
+    api.preview.url(project.id, chatId).then((u) => u && setUrl(u), () => {})
+    const offState = api.website.onState((s) => s.projectId === project.id && s.chatId === chatId && setState(s))
+    const offPreview = api.preview.onEvent((id, chat, e) => {
+      if (id === project.id && chat === chatId && (e.kind === 'loaded' || e.kind === 'navigated') && e.url) setUrl(e.url)
     })
     return () => {
       offState()
       offPreview()
     }
-  }, [project.id])
+  }, [project.id, chatId])
 
   // Keep the native preview view glued to the frame element.
   useLayoutEffect(() => {
@@ -63,7 +68,7 @@ export function PreviewPane({ project, onCapture, suspended = false, reloadNonce
       const r = el.getBoundingClientRect()
       return { x: r.left, y: r.top, width: r.width, height: r.height }
     }
-    api.preview.show(project.id, rect()).catch((e) => setError(errorMessage(e)))
+    api.preview.show(project.id, chatId, rect()).catch((e) => setError(errorMessage(e)))
     const ro = new ResizeObserver(() => void api.preview.setBounds(rect()))
     ro.observe(el)
     // A device screen keeps its size but moves when the pane around it resizes.
@@ -75,7 +80,7 @@ export function PreviewPane({ project, onCapture, suspended = false, reloadNonce
       window.removeEventListener('resize', onResize)
       void api.preview.hide()
     }
-  }, [shown, project.id, device?.id])
+  }, [shown, project.id, chatId, device?.id])
 
   useEffect(() => {
     if (reloadNonce && previewing) void api.preview.reload().catch(() => {})
@@ -92,7 +97,7 @@ export function PreviewPane({ project, onCapture, suspended = false, reloadNonce
 
   async function capture() {
     setCapturing(true)
-    await act(async () => onCapture?.(await api.preview.capture(project.id)))
+    await act(async () => onCapture?.(await api.preview.capture(project.id, chatId)))
     setCapturing(false)
   }
 
@@ -111,7 +116,7 @@ export function PreviewPane({ project, onCapture, suspended = false, reloadNonce
           : 'Start the dev server to preview the site here.'}
       {!previewing && (
         <div className="small">
-          The preview is sandboxed and limited to {config.website.previewUrl ? new URL(config.website.previewUrl).origin : 'the preview URL'}.
+          {state?.url ? `The preview is sandboxed and limited to ${new URL(state.url).origin}.` : config.website.previewUrl ? 'This preview URL uses worktree ports; it opens from a chat.' : 'Set a preview URL in Settings.'}
         </div>
       )}
     </div>
@@ -121,8 +126,8 @@ export function PreviewPane({ project, onCapture, suspended = false, reloadNonce
     <div className="preview-pane">
       <div className="preview-bar">
         {state && <span className={`pill ${tone}`}>{STATE_LABEL[state.status]}</span>}
-        <span className="mono small ellipsis preview-url" title={url ?? config.website.previewUrl}>
-          {previewing ? (url ?? config.website.previewUrl) : config.website.devCommand || 'no dev command'}
+        <span className="mono small ellipsis preview-url" title={url ?? state?.url ?? ''}>
+          {previewing ? (url ?? state?.url) : config.website.devCommand || 'no dev command'}
         </span>
         <div className="row preview-actions">
           {previewing && onCapture && (
@@ -137,11 +142,11 @@ export function PreviewPane({ project, onCapture, suspended = false, reloadNonce
           )}
           {previewing && <button className="small" onClick={() => act(() => api.preview.reload())}>Reload</button>}
           {running ? (
-            <button className="small" onClick={() => act(() => api.website.stop(project.id))}>
+            <button className="small" onClick={() => act(() => api.website.stop(project.id, chatId))}>
               {state?.status === 'external' ? 'Stop previewing' : 'Stop dev server'}
             </button>
           ) : (
-            <button className="small" onClick={() => act(() => api.website.start(project.id))} disabled={!config.website.devCommand}>
+            <button className="small" onClick={() => act(() => api.website.start(project.id, chatId))} disabled={!config.website.devCommand}>
               Start dev server
             </button>
           )}

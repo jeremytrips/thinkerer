@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -31,6 +31,7 @@ const project = (command: string, port: number): Project => ({
     target: 'web',
     website: { devCommand: command, previewUrl: `http://127.0.0.1:${port}` },
     agent: { provider: 'auto', enabledMcpServers: [] },
+    worktrees: { setupCommand: '', teardownCommand: '', ports: 0 },
     marketing: { enabled: true }
   }
 })
@@ -66,6 +67,44 @@ describe('DevServerManager', () => {
 
     // Editing the command (e.g. by an agent) requires approval again.
     expect((await m.state(project(cmd + ' # changed', port))).needsApproval).toBe(true)
+  }, 20_000)
+
+  it('runs one server per chat worktree, each in its folder with its own port', async () => {
+    const [portA, portB] = [await freePort(), await freePort()]
+    // The same command everywhere; each worktree's port comes from its environment.
+    const cmd = `node -e "require('http').createServer((q,s)=>s.end(require('fs').readFileSync('who.txt'))).listen(process.env.THINKERER_PORT_1)"`
+    const p = project(cmd, 0)
+    p.config!.website.previewUrl = 'http://127.0.0.1:{port1}'
+    const m = new DevServerManager(dir)
+    await m.approve(p.id, cmd)
+    const targets = [
+      { chatId: 'a', port: portA },
+      { chatId: 'b', port: portB }
+    ].map(({ chatId, port }) => {
+      const cwd = join(dir, chatId)
+      mkdirSync(cwd)
+      writeFileSync(join(cwd, 'who.txt'), chatId)
+      return { chatId, cwd, env: { THINKERER_PORT_1: String(port) }, url: `http://127.0.0.1:${port}` }
+    })
+    for (const t of targets) {
+      const ready = new Promise<void>((resolve) => {
+        const on = (s: DevServerState) => s.chatId === t.chatId && s.status === 'running' && (m.off('state', on), resolve())
+        m.on('state', on)
+      })
+      await m.start(p, t)
+      await ready
+    }
+    expect(await (await fetch(targets[0].url)).text()).toBe('a')
+    expect(await (await fetch(targets[1].url)).text()).toBe('b')
+    expect((await m.state(p, targets[1])).status).toBe('running')
+    // The project folder has no server of its own, and no port for {port1}.
+    expect(await m.state(p)).toMatchObject({ chatId: null, status: 'stopped', url: null })
+
+    const stopped = new Promise<void>((resolve) => m.on('state', (s) => s.chatId === 'a' && s.status === 'stopped' && resolve()))
+    m.stop(p.id, 'a')
+    await stopped
+    expect(await (await fetch(targets[1].url)).text()).toBe('b')
+    m.stopProject(p.id)
   }, 20_000)
 
   it('previews an already-running server instead of starting another', async () => {

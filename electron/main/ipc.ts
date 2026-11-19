@@ -1,7 +1,9 @@
 import { realpath } from 'node:fs/promises'
 import { app, dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
 import type { AgentSupervisor } from '../../engine/agents/supervisor'
+import type { Approvals } from '../../engine/approvals'
 import { removeAttachment, saveAttachment } from '../../engine/attachments'
+import { CHAT_COMMANDS, runChatCommand } from '../../engine/chatCommands'
 import {
   fileDiff,
   initRepo,
@@ -12,14 +14,16 @@ import {
   workingChanges,
   workingFileDiff
 } from '../../engine/checkpoints'
-import type { DevServerManager } from '../../engine/devserver'
+import { projectTarget, type DevServerManager, type DevTarget } from '../../engine/devserver'
 import { listDir, readFilePreview } from '../../engine/files'
 import { gitStatus } from '../../engine/git'
 import type { McpRegistry } from '../../engine/mcp'
 import type { ProjectService } from '../../engine/projects'
 import type { TaskStore } from '../../engine/tasks'
+import { commitsAhead, resolvePreviewUrl, worktreeEnv } from '../../engine/worktrees'
 import type {
   AppInfo,
+  ChatCommand,
   McpServerDef,
   PreviewCapture,
   Project,
@@ -29,7 +33,7 @@ import type {
   Result,
   TaskStatus
 } from '../../shared/types'
-import type { PreviewManager } from './preview'
+import type { PreviewManager, PreviewScope } from './preview'
 
 interface Deps {
   projects: ProjectService
@@ -37,6 +41,7 @@ interface Deps {
   tasks: TaskStore
   mcp: McpRegistry
   devServers: DevServerManager
+  approvals: Approvals
   preview: PreviewManager
   isDev: boolean
   getWindow: () => BrowserWindow | null
@@ -67,7 +72,8 @@ function bounds(v: unknown): { x: number; y: number; width: number; height: numb
  * which the renderer cannot fake.
  */
 export function registerIpc(deps: Deps): void {
-  const { projects, supervisor, tasks, mcp, devServers, preview } = deps
+  const { projects, supervisor, tasks, mcp, devServers, approvals, preview } = deps
+  const chats = supervisor.chats
   // Preview screenshots waiting to be sent with a prompt, keyed by attachment id.
   const captures = new Map<string, { projectId: string; attachment: PromptAttachment }>()
 
@@ -94,6 +100,41 @@ export function registerIpc(deps: Deps): void {
     return project
   }
   const projectPath = async (id: unknown): Promise<string> => (await okProject(id)).path
+  const chatIdOf = (v: unknown): string | null => (v === undefined || v === null || v === '' ? null : str(v, 'chat id', 100))
+
+  /** Where a chat's dev server runs and what it previews; the project folder without a chat (or a worktree). */
+  async function devTarget(project: Project, chatId: unknown): Promise<DevTarget> {
+    const id = chatIdOf(chatId)
+    if (!id) return projectTarget(project)
+    const chat = await chats.require(project.id, id)
+    if (!chat.worktree || chat.worktreeRemoved) return projectTarget(project)
+    return {
+      chatId: chat.id,
+      cwd: chat.worktree.path,
+      env: worktreeEnv(project, chat),
+      url: resolvePreviewUrl(project.config?.website.previewUrl ?? '', chat.ports)
+    }
+  }
+  const scopeOf = (projectId: unknown, chatId: unknown): PreviewScope => ({ projectId: str(projectId, 'project id', 100), chatId: chatIdOf(chatId) })
+
+  /** The folder a run (or its checkpoint, which has the run's id) worked in. */
+  async function runFolder(project: Project, runId: string): Promise<string> {
+    const run = await supervisor.getRun(runId).catch(() => null)
+    return run && run.projectId === project.id ? (run.cwd ?? run.projectPath) : project.path
+  }
+
+  /** Asks once per changed hook command; the engine refuses unapproved ones. */
+  async function approveHook(project: Project, kind: 'setup' | 'teardown', where: string): Promise<void> {
+    const command = project.config?.worktrees[kind === 'setup' ? 'setupCommand' : 'teardownCommand'].trim()
+    if (!command || (await approvals.isApproved(project.id, kind, command))) return
+    const ok = await confirm(
+      kind === 'setup' ? 'Run this worktree setup command?' : 'Run this worktree teardown command?',
+      `${command}\n\nin ${where}\n\nIt runs ${kind === 'setup' ? 'for every new chat' : 'whenever a chat worktree is removed'}, with your user permissions.`,
+      'Run command'
+    )
+    if (!ok) throw new Error('Cancelled')
+    await approvals.approve(project.id, kind, command)
+  }
 
   async function confirm(message: string, detail: string, button: string): Promise<boolean> {
     const res = await dialog.showMessageBox(deps.getWindow()!, {
@@ -144,7 +185,7 @@ export function registerIpc(deps: Deps): void {
   handle('projects:remove', async (id: unknown) => {
     const projectId = str(id, 'project id', 100)
     if (supervisor.activeRuns(projectId).length) throw new Error('Stop the active agent runs first')
-    devServers.stop(projectId)
+    devServers.stopProject(projectId)
     await projects.remove(projectId)
     return true
   })
@@ -166,18 +207,25 @@ export function registerIpc(deps: Deps): void {
   handle('git:workingChanges', async (id: unknown) => workingChanges(await projectPath(id)))
   handle('git:workingDiff', async (id: unknown, rel: unknown) => workingFileDiff(await projectPath(id), str(rel, 'path', 4096)))
   handle('git:runDiff', async (id: unknown, runId: unknown, rel: unknown) => {
-    const path = await projectPath(id)
+    const path = await runFolder(await okProject(id), str(runId, 'run id', 100))
     const { from, to } = await runDiff(path, str(runId, 'run id', 100))
     return fileDiff(path, from, to, str(rel, 'path', 4096))
   })
 
   // Checkpoints
   handle('checkpoints:list', async (id: unknown) => listCheckpoints(await projectPath(id)))
-  handle('checkpoints:preview', async (id: unknown, cp: unknown) => restorePreview(await projectPath(id), str(cp, 'checkpoint id', 100)))
+  handle('checkpoints:preview', async (id: unknown, cp: unknown) => {
+    const checkpoint = str(cp, 'checkpoint id', 100)
+    return restorePreview(await runFolder(await okProject(id), checkpoint), checkpoint)
+  })
   handle('checkpoints:restore', async (id: unknown, cp: unknown) => {
-    const projectId = str(id, 'project id', 100)
-    if (supervisor.activeRuns(projectId).length) throw new Error('Stop all active agent runs before restoring')
-    return restoreCheckpoint(await projectPath(projectId), str(cp, 'checkpoint id', 100))
+    const project = await okProject(id)
+    const checkpoint = str(cp, 'checkpoint id', 100)
+    const folder = await runFolder(project, checkpoint)
+    if (supervisor.activeRuns(project.id).some((r) => (r.cwd ?? r.projectPath) === folder)) {
+      throw new Error('Stop the agent runs working in this folder before restoring')
+    }
+    return restoreCheckpoint(folder, checkpoint)
   })
 
   // Tasks
@@ -220,27 +268,31 @@ export function registerIpc(deps: Deps): void {
   })
 
   // Website Studio
-  handle('website:state', async (id: unknown) => devServers.state(await okProject(id)))
-  handle('website:logs', (id: unknown) => devServers.logs(str(id, 'project id', 100)))
-  handle('website:start', async (id: unknown) => {
+  handle('website:state', async (id: unknown, chatId: unknown) => {
     const project = await okProject(id)
+    return devServers.state(project, await devTarget(project, chatId))
+  })
+  handle('website:logs', (id: unknown, chatId: unknown) => devServers.logs(str(id, 'project id', 100), chatIdOf(chatId)))
+  handle('website:start', async (id: unknown, chatId: unknown) => {
+    const project = await okProject(id)
+    const target = await devTarget(project, chatId)
     const command = project.config?.website.devCommand?.trim()
     if (command && !(await devServers.isApproved(project.id, command))) {
-      const ok = await confirm('Run this development command?', `${command}\n\nin ${project.path}\n\nIt runs with your user permissions.`, 'Run command')
+      const ok = await confirm('Run this development command?', `${command}\n\nin ${target.cwd}\n\nIt runs with your user permissions.`, 'Run command')
       if (!ok) throw new Error('Cancelled')
       await devServers.approve(project.id, command)
     }
-    return devServers.start(project)
+    return devServers.start(project, target)
   })
-  handle('website:stop', (id: unknown) => {
-    devServers.stop(str(id, 'project id', 100))
+  handle('website:stop', (id: unknown, chatId: unknown) => {
+    devServers.stop(str(id, 'project id', 100), chatIdOf(chatId))
     return true
   })
-  handle('preview:show', async (id: unknown, b: unknown) => {
+  handle('preview:show', async (id: unknown, chatId: unknown, b: unknown) => {
     const project = await okProject(id)
-    const url = project.config?.website.previewUrl
-    if (!url) throw new Error('Set a preview URL in Settings first')
-    preview.show(project.id, url, bounds(b))
+    const target = await devTarget(project, chatId)
+    if (!target.url) throw new Error(project.config?.website.previewUrl ? 'This preview URL uses worktree ports; open it from a chat' : 'Set a preview URL in Settings first')
+    preview.show({ projectId: project.id, chatId: target.chatId }, target.url, bounds(b))
     return true
   })
   handle('preview:bounds', (b: unknown) => {
@@ -255,14 +307,14 @@ export function registerIpc(deps: Deps): void {
     preview.reload()
     return true
   })
-  handle('preview:url', (id: unknown) => preview.currentUrl(str(id, 'project id', 100)))
-  handle('preview:navigate', (id: unknown, url: unknown) => {
-    preview.navigate(str(id, 'project id', 100), str(url, 'url', 4096))
+  handle('preview:url', (id: unknown, chatId: unknown) => preview.currentUrl(scopeOf(id, chatId)))
+  handle('preview:navigate', (id: unknown, chatId: unknown, url: unknown) => {
+    preview.navigate(scopeOf(id, chatId), str(url, 'url', 4096))
     return true
   })
-  handle('preview:capture', async (id: unknown): Promise<PreviewCapture> => {
+  handle('preview:capture', async (id: unknown, chatId: unknown): Promise<PreviewCapture> => {
     const project = await okProject(id)
-    const shot = await preview.capture(project.id)
+    const shot = await preview.capture(scopeOf(project.id, chatId))
     const attachment: PromptAttachment = {
       id: await saveAttachment(project.path, shot.png),
       url: shot.url || null,
@@ -280,13 +332,13 @@ export function registerIpc(deps: Deps): void {
     await removeAttachment(project.path, key)
     return true
   })
-  handle('preview:approve', async (id: unknown, url: unknown) => {
-    const projectId = str(id, 'project id', 100)
+  handle('preview:approve', async (id: unknown, chatId: unknown, url: unknown) => {
+    const scope = scopeOf(id, chatId)
     const target = str(url, 'url', 4096)
     const origin = new URL(target).origin
     const ok = await confirm('Allow the preview to open another site?', `${origin}\n\nThis origin will be allowed in this project's preview until Thinkerer restarts.`, 'Allow')
     if (!ok) return false
-    preview.approveAndNavigate(projectId, target)
+    preview.approveAndNavigate(scope, target)
     return true
   })
 
@@ -303,6 +355,12 @@ export function registerIpc(deps: Deps): void {
       if (!c || c.projectId !== projectId) throw new Error('Screenshot is no longer available; capture it again')
       return c.attachment
     })
+    // A new chat (or one whose setup failed) runs the worktree setup hook first.
+    const followUp = chatId ? await chats.get(str(chatId, 'chat id', 100)) : null
+    if (!chatId || followUp?.state === 'setting-up') {
+      const project = await okProject(projectId)
+      await approveHook(project, 'setup', followUp?.worktree?.path ?? 'each new chat worktree')
+    }
     const summary = await supervisor.start(projectId, str(prompt, 'prompt', 100_000), provider as ProviderChoice, {
       taskId: taskId ? str(taskId, 'task id', 100) : null,
       attachments,
@@ -321,8 +379,47 @@ export function registerIpc(deps: Deps): void {
     supervisor.attachmentDataUrl(str(runId, 'run id', 100), str(attachmentId, 'attachment id', 100))
   )
 
+  // Chats
+  handle('chats:list', async (id: unknown) => {
+    const projectId = (await okProject(id)).id
+    return chats.list(projectId, await supervisor.listRuns(projectId), (chatId) => supervisor.isChatLive(chatId))
+  })
+  handle('chats:get', async (id: unknown, chatId: unknown) => chats.require((await okProject(id)).id, str(chatId, 'chat id', 100)))
+  handle('chats:command', async (id: unknown, chatId: unknown, name: unknown) => {
+    if (!CHAT_COMMANDS.includes(name as ChatCommand)) throw new Error('Unknown command')
+    const command = name as ChatCommand
+    const project = await okProject(id)
+    const chat = await chats.require(project.id, str(chatId, 'chat id', 100))
+    const wt = chat.worktree && !chat.worktreeRemoved ? chat.worktree : null
+    if (command === 'discard' && wt) {
+      const ahead = await commitsAhead(project.path, wt.base, wt.branch)
+      const ok = await confirm(
+        'Discard this chat’s worktree?',
+        `${wt.path}\n\nDeletes the worktree and the branch ${wt.branch}${ahead ? `, including ${ahead} commit${ahead === 1 ? '' : 's'} not in ${wt.base}` : ''}, and any uncommitted changes in it. This cannot be undone.`,
+        'Discard'
+      )
+      if (!ok) throw new Error('Cancelled')
+    }
+    if ((command === 'cleanup' || command === 'discard') && wt) await approveHook(project, 'teardown', wt.path)
+    return runChatCommand(command, {
+      project,
+      chat,
+      chats,
+      approvals,
+      live: supervisor.isChatLive(chat.id),
+      stopDevServer: () => devServers.stop(project.id, chat.id)
+    })
+  })
+  handle('chats:reveal', async (id: unknown, chatId: unknown) => {
+    const chat = await chats.require((await okProject(id)).id, str(chatId, 'chat id', 100))
+    if (!chat.worktree || chat.worktreeRemoved) throw new Error('This chat has no worktree')
+    shell.showItemInFolder(chat.worktree.path)
+    return true
+  })
+
   supervisor.on('event', (runId, event) => send('runs:event', runId, event))
   supervisor.on('update', (summary) => send('runs:update', summary))
-  devServers.on('log', (projectId, line) => send('website:log', projectId, line))
+  chats.on('update', (chat) => send('chats:update', chat))
+  devServers.on('log', (projectId, chatId, line) => send('website:log', projectId, chatId, line))
   devServers.on('state', (state) => send('website:state', state))
 }

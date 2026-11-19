@@ -30,6 +30,7 @@ const project = (enabled: string[], previewUrl = 'http://localhost:5174/'): Proj
     target: 'web',
     website: { devCommand: 'npm run dev', previewUrl },
     agent: { provider: 'auto', enabledMcpServers: enabled },
+    worktrees: { setupCommand: '', teardownCommand: '', ports: 0 },
     marketing: { enabled: true }
   }
 })

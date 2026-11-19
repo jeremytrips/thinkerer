@@ -1,5 +1,7 @@
 import type {
   AppInfo,
+  ChatCommand,
+  ChatRecord,
   Checkpoint,
   DevLogLine,
   DevServerState,
@@ -75,29 +77,30 @@ export interface ThinkererApi {
     setSecret(serverId: string, name: string, value: string | null): Promise<boolean>
     effective(projectId: string): Promise<EffectiveMcp[]>
   }
+  /** chatId selects a chat's worktree (its own dev server, ports and preview); null is the project folder. */
   website: {
-    state(projectId: string): Promise<DevServerState>
-    logs(projectId: string): Promise<DevLogLine[]>
-    start(projectId: string): Promise<DevServerState>
-    stop(projectId: string): Promise<boolean>
-    onLog(cb: (projectId: string, line: DevLogLine) => void): () => void
+    state(projectId: string, chatId?: string | null): Promise<DevServerState>
+    logs(projectId: string, chatId?: string | null): Promise<DevLogLine[]>
+    start(projectId: string, chatId?: string | null): Promise<DevServerState>
+    stop(projectId: string, chatId?: string | null): Promise<boolean>
+    onLog(cb: (projectId: string, chatId: string | null, line: DevLogLine) => void): () => void
     onState(cb: (state: DevServerState) => void): () => void
   }
   preview: {
-    show(projectId: string, bounds: Bounds): Promise<boolean>
+    show(projectId: string, chatId: string | null, bounds: Bounds): Promise<boolean>
     setBounds(bounds: Bounds): Promise<boolean>
     hide(): Promise<boolean>
     reload(): Promise<boolean>
-    /** URL currently shown in the project's preview, or null if it isn't open. */
-    url(projectId: string): Promise<string | null>
+    /** URL currently shown in this preview, or null if it isn't open. */
+    url(projectId: string, chatId?: string | null): Promise<string | null>
     /** Loads a URL in the preview, subject to the same origin allowlist as clicks. */
-    navigate(projectId: string, url: string): Promise<boolean>
+    navigate(projectId: string, chatId: string | null, url: string): Promise<boolean>
     /** Screenshot of what the user sees, saved for attaching to the next prompt. */
-    capture(projectId: string): Promise<PreviewCapture>
+    capture(projectId: string, chatId?: string | null): Promise<PreviewCapture>
     /** Deletes a capture that won't be sent. */
     discard(projectId: string, captureId: string): Promise<boolean>
-    approve(projectId: string, url: string): Promise<boolean>
-    onEvent(cb: (projectId: string, event: PreviewEvent) => void): () => void
+    approve(projectId: string, chatId: string | null, url: string): Promise<boolean>
+    onEvent(cb: (projectId: string, chatId: string | null, event: PreviewEvent) => void): () => void
   }
   agents: {
     providers(): Promise<ProviderStatus[]>
@@ -123,5 +126,15 @@ export interface ThinkererApi {
     attachment(runId: string, attachmentId: string): Promise<string>
     onEvent(cb: (runId: string, event: RunEvent) => void): () => void
     onUpdate(cb: (summary: RunSummary) => void): () => void
+  }
+  chats: {
+    /** Newest activity first; includes done chats and older run-only chats. */
+    list(projectId: string): Promise<ChatRecord[]>
+    get(projectId: string, chatId: string): Promise<ChatRecord>
+    /** Runs /merge, /cleanup, /done or /discard; the outcome is added to the chat as a note. */
+    command(projectId: string, chatId: string, name: ChatCommand): Promise<ChatRecord>
+    /** Shows the chat's worktree in Finder. */
+    reveal(projectId: string, chatId: string): Promise<boolean>
+    onUpdate(cb: (chat: ChatRecord) => void): () => void
   }
 }

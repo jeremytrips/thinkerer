@@ -39,7 +39,8 @@ const previewApi: ThinkererApi = {
     onEvent: noop
   },
   agents: { providers: async () => [] },
-  runs: { start: unavailable, cancel: unavailable, active: async () => [], list: async () => [], get: async () => null, chat: async () => [], artifact: unavailable, attachment: unavailable, onEvent: noop, onUpdate: noop }
+  runs: { start: unavailable, cancel: unavailable, active: async () => [], list: async () => [], get: async () => null, chat: async () => [], artifact: unavailable, attachment: unavailable, onEvent: noop, onUpdate: noop },
+  chats: { list: async () => [], get: unavailable, command: unavailable, reveal: unavailable, onUpdate: noop }
 }
 
 export const api: ThinkererApi = window.thinkerer ?? previewApi

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type { ThinkererApi } from '../../shared/api'
-import type { DevLogLine, DevServerState, PreviewEvent, Result, RunEvent, RunSummary } from '../../shared/types'
+import type { ChatRecord, DevLogLine, DevServerState, PreviewEvent, Result, RunEvent, RunSummary } from '../../shared/types'
 
 // Sandboxed preload: exposes a narrow, typed API and nothing else. No Node
 // APIs and no raw ipcRenderer reach the renderer.
@@ -61,24 +61,24 @@ const api: ThinkererApi = {
     effective: (projectId) => call('mcp:effective', projectId)
   },
   website: {
-    state: (projectId) => call('website:state', projectId),
-    logs: (projectId) => call('website:logs', projectId),
-    start: (projectId) => call('website:start', projectId),
-    stop: (projectId) => call('website:stop', projectId),
-    onLog: (cb) => subscribe<[string, DevLogLine]>('website:log', cb),
+    state: (projectId, chatId) => call('website:state', projectId, chatId ?? null),
+    logs: (projectId, chatId) => call('website:logs', projectId, chatId ?? null),
+    start: (projectId, chatId) => call('website:start', projectId, chatId ?? null),
+    stop: (projectId, chatId) => call('website:stop', projectId, chatId ?? null),
+    onLog: (cb) => subscribe<[string, string | null, DevLogLine]>('website:log', cb),
     onState: (cb) => subscribe<[DevServerState]>('website:state', cb)
   },
   preview: {
-    show: (projectId, bounds) => call('preview:show', projectId, bounds),
+    show: (projectId, chatId, bounds) => call('preview:show', projectId, chatId, bounds),
     setBounds: (bounds) => call('preview:bounds', bounds),
     hide: () => call('preview:hide'),
     reload: () => call('preview:reload'),
-    url: (projectId) => call('preview:url', projectId),
-    navigate: (projectId, url) => call('preview:navigate', projectId, url),
-    capture: (projectId) => call('preview:capture', projectId),
+    url: (projectId, chatId) => call('preview:url', projectId, chatId ?? null),
+    navigate: (projectId, chatId, url) => call('preview:navigate', projectId, chatId, url),
+    capture: (projectId, chatId) => call('preview:capture', projectId, chatId ?? null),
     discard: (projectId, captureId) => call('preview:discard', projectId, captureId),
-    approve: (projectId, url) => call('preview:approve', projectId, url),
-    onEvent: (cb) => subscribe<[string, PreviewEvent]>('preview:event', cb)
+    approve: (projectId, chatId, url) => call('preview:approve', projectId, chatId, url),
+    onEvent: (cb) => subscribe<[string, string | null, PreviewEvent]>('preview:event', cb)
   },
   agents: {
     providers: () => call('agents:providers')
@@ -95,6 +95,13 @@ const api: ThinkererApi = {
     attachment: (runId, attachmentId) => call('runs:attachment', runId, attachmentId),
     onEvent: (cb) => subscribe<[string, RunEvent]>('runs:event', cb),
     onUpdate: (cb) => subscribe<[RunSummary]>('runs:update', cb)
+  },
+  chats: {
+    list: (projectId) => call('chats:list', projectId),
+    get: (projectId, chatId) => call('chats:get', projectId, chatId),
+    command: (projectId, chatId, name) => call('chats:command', projectId, chatId, name),
+    reveal: (projectId, chatId) => call('chats:reveal', projectId, chatId),
+    onUpdate: (cb) => subscribe<[ChatRecord]>('chats:update', cb)
   }
 }
 
