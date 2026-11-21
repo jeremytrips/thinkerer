@@ -271,8 +271,20 @@ export function registerIpc(deps: Deps): void {
     // Throwaway folder for anything the server writes (e.g. Playwright output); removed afterwards.
     const scratch = await mkdtemp(join(tmpdir(), 'thinkerer-mcp-check-'))
     try {
-      const resolved = await mcp.resolveOne(def, project, { ...(await deps.mcpContext()), artifactsDir: scratch })
-      if (!resolved) throw new Error(def.id === 'playwright' ? 'Set a preview URL first' : 'Set its secrets first')
+      // Resolve the preview URL the way runs in the project folder do; {portN} only exists in chat worktrees.
+      const configured = project.config?.website.previewUrl ?? ''
+      const previewUrl = resolvePreviewUrl(configured, [])
+      const resolved = await mcp.resolveOne(def, project, { ...(await deps.mcpContext()), artifactsDir: scratch, previewUrl })
+      if (!resolved) {
+        if (def.id !== 'playwright') throw new Error('Set its secrets first')
+        throw new Error(
+          !configured
+            ? 'Set a preview URL first'
+            : previewUrl === null
+              ? `The preview URL ${configured} uses chat ports, which only exist in a chat; Playwright can't be checked from the project folder`
+              : `The preview URL ${configured} is not a valid URL`
+        )
+      }
       return await checkMcpServer(resolved.server, resolved.secretEnv, { cwd: project.path, env: childEnv() })
     } finally {
       await rm(scratch, { recursive: true, force: true }).catch(() => {})

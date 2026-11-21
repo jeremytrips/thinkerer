@@ -42,10 +42,10 @@ describe('Claude run options', () => {
     expect(plain[plain.indexOf('--tools') + 1]).toBe('Read,Edit,Write,Glob,Grep,Bash')
     expect(plain[plain.indexOf('--permission-mode') + 1]).toBe('auto')
 
-    const args = claudeAdapter.buildInvocation({ ...base, mode: 'plan', claude: { model: 'opus[1m]', effort: 'high', tools: ['Task', 'Skill', 'WebSearch'] } }).args
+    const args = claudeAdapter.buildInvocation({ ...base, mode: 'plan', claude: { model: 'opus[1m]', effort: 'high', tools: ['Agent', 'Skill', 'WebSearch'] } }).args
     expect(args.slice(args.indexOf('--model'), args.indexOf('--model') + 2)).toEqual(['--model', 'opus[1m]'])
     expect(args.slice(args.indexOf('--effort'), args.indexOf('--effort') + 2)).toEqual(['--effort', 'high'])
-    expect(args[args.indexOf('--tools') + 1]).toBe('Read,Edit,Write,Glob,Grep,Bash,Task,Skill,WebSearch')
+    expect(args[args.indexOf('--tools') + 1]).toBe('Read,Edit,Write,Glob,Grep,Bash,Agent,Skill,WebSearch')
     expect(args[args.indexOf('--permission-mode') + 1]).toBe('plan')
     // Still restricted, still nothing waiting for a prompt.
     expect(args).toEqual(expect.arrayContaining(['--restricted', '--strict-mcp-config', '--permission-prompts', 'none']))
@@ -64,10 +64,13 @@ describe('Claude run options', () => {
     mkdirSync(repo)
     const projects = new ProjectService(join(tmp, 'appdata'))
     const p = await projects.importFolder(repo)
-    expect(p.config!.agent.claude).toEqual({ model: '', effort: '', tools: ['Task', 'Skill'] })
-    const updated = await projects.updateConfig(p.id, { agent: { claude: { model: 'sonnet', effort: 'max', tools: ['WebSearch', 'Task'] } } })
+    expect(p.config!.agent.claude).toEqual({ model: '', effort: '', tools: ['Agent', 'Skill'] })
+    const updated = await projects.updateConfig(p.id, { agent: { claude: { model: 'sonnet', effort: 'max', tools: ['WebSearch', 'Agent'] } } })
     // Tools are kept in a stable order.
-    expect(updated.config!.agent.claude).toEqual({ model: 'sonnet', effort: 'max', tools: ['Task', 'WebSearch'] })
+    expect(updated.config!.agent.claude).toEqual({ model: 'sonnet', effort: 'max', tools: ['Agent', 'WebSearch'] })
+    // Claude Code's old name for the subagent tool still works and is stored under the new one.
+    const legacy = await projects.updateConfig(p.id, { agent: { claude: { tools: ['Task' as never, 'Skill'] } } })
+    expect(legacy.config!.agent.claude.tools).toEqual(['Agent', 'Skill'])
     await expect(projects.updateConfig(p.id, { agent: { claude: { model: '--dangerously-skip-permissions' } } })).rejects.toThrow(/Model/)
     await expect(projects.updateConfig(p.id, { agent: { claude: { effort: 'ultra' as never } } })).rejects.toThrow(/effort/)
     await expect(projects.updateConfig(p.id, { agent: { claude: { tools: ['Bash' as never] } } })).rejects.toThrow(/tools/)
@@ -83,7 +86,7 @@ describe('Claude session capabilities', () => {
     model: 'claude-opus-5-5',
     permissionMode: 'plan',
     claude_code_version: '2.1.330',
-    tools: ['Read', 'Task', 'mcp__health__project_health'],
+    tools: ['Read', 'Agent', 'mcp__health__project_health'],
     mcp_servers: [{ name: 'health', status: 'connected' }, { name: 'notes', status: 'failed' }],
     slash_commands: ['compact', 'init', 'clear', 'model', 'doctor', 'code-review', '__remote', 'my-skill'],
     terminal_slash_commands: ['doctor'],
@@ -100,7 +103,7 @@ describe('Claude session capabilities', () => {
       model: 'claude-opus-5-5',
       version: '2.1.330',
       permissionMode: 'plan',
-      tools: ['Read', 'Task', 'mcp__health__project_health'],
+      tools: ['Read', 'Agent', 'mcp__health__project_health'],
       mcpServers: [{ name: 'health', status: 'connected' }, { name: 'notes', status: 'failed' }],
       // Interactive-only, internal and Thinkerer-handled commands are left out.
       commands: ['compact', 'init', 'code-review', 'my-skill'],
@@ -151,7 +154,7 @@ describe('Claude session capabilities', () => {
     expect(final.mode).toBe('plan')
     expect(final.capabilities?.model).toBe('stand-in')
     expect(seen[0].mode).toBe('plan')
-    expect(seen[0].claude).toEqual({ model: 'haiku', effort: '', tools: ['Task', 'Skill'] })
+    expect(seen[0].claude).toEqual({ model: 'haiku', effort: '', tools: ['Agent', 'Skill'] })
     expect(seen[0].policy.appendSystemPrompt).toMatch(/plan mode/)
     await expect(sup.start(projectId, 'x', 'claude', { mode: 'yolo' as never })).rejects.toThrow(/mode/)
   })

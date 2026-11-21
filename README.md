@@ -162,7 +162,7 @@ The agent controls the **same devices** through the built-in **Mobile emulators*
 `mobile_boot`/`shutdown`, `mobile_screenshot` (at logical-point resolution, saved with the run),
 `mobile_describe_ui`, `mobile_tap`/`swipe`/`type`/`press_key`, `mobile_open_url`,
 `mobile_install_app`/`launch_app`/`terminate_app`/`list_apps` and `mobile_logs`. All coordinates are
-logical points (iOS points, Android dp). Both use one dependency-free driver, `mcp/mobile-driver.mjs`.
+logical points (iOS points, Android dp). Both use one dependency-free driver, `mcp/mobile-driver.mjs` (platform code in `mcp/mobile/`).
 
 The embedded preview and the agent's Playwright browser are **separate browser sessions** that visit
 the same dev server. They don't share cookies or login state; per the spec, a shared live session is

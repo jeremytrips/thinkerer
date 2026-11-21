@@ -12,9 +12,11 @@ const COMPONENTS: Component[] = ['website', 'mobile', 'hardware']
 const TARGETS: Target[] = ['web', 'electron']
 const PROVIDERS: ProviderChoice[] = ['auto', 'claude', 'codex']
 export const EFFORTS: Effort[] = ['', 'low', 'medium', 'high', 'xhigh', 'max']
-export const CLAUDE_OPTIONAL_TOOLS: ClaudeOptionalTool[] = ['Task', 'Skill', 'WebSearch', 'NotebookEdit']
+export const CLAUDE_OPTIONAL_TOOLS: ClaudeOptionalTool[] = ['Agent', 'Skill', 'WebSearch', 'NotebookEdit']
+/** Claude Code renamed its subagent tool from Task to Agent; older project files still say Task. */
+const canonicalTool = (t: unknown) => (t === 'Task' ? 'Agent' : t)
 /** Subagents and skills stay inside the run's limits, so they're on by default; network tools are opt-in. */
-export const DEFAULT_CLAUDE: ClaudeRunConfig = { model: '', effort: '', tools: ['Task', 'Skill'] }
+export const DEFAULT_CLAUDE: ClaudeRunConfig = { model: '', effort: '', tools: ['Agent', 'Skill'] }
 /** A model alias (opus, sonnet…) or full name, optionally with a context suffix such as [1m]. */
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:\-]{0,99}(\[[0-9a-z]{1,10}\])?$/
 
@@ -22,7 +24,7 @@ function normalizeClaude(raw: Partial<ClaudeRunConfig> | undefined): ClaudeRunCo
   return {
     model: typeof raw?.model === 'string' && MODEL.test(raw.model) ? raw.model : DEFAULT_CLAUDE.model,
     effort: EFFORTS.includes(raw?.effort as Effort) ? (raw!.effort as Effort) : DEFAULT_CLAUDE.effort,
-    tools: Array.isArray(raw?.tools) ? CLAUDE_OPTIONAL_TOOLS.filter((t) => raw!.tools!.includes(t)) : [...DEFAULT_CLAUDE.tools]
+    tools: Array.isArray(raw?.tools) ? CLAUDE_OPTIONAL_TOOLS.filter((t) => raw!.tools!.map(canonicalTool).includes(t)) : [...DEFAULT_CLAUDE.tools]
   }
 }
 
@@ -251,8 +253,9 @@ function applyPatch(config: ProjectConfig, patch: ProjectConfigPatch): ProjectCo
       next.agent.claude.effort = claude.effort
     }
     if (claude.tools !== undefined) {
-      if (!Array.isArray(claude.tools) || claude.tools.some((t) => !CLAUDE_OPTIONAL_TOOLS.includes(t))) throw new Error('Invalid Claude tools')
-      next.agent.claude.tools = CLAUDE_OPTIONAL_TOOLS.filter((t) => claude.tools!.includes(t))
+      const asked = Array.isArray(claude.tools) ? claude.tools.map(canonicalTool) : null
+      if (!asked || asked.some((t) => !CLAUDE_OPTIONAL_TOOLS.includes(t as ClaudeOptionalTool))) throw new Error('Invalid Claude tools')
+      next.agent.claude.tools = CLAUDE_OPTIONAL_TOOLS.filter((t) => asked.includes(t))
     }
   }
   for (const key of ['setupCommand', 'teardownCommand'] as const) {

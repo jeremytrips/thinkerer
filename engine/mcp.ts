@@ -174,13 +174,14 @@ export class McpRegistry {
   /** One server ready to launch (placeholders filled), or null if it can't run in this context. */
   async resolveOne(def: McpServerDef, project: Project, ctx: McpRunContext): Promise<{ server: ResolvedMcpServer; secretEnv: Record<string, string> } | null> {
     const preview = ctx.previewUrl !== undefined ? (ctx.previewUrl ?? '') : (project.config?.website.previewUrl ?? '')
-    if (def.id === 'playwright' && !preview) return null
+    const previewOrigin = originOf(preview)
+    if (def.id === 'playwright' && !previewOrigin) return null
     const vars: Record<string, string> = {
       appRoot: ctx.appRoot,
       artifacts: ctx.artifactsDir,
       project: ctx.cwd ?? project.path,
       previewUrl: preview,
-      previewOrigin: preview ? new URL(preview).origin : ''
+      previewOrigin
     }
     const fill = (s: string) => s.replace(/\{(appRoot|artifacts|project|previewUrl|previewOrigin)\}/g, (_m, k: string) => vars[k])
     const transport = def.transport ?? 'stdio'
@@ -226,6 +227,16 @@ export class McpRegistry {
     const raw = await readJson<Partial<RegistryFile>>(this.file).catch(() => null)
     const servers = Array.isArray(raw?.servers) ? raw.servers.flatMap((s) => { try { return [validateDef(s)] } catch { return [] } }) : []
     return { schemaVersion: 1, servers }
+  }
+}
+
+/** Origin of an http(s) URL, or '' for an empty, unfilled ({portN}) or invalid one. */
+function originOf(url: string): string {
+  try {
+    const u = new URL(url)
+    return /^https?:$/.test(u.protocol) && !/[{}]/.test(url) ? u.origin : ''
+  } catch {
+    return ''
   }
 }
 

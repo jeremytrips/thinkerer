@@ -106,7 +106,7 @@ http.createServer((q, s) => { s.setHeader('content-type', 'text/html'); s.end(pa
     await page.getByRole('button', { name: 'Save', exact: true }).click()
     await expect(page.getByText('Saved to .thinkerer/project.json')).toBeVisible()
     const saved = JSON.parse(readFileSync(join(project, '.thinkerer', 'project.json'), 'utf8'))
-    expect(saved.agent.claude).toEqual({ model: 'sonnet', effort: 'high', tools: ['Task', 'Skill', 'WebSearch'] })
+    expect(saved.agent.claude).toEqual({ model: 'sonnet', effort: 'high', tools: ['Agent', 'Skill', 'WebSearch'] })
     await page.screenshot({ path: join(shots, 'settings-claude.png') })
 
     // Plan mode is offered per message in the composer
