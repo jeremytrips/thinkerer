@@ -323,7 +323,13 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       const { servers, secretEnv } = await this.resolveMcp(project, record.id, ws, devices?.ids)
       record.mcpServers = servers.map((s) => s.id)
       this.addEvent(run, { kind: 'status', text: `MCP tools: ${record.mcpServers.join(', ') || 'none'}` })
-      const previewUp = servers.some((s) => s.id === 'playwright') && ws.previewUrl ? await this.previewReady(run, project, ws, ws.previewUrl) : true
+      // Read-only turns (plan, review) do no browser check worth starting a server and waiting 30 s for.
+      const previewUp =
+        servers.some((s) => s.id === 'playwright') && ws.previewUrl
+          ? record.mode === 'plan'
+            ? await responds(ws.previewUrl)
+            : await this.previewReady(run, project, ws, ws.previewUrl)
+          : true
       if (record.mode === 'plan') this.addEvent(run, { kind: 'status', text: 'Plan mode: this message runs read-only; reply to carry the plan out' })
       const instr = await loadProjectInstructions(ws.cwd)
       record.instructionFiles = instr.files
@@ -370,7 +376,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     const chatId = run.record.chatId!
     let chat = await this.chats.get(chatId)
     const config = project.config!
-    if (!chat) return { chat: null, cwd: project.path, env: {}, previewUrl: resolvePreviewUrl(config.website.previewUrl, []) }
+    if (!chat) return { chat: null, cwd: project.path, env: {}, previewUrl: resolvePreviewUrl(config.website.previewUrl, [], true) }
     const save = async (fn: (c: ChatRecord) => void) => {
       chat = await this.chats.update(chatId, fn)
       this.chats.emit('update', chat)
@@ -421,7 +427,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       })
     }
     const cwd = chat.worktree?.path ?? project.path
-    return { chat, cwd, env: worktreeEnv(project, chat), previewUrl: resolvePreviewUrl(config.website.previewUrl, chat.ports) }
+    return { chat, cwd, env: worktreeEnv(project, chat), previewUrl: resolvePreviewUrl(config.website.previewUrl, chat.ports, !chat.worktree) }
   }
 
   private async runSetup(run: ActiveRun, project: Project, chat: ChatRecord, command: string): Promise<void> {

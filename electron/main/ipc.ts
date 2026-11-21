@@ -292,7 +292,7 @@ export function registerIpc(deps: Deps): void {
     try {
       // Resolve the preview URL the way runs in the project folder do; {portN} only exists in chat worktrees.
       const configured = project.config?.website.previewUrl ?? ''
-      const previewUrl = resolvePreviewUrl(configured, [])
+      const previewUrl = resolvePreviewUrl(configured, [], true)
       const resolved = await mcp.resolveOne(def, project, { ...(await deps.mcpContext()), artifactsDir: scratch, previewUrl })
       if (!resolved) {
         if (def.id !== 'playwright') throw new Error('Set its secrets first')

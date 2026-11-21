@@ -60,15 +60,17 @@ export function fixFindingsPrompt(findings: string): string {
 }
 
 /**
- * What the reviewer looks at: from just before the first commit an implement
- * turn made, to HEAD. Not `base...HEAD`: once the base branch has this branch
- * merged, that diff is empty although the work is there. Chats whose turns
- * have no recorded commit fall back to the commit the worktree started from.
+ * What the reviewer looks at: from HEAD as it was before the first implement
+ * turn ran (its checkpoint), to HEAD now. Not `base...HEAD`: once the base
+ * branch has this branch merged, that diff is empty although the work is there.
+ * Not the turn's own commit either: that is only what Thinkerer committed
+ * after the agent stopped, so commits the agent made itself would be missed.
+ * Without a recorded checkpoint, the commit the worktree started from.
  * Null when the range has no changes, so no review is spent on nothing.
  */
 export async function reviewRange(wt: ChatWorktree, cwd: string, turns: RunRecord[]): Promise<string | null> {
-  const first = turns.find((t) => (t.protocolStage ?? 'implement') === 'implement' && t.commit)?.commit
-  const range = first ? `${first}~1..HEAD` : `${wt.baseCommit}..HEAD`
+  const first = turns.find((t) => (t.protocolStage ?? 'implement') === 'implement')
+  const range = `${first?.checkpoint?.head ?? wt.baseCommit}..HEAD`
   const files = (await git(cwd, ['diff', '--name-only', range]).catch(() => '')).trim()
   return files ? range : null
 }

@@ -4,7 +4,8 @@
 const MAX_APPROVAL_CHARS = 80
 const APPROVAL = /^(ok(ay)?|yes|yep|yeah|sure|go( ahead)?|lgtm|looks good|approved?|implement|do it|ship it|proceed|sounds good|perfect|great)\b/i
 /** Anything that hints at a change to the plan keeps the message a plan reply. */
-const CHANGE = /\?|\b(but|instead|except|change|don'?t|do not|not|without|rather|first|wait|also|remove|drop|add|skip|only)\b/i
+const CHANGE =
+  /\?|\b(but|instead|except|change|don'?t|do not|not|no|nope|without|rather|first|wait|hold|also|remove|drop|add|skip|only|think|rethink|reconsider|revise|why|what|how|hmm+|let me|maybe|later|unsure)\b/i
 
 /**
  * Whether a reply at the plan stage reads as "approved, go". Deliberately

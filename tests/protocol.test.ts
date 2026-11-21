@@ -23,6 +23,8 @@ const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd,
 
 /** False: implement turns write nothing either (an implementation that changed no file). */
 let implementWrites = true
+/** True: implement turns first make two commits of their own (a.txt, b.txt), as an agent running `git commit` would. */
+let agentCommits = false
 
 /** Records what each turn was started with; read-only turns write nothing (like a real plan or review). */
 function recordingStandIn(calls: InvocationOptions[]): AgentAdapter {
@@ -33,7 +35,12 @@ function recordingStandIn(calls: InvocationOptions[]): AgentAdapter {
     detect: async () => ({ id: 'claude', label: 'Stand-in', installed: true, executable: process.execPath, version: 'test', authenticated: true, adapterAvailable: true, detail: '', policy: 'test' }),
     buildInvocation: (opts) => {
       calls.push(opts)
-      return { command: opts.executable, args: [FIXTURE, opts.mode === 'plan' || !implementWrites ? 'readonly' : 'ok'], stdin: opts.prompt, env: process.env }
+      const mode = opts.mode === 'plan' || !implementWrites ? 'readonly' : 'ok'
+      if (agentCommits && mode === 'ok') {
+        const own = 'echo a > a.txt && git add a.txt && git commit -qm A && echo b > b.txt && git add b.txt && git commit -qm B'
+        return { command: '/bin/sh', args: ['-c', `${own} && exec "$0" "$1" ok`, opts.executable, FIXTURE], stdin: opts.prompt, env: process.env }
+      }
+      return { command: opts.executable, args: [FIXTURE, mode], stdin: opts.prompt, env: process.env }
     },
     createParser: () => ({ parseLine: parseClaudeLine })
   }
@@ -70,6 +77,7 @@ beforeEach(async () => {
   approvals = new Approvals(appData)
   calls = []
   implementWrites = true
+  agentCommits = false
   sup = new AgentSupervisor(appData, projects, { adapters: [recordingStandIn(calls)], approvals })
   protocol = new ProtocolService({ supervisor: sup, projects, approvals })
 })
@@ -273,6 +281,18 @@ describe('software protocol', () => {
     expect(calls.at(-1)!.prompt).not.toContain('(no changes)')
   })
 
+  it('reviews commits the agent made itself during the first implement turn', async () => {
+    await setup()
+    agentCommits = true
+    const ended = turnEnded()
+    const plan = await protocol.begin(projectId, 'Add files', 'claude')
+    await ended
+    await step(plan.id, 'approve-plan')
+    await step(plan.id, 'start-review')
+    const prompt = calls.at(-1)!.prompt
+    for (const f of ['a.txt', 'b.txt', 'made.txt']) expect(prompt).toContain(`+++ b/${f}`)
+  })
+
   it('refuses a review when the implement turns changed nothing, without starting a turn', async () => {
     await setup()
     implementWrites = false
@@ -298,6 +318,9 @@ describe('software protocol', () => {
     expect(refused.state).not.toBe('merged')
     expect(refused.notes.at(-1)).toMatchObject({ kind: 'merge', ok: false, title: 'Not merged: this chat follows the software protocol (stage: implement)' })
     expect(() => readFileSync(join(repo, 'made.txt'))).toThrow()
+    // Without a worktree there is nothing to merge; that, not "use Ship", is what the user is told.
+    const noWorktree = await runChatCommand('merge', { ...ctx, chat: { ...(await sup.chats.get(plan.id))!, worktreeRemoved: true } })
+    expect(noWorktree.notes.at(-1)).toMatchObject({ ok: false, title: 'Nothing to merge' })
 
     await step(plan.id, 'start-review')
     const shipped = await protocol.advance(projectId, plan.id, 'ship')
@@ -309,7 +332,7 @@ describe('software protocol', () => {
 describe('protocol config and findings', () => {
   it('reads only short, unconditional replies as plan approval', () => {
     for (const yes of ['ok implement', 'OK', 'yes', 'go ahead', 'lgtm', 'Approved.', 'do it', 'looks good, implement it']) expect(looksLikeApproval(yes), yes).toBe(true)
-    for (const no of ['ok, but drop step 3', 'yes?', 'go ahead without tests', 'Change step 2', 'implement only step 1', '/merge', '', `ok ${'x'.repeat(100)}`, 'What about errors']) {
+    for (const no of ['Okay, let me think about it', 'ok no, rethink this', 'ok hold on', 'sure, maybe later', 'ok, but drop step 3', 'yes?', 'go ahead without tests', 'Change step 2', 'implement only step 1', '/merge', '', `ok ${'x'.repeat(100)}`, 'What about errors']) {
       expect(looksLikeApproval(no), no).toBe(false)
     }
   })
@@ -321,6 +344,8 @@ describe('protocol config and findings', () => {
     expect(p.config!.protocol).toEqual({ checkCommand: 'npm run typecheck && npm test', maxReviewRounds: 2, review: { model: '', effort: '' } })
     await expect(projects.updateConfig(p.id, { protocol: { maxReviewRounds: 0 } })).rejects.toThrow('Review rounds')
     await expect(projects.updateConfig(p.id, { protocol: { review: { model: 'bad model!' } } })).rejects.toThrow('Review model')
+    await expect(projects.updateConfig(p.id, { website: { previewUrl: 'http://localhost:{port1:70000}' } })).rejects.toThrow('no valid port')
+    await projects.updateConfig(p.id, { website: { previewUrl: 'http://localhost:{port1:5174}' } })
   })
 
   it('counts findings only in the expected format', () => {

@@ -58,6 +58,7 @@ const list = (items: string[], max = 15) => [...items.slice(0, max).map((i) => `
 async function merge({ project, chat, live, fromProtocol }: CommandContext): Promise<Outcome> {
   const wt = chat.worktree
   if (live) return fail('Not merged: this chat is still working', 'Wait for it to finish or stop it, then run /merge again.')
+  if (!wt || chat.worktreeRemoved) return fail('Nothing to merge', 'This chat works in the project folder, not in a worktree.')
   // A merge before the review lands unreviewed work in the base branch and leaves the reviewer an empty diff.
   if (chat.protocol && chat.protocol.stage !== 'shipped' && !fromProtocol) {
     return fail(
@@ -66,7 +67,6 @@ async function merge({ project, chat, live, fromProtocol }: CommandContext): Pro
       'To try the change before that, open this chat\'s preview.'
     )
   }
-  if (!wt || chat.worktreeRemoved) return fail('Nothing to merge', 'This chat works in the project folder, not in a worktree.')
   const lines: string[] = []
   const leftover = await commitAll(wt.path, 'Uncommitted changes in the chat worktree', `Thinkerer-Chat: ${chat.id}`)
   if (leftover) lines.push(`✅ Committed uncommitted changes in the worktree (${leftover.slice(0, 7)})`)

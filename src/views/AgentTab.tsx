@@ -15,7 +15,6 @@ import type {
   RunSummary,
   Task
 } from '../../shared/types'
-import { looksLikeApproval } from '../../shared/protocol'
 import { api, errorMessage, loadState, saveState } from '../api'
 import { AgentComposer } from './AgentComposer'
 import { ChatHeader, ChatList, byCreated, chatOf, groupChats, mergeRecords, upsertRecord } from './AgentChats'
@@ -25,6 +24,7 @@ import { RestoreDialog } from './Changes'
 import { agentItems, commandOf, matchingCommands, type SlashItem } from './ChatBits'
 import { LIVE } from './ChatTurn'
 import { ProtocolBar } from './ProtocolBar'
+import { composerMode } from './composerMode'
 import { modeAfterGiveBack, type Queued } from './queue'
 import type { TabId } from './ProjectView'
 import { useFollowUps } from './useFollowUps'
@@ -348,9 +348,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   const liveTurn = turns.find((t) => LIVE.includes(t.status))
   // In a protocol chat the stage decides how a message runs, not the mode picker.
   const protocolChat = chat ? !!record?.protocol : useProtocol
-  // The engine decides with the same rule (shared/protocol.ts), so what the button says is what happens.
-  const approving = !!chat && record?.protocol?.stage === 'plan' && looksLikeApproval(draft)
-  const planning = protocolChat ? !approving && (!chat || record?.protocol?.stage === 'plan') : mode === 'plan'
+  const { approving, planning } = composerMode({ hasChat: !!chat, protocolChat, stage: record?.protocol?.stage, mode, draft })
 
   const items = transcriptItems(turns, record?.notes ?? [])
   const lastTurnId = turns.at(-1)?.id

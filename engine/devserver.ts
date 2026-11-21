@@ -35,7 +35,7 @@ export interface DevTarget {
 
 export function projectTarget(project: Project): DevTarget {
   // The project folder has no reserved ports: {portN} needs a fallback ({port1:5174}) to give it a URL.
-  return { chatId: null, cwd: project.path, env: {}, url: resolvePreviewUrl(project.config?.website.previewUrl ?? '', []) }
+  return { chatId: null, cwd: project.path, env: {}, url: resolvePreviewUrl(project.config?.website.previewUrl ?? '', [], true) }
 }
 
 const scopeKey = (projectId: string, chatId: string | null) => (chatId ? `${projectId}:${chatId}` : projectId)
@@ -180,7 +180,8 @@ export class DevServerManager extends EventEmitter<DevServerEvents> {
     const deadline = Date.now() + timeoutMs
     for (;;) {
       const status = this.servers.get(scopeKey(project.id, target.chatId))?.state.status
-      if (status === 'running' || status === 'external') return true
+      // The saved status can be stale (a server still alive but no longer listening): only an answer counts.
+      if (status === 'running' || status === 'external') return responds(target.url)
       if (status !== 'starting' || Date.now() >= deadline) return false
       await new Promise((r) => setTimeout(r, 250))
     }

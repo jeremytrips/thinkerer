@@ -129,8 +129,8 @@ The bar at the top of the chat shows the stage and offers the next step:
    Then Thinkerer runs the project's check command itself in the worktree (shown as a **Checks** note).
    If the checks fail, **Fix failing checks** sends only the last 50 lines of output back to the agent.
 3. **Review.** A fresh, read-only session (no sub-agents) gets only the plan, the check result and the
-   diff of the implement turns (from just before their first commit to the branch head, so it holds even
-   if the base branch already has the work). A review with nothing to diff is refused, and no turn runs.
+   diff of the implement turns (from HEAD before the first implement turn to the branch head, so it holds
+   even if the base branch already has the work, and includes commits the agent made itself). A review with nothing to diff is refused, and no turn runs.
    The diff leaves lockfiles and minified files left out; above 60k characters, only the file list). It
    replies one finding per line. **Fix findings** sends just those findings back to the implementer's
    session. Review rounds are capped (2 by default).
@@ -164,11 +164,13 @@ For example: setup `cp "$THINKERER_PROJECT_ROOT/.env" . && npm ci && docker comp
 `docker compose down -v`, compose ports like `"${THINKERER_PORT_1:-5432}:5432"`. The preview URL may use
 `{port1}`…: with `http://localhost:{port1}` and a dev command such as `npm run dev -- --port
 $THINKERER_PORT_1`, the preview beside each chat runs and shows that chat's worktree. The Website tab
-runs the project folder, which has no worktree ports: `{port1:5174}` gives it port 5174 instead (this
-repository uses `http://localhost:{port1:5174}` with `npm run dev:web -- --port ${THINKERER_PORT_1:-5174}`).
+runs the project folder, which has no worktree ports: `{port1:5174}` gives it port 5174 instead. The
+fallback is for the project folder only; a worktree chat without its own port has no preview rather than
+the project folder's. This repository uses `http://localhost:{port1:5174}` with `npm run dev:web`, whose
+Vite config reads `THINKERER_PORT_1` (so it works on every OS's shell).
 
 Before a turn whose agent has the Playwright tools, Thinkerer checks that the preview answers. If it
-doesn't and the dev command is approved, it starts the chat's dev server and waits up to 30 s. If the
+doesn't, the turn can edit (read-only plan and review turns never start a server) and the dev command is approved, it starts the chat's dev server and waits up to 30 s. If the
 preview is still down, the agent is told to skip the browser check and say so, instead of being asked
 to check a page nothing serves.
 

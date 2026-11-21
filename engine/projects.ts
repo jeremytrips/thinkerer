@@ -255,6 +255,9 @@ function applyPatch(config: ProjectConfig, patch: ProjectConfigPatch): ProjectCo
   if (patch.website?.previewUrl !== undefined) {
     const url = patch.website.previewUrl
     if (url !== '') {
+      for (const m of url.matchAll(PORT_PLACEHOLDER)) {
+        if (m[2] !== undefined && (Number(m[2]) < 1 || Number(m[2]) > 65535)) throw new Error(`Preview URL: ${m[0]} has no valid port (1–65535)`)
+      }
       let parsed: URL
       try {
         // {portN} placeholders are filled per chat worktree; check the rest of the URL.

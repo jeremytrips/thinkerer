@@ -233,12 +233,12 @@ describe('AgentSupervisor', () => {
     await projects.updateConfig(projectId, { agent: { enabledMcpServers: ['playwright'] } })
     const registry = new McpRegistry(join(tmp, 'appdata'), { get: async () => null, set: async () => {}, names: async () => [] })
     const mcp = { registry, context: async () => ({ appRoot: '/app', node: { command: 'node', env: {} } }) }
-    const prompt = async (url: string, devServers?: { ensureRunning: () => Promise<boolean> }) => {
+    const prompt = async (url: string, devServers?: { ensureRunning: () => Promise<boolean> }, mode: 'auto' | 'plan' = 'auto') => {
       await projects.updateConfig(projectId, { website: { previewUrl: url } })
       const seen: InvocationOptions[] = []
       const sup = new AgentSupervisor(join(tmp, 'appdata'), projects, { adapters: [standIn('ok', '', seen)], mcp, devServers })
       const finished = waitFor(sup, done)
-      await sup.start(projectId, 'go', 'claude')
+      await sup.start(projectId, 'go', 'claude', { mode })
       await finished
       expect(seen[0].mcp.map((s) => s.id)).toContain('playwright')
       return seen[0].policy.appendSystemPrompt
@@ -249,6 +249,11 @@ describe('AgentSupervisor', () => {
       expect(skipped).not.toContain('use the playwright MCP tools')
 
       let asked = 0
+      // A read-only turn does not start (and wait for) a dev server.
+      const planned = await prompt(down, { ensureRunning: async () => (asked++, true) }, 'plan')
+      expect(asked).toBe(0)
+      expect(planned).toContain('skip the browser check')
+
       const started = await prompt(down, { ensureRunning: async () => (asked++, true) })
       expect(asked).toBe(1)
       expect(started).toContain(`use the playwright MCP tools against ${down}`)
