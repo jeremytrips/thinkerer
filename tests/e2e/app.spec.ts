@@ -116,3 +116,21 @@ test('settings: save tracks unsaved changes, trims values and rejects empty numb
     rmSync(folder, { recursive: true, force: true })
   }
 })
+
+test('dark is the default theme and light still applies', async () => {
+  const appData = mkdtempSync(join(tmpdir(), 'thinkerer-e2e-'))
+  try {
+    const { app, page } = await launch(appData)
+    await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible()
+    const bg = () => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--bg').trim())
+    await page.emulateMedia({ colorScheme: 'dark' })
+    expect(await bg()).toBe('#14161a')
+    await page.screenshot({ path: join(shots, 'theme-dark.png') })
+    await page.emulateMedia({ colorScheme: 'light' })
+    expect(await bg()).toBe('#f6f6f4')
+    await page.screenshot({ path: join(shots, 'theme-light.png') })
+    await app.close()
+  } finally {
+    rmSync(appData, { recursive: true, force: true })
+  }
+})
