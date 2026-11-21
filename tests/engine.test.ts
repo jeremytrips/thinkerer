@@ -7,7 +7,7 @@ import { claudeAdapter, parseClaudeLine } from '../engine/agents/claude'
 import { DEFAULT_POLICY } from '../engine/agents/supervisor'
 import { listDir, readFilePreview } from '../engine/files'
 import { gitStatus } from '../engine/git'
-import { ProjectService } from '../engine/projects'
+import { ProjectService, detectSetupCommand } from '../engine/projects'
 
 let tmp: string
 let appData: string
@@ -38,6 +38,16 @@ describe('ProjectService', () => {
     // A fresh service instance reads only what is on disk — same as an app restart.
     const reopened = await new ProjectService(appData).list()
     expect(reopened.map((p) => p.id)).toEqual([imported.id])
+  })
+
+  it('suggests installing from the lockfile as the worktree setup command', async () => {
+    const repo = makeRepo()
+    writeFileSync(join(repo, 'package-lock.json'), '{}')
+    const p = await new ProjectService(appData).importFolder(repo)
+    expect(p.config!.worktrees.setupCommand).toBe('npm ci')
+    expect(detectSetupCommand(['pnpm-lock.yaml'])).toBe('pnpm install --frozen-lockfile')
+    expect(detectSetupCommand(['yarn.lock'])).toBe('yarn install --frozen-lockfile')
+    expect(detectSetupCommand(['README.md'])).toBe('')
   })
 
   it('does not duplicate a folder that is imported twice', async () => {

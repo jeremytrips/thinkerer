@@ -24,8 +24,10 @@ next, and `docs/DESIGN.md` before any UI work.
 5. **Ports and preview.** Use `$THINKERER_PORT_1`… not 5173/5174. Don't run `npm run dev` (it starts
    a second app). `npm run dev:web` serves the renderer alone ("browser preview": no
    `window.thinkerer`, desktop features render empty); that is what the Playwright MCP browser checks.
+   Each chat's preview runs on its own `$THINKERER_PORT_1` (`{port1:5174}`); if it is down, say so.
 6. **Restart notice.** Edits to `electron/`, `engine/`, `shared/` or `mcp/` need the user to click
-   **Restart app**; say so in your summary. Renderer edits hot-reload after `/merge`.
+   **Restart app**; say so in your summary. Renderer edits hot-reload after the merge (in a protocol
+   chat that is **Ship**; `/merge` refuses before it).
 7. **Provider-neutral.** Anything that works for one agent provider must go through the adapter
    interface (`engine/agents/types.ts`) so every provider gets it. Same MCP tools, same instructions.
 

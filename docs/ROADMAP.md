@@ -29,9 +29,9 @@ Why: every later studio reuses it.
 ### R-03 · Split oversized views · `todo`
 Why: `AgentTab.tsx` (~800 lines) and `supervisor.ts` (~750) make agent runs expensive.
 Progress: `AgentTab.tsx` split into `Agent{Chats,Composer,Preview,Transcript}.tsx` + `useFollowUps.ts`
-(it has since grown back to 487 lines, so it is still to do); `mcp/mobile-driver.mjs` split into `mcp/mobile/`.
-`engine/agents/supervisor.ts` (882 → 417 lines) split into `policy`, `prompt`, `providerSelect`,
-`runState`, `runStore`, `workspace` and `process` modules; every file in `engine/agents` is now under ~420 lines.
+(it has since grown back to 489 lines, so it is still to do); `mcp/mobile-driver.mjs` split into `mcp/mobile/`.
+`engine/agents/supervisor.ts` (882 → 425 lines) split into `policy`, `prompt`, `providerSelect`,
+`runState`, `runStore`, `workspace` and `process` modules; every file in `engine/agents` is now at most 425 lines.
 - [ ] No file over ~400 lines in `src/views` and `engine/agents`; behaviour unchanged; tests pass.
 
 ### R-10 · Software protocol · `done` (2026-11-21)
@@ -41,6 +41,9 @@ Why: a repeatable process for software chats that costs fewer tokens: plan, impl
 - [x] Review in a fresh read-only session (Claude: `/code-review` on the chat's range, with the plan; Codex: the plan and the diff); fixes resume the implementer.
 - [x] Report on ship from recorded data, including reported tokens per stage; cleanup stays manual.
 - [x] Settings → Software protocol: check command, review rounds, review model and effort.
+- [x] Fixes from the first real use (2026-11-21): a plain "ok implement" reply approves the plan; the
+  review diffs the implement commits and refuses an empty diff; `/merge` waits for Ship; lockfile-based
+  worktree setup suggestion; per-chat preview started before a turn, or the browser check is skipped.
 
 ### R-11 · Project management (board) · `doing`
 Why: the Tasks tab grows from a flat list into the project's plan, shared by the user and every agent.

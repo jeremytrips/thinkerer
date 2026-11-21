@@ -3,7 +3,7 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { DevServerManager } from '../engine/devserver'
+import { DevServerManager, projectTarget } from '../engine/devserver'
 import type { DevServerState, Project } from '../shared/types'
 
 let dir: string
@@ -68,6 +68,37 @@ describe('DevServerManager', () => {
 
     // Editing the command (e.g. by an agent) requires approval again.
     expect((await m.state(project(cmd + ' # changed', port))).needsApproval).toBe(true)
+  }, 20_000)
+
+  it('starts an approved preview and waits until it is ready, or reports that it cannot', async () => {
+    const port = await freePort()
+    const cmd = `node -e "setTimeout(()=>require('http').createServer((q,s)=>s.end('ok')).listen(${port}),300)"`
+    const p = project(cmd, port)
+    const m = new DevServerManager(dir)
+    expect(await m.ensureRunning(p, projectTarget(p))).toBe(false) // not approved: nothing started
+    expect((await m.state(p)).status).toBe('stopped')
+    await m.approve(p.id, cmd)
+    expect(await m.ensureRunning(p, projectTarget(p))).toBe(true)
+    const r = await fetch(`http://127.0.0.1:${port}`)
+    expect(await r.text()).toBe('ok')
+    m.stop(p.id)
+
+    // Alive but no longer listening: the saved 'running' status must not count as up.
+    const deaf = await freePort()
+    const deafCmd = `node -e "const s=require('http').createServer((q,r)=>r.end('ok')).listen(${deaf});setTimeout(()=>s.close(),1500);setInterval(()=>{},1000)"`
+    const dp = project(deafCmd, deaf)
+    const m2 = new DevServerManager(dir) // its own manager: the first server (same project id) may still be exiting
+    await m2.approve(dp.id, deafCmd)
+    expect(await m2.ensureRunning(dp, projectTarget(dp))).toBe(true)
+    await new Promise((r) => setTimeout(r, 2500))
+    expect((await m2.state(dp)).status).toBe('running')
+    expect(await m2.ensureRunning(dp, projectTarget(dp))).toBe(false)
+    m2.stop(dp.id)
+
+    const crash = project('exit 3', await freePort())
+    const m3 = new DevServerManager(dir)
+    await m3.approve(crash.id, 'exit 3')
+    expect(await m3.ensureRunning(crash, projectTarget(crash))).toBe(false)
   }, 20_000)
 
   it('runs one server per chat worktree, each in its folder with its own port', async () => {

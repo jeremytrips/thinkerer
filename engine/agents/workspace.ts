@@ -3,6 +3,7 @@ import type { ChatRecord, Project } from '../../shared/types'
 import type { Approvals } from '../approvals'
 import type { ChatStore } from '../chats'
 import { deviceScope, type ChatDevices } from '../chatDevices'
+import { responds, type DevServerManager } from '../devserver'
 import { allocatePorts, composeProjectName, createWorktree, resolvePreviewUrl, runHook, worktreeEnv } from '../worktrees'
 import type { ActiveRun, RunReporter, Workspace } from './runState'
 
@@ -21,7 +22,7 @@ export async function prepareWorkspace(ctx: WorkspaceContext, run: ActiveRun, pr
   const chatId = run.record.chatId!
   let chat = await ctx.chats.get(chatId)
   const config = project.config!
-  if (!chat) return { chat: null, cwd: project.path, env: {}, previewUrl: resolvePreviewUrl(config.website.previewUrl, []) }
+  if (!chat) return { chat: null, cwd: project.path, env: {}, previewUrl: resolvePreviewUrl(config.website.previewUrl, [], true) }
   const save = async (fn: (c: ChatRecord) => void) => {
     chat = await ctx.chats.update(chatId, fn)
     ctx.chats.emit('update', chat)
@@ -72,7 +73,7 @@ export async function prepareWorkspace(ctx: WorkspaceContext, run: ActiveRun, pr
     })
   }
   const cwd = chat.worktree?.path ?? project.path
-  return { chat, cwd, env: worktreeEnv(project, chat), previewUrl: resolvePreviewUrl(config.website.previewUrl, chat.ports) }
+  return { chat, cwd, env: worktreeEnv(project, chat), previewUrl: resolvePreviewUrl(config.website.previewUrl, chat.ports, !chat.worktree) }
 }
 
 async function runSetup(ctx: WorkspaceContext, run: ActiveRun, project: Project, chat: ChatRecord, command: string): Promise<void> {
@@ -112,4 +113,31 @@ export async function chatDevices(devices: ChatDevices | undefined, project: Pro
   } catch (err) {
     return { ids: await devices.ids(scope).catch(() => []), problems: [`This chat's emulators are unavailable: ${(err as Error).message}`] }
   }
+}
+
+/**
+ * Whether the turn's preview answers, starting its dev server first when
+ * the user has approved the command. A browser check against nothing only
+ * burns tokens on confusing failures, so the instructions follow this.
+ */
+export async function previewReady(
+  ctx: RunReporter,
+  devServers: Pick<DevServerManager, 'ensureRunning'> | undefined,
+  run: ActiveRun,
+  project: Project,
+  ws: Workspace,
+  url: string
+): Promise<boolean> {
+  if (await responds(url)) return true
+  if (!devServers) return false
+  run.record.currentAction = `Starting the preview at ${url}…`
+  ctx.emitUpdate(run.record)
+  const target = { chatId: ws.chat?.worktree && !ws.chat.worktreeRemoved ? ws.chat.id : null, cwd: ws.cwd, env: ws.env, url }
+  const ok = await devServers.ensureRunning(project, target).catch(() => false)
+  ctx.addEvent(run, {
+    kind: 'status',
+    text: ok ? `Preview started at ${url}` : `The preview at ${url} is not running and could not be started (no approved dev command, or it was not ready in time); the browser check is skipped`,
+    meta: ok ? undefined : { notice: true }
+  })
+  return ok
 }

@@ -43,7 +43,9 @@ const supervisor = new AgentSupervisor(appData, projects, {
   board,
   approvals,
   mcp: { registry: mcp, context: mcpContext },
-  devices: chatDevices
+  devices: chatDevices,
+  // A turn whose preview is down gets it started (approved dev command only) before the agent is told to check it.
+  devServers
 })
 // Tasks follow their chats: review, merged/shipped, discarded.
 board.followChats(supervisor.chats, async (projectId) => {

@@ -14,7 +14,8 @@ export function buildInstructions(
   mode: RunMode,
   devices: string[] | undefined,
   extra: string,
-  project = ''
+  project = '',
+  previewUp = true
 ): string {
   const lines = [base]
   if (mode === 'plan') {
@@ -36,9 +37,11 @@ export function buildInstructions(
     }
   }
   const preview = ws.previewUrl
-  if (servers.some((s) => s.id === 'playwright') && preview) {
+  if (servers.some((s) => s.id === 'playwright') && preview && !previewUp) {
+    lines.push(`The preview at ${preview} is not running, so skip the browser check and say in your summary that it was not run.`)
+  } else if (servers.some((s) => s.id === 'playwright') && preview) {
     lines.push(
-      `To check UI changes in a real browser, use the playwright MCP tools against ${preview} (served by the project's dev command, which the user starts from Thinkerer's preview; if it is not reachable, say so).`,
+      `To check UI changes in a real browser, use the playwright MCP tools against ${preview} (served by the project's dev command; if it stops responding, say so).`,
       'Navigation is limited to that origin. Take a screenshot (browser_take_screenshot) of the verified state; screenshots are saved with the run, not in the project.',
       'State clearly whether the browser check PASSED or FAILED.'
     )

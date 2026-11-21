@@ -45,6 +45,7 @@ import type {
 } from '../../shared/types'
 import type { PreviewManager, PreviewScope } from './preview'
 import { deviceScope, type ChatDevices } from '../../engine/chatDevices'
+import { looksLikeApproval } from '../../shared/protocol'
 
 interface Deps {
   projects: ProjectService
@@ -268,7 +269,7 @@ export function registerIpc(deps: Deps): void {
     try {
       // Resolve the preview URL the way runs in the project folder do; {portN} only exists in chat worktrees.
       const configured = project.config?.website.previewUrl ?? ''
-      const previewUrl = resolvePreviewUrl(configured, [])
+      const previewUrl = resolvePreviewUrl(configured, [], true)
       const resolved = await mcp.resolveOne(def, project, { ...(await deps.mcpContext()), artifactsDir: scratch, previewUrl })
       if (!resolved) {
         if (def.id !== 'playwright') throw new Error('Set its secrets first')
@@ -486,8 +487,8 @@ export function registerIpc(deps: Deps): void {
     const base = { taskId: taskId ? str(taskId, 'task id', 100) : null, attachments }
     let summary
     if (followUp?.protocol && followUp.projectId === projectId) {
-      // Past the plan, a message is more work for the implementer, and its checks run afterwards.
-      if (followUp.protocol.stage !== 'plan') await approveCheck(await okProject(projectId))
+      // Past the plan (or approving it by reply), a message is more work for the implementer, and its checks run afterwards.
+      if (followUp.protocol.stage !== 'plan' || looksLikeApproval(text)) await approveCheck(await okProject(projectId))
       summary = await protocol.reply(followUp, text, base)
     } else if (!chatId && useProtocol === true) {
       summary = await protocol.begin(projectId, text, provider as ProviderChoice, base)

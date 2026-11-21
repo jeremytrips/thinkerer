@@ -69,6 +69,13 @@ describe('buildInstructions', () => {
     expect(buildInstructions('B', pw, folder, 'auto', undefined, '')).not.toContain('PASSED or FAILED')
   })
 
+  it('tells the agent to skip the browser check when the preview is down', () => {
+    const pw = [{ id: 'playwright' }] as ResolvedMcpServer[]
+    const text = buildInstructions('B', pw, { ...folder, previewUrl: 'http://localhost:4100' }, 'auto', undefined, '', '', false)
+    expect(text).toContain('The preview at http://localhost:4100 is not running, so skip the browser check')
+    expect(text).not.toContain('PASSED or FAILED')
+  })
+
   it('puts extra instructions before the project instructions, which come last', () => {
     const text = buildInstructions('B', [], folder, 'auto', undefined, 'STAGE', '# Rules')
     expect(text.indexOf('STAGE')).toBeLessThan(text.indexOf('Project instructions'))

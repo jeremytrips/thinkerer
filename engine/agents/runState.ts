@@ -16,6 +16,7 @@ import type { Approvals } from '../approvals'
 import type { BoardService } from '../board'
 import type { ChatStore } from '../chats'
 import type { ChatDevices } from '../chatDevices'
+import type { DevServerManager } from '../devserver'
 import type { McpRegistry, McpRunContext } from '../mcp'
 import type { AgentAdapter, RunPolicy } from './types'
 
@@ -59,6 +60,8 @@ export interface SupervisorOptions {
   approvals?: Approvals
   /** Each chat's own emulators; without it, the mobile server is not limited to a chat. */
   devices?: ChatDevices
+  /** Starts a turn's preview when it is down; without it, a down preview only changes the instructions. */
+  devServers?: Pick<DevServerManager, 'ensureRunning'>
 }
 
 export interface StartOptions {

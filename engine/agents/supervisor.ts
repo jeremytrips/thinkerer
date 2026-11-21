@@ -8,6 +8,7 @@ import { Approvals } from '../approvals'
 import { ATTACHMENT_ID, attachmentPath, removeAttachment } from '../attachments'
 import { ChatStore, chatTitle, newChat } from '../chats'
 import { createCheckpoint, diffSummary, recordAfter } from '../checkpoints'
+import { responds } from '../devserver'
 import { gitStatus } from '../git'
 import type { ResolvedMcpServer } from '../mcp'
 import type { ProjectService } from '../projects'
@@ -22,7 +23,7 @@ import { missingAdapter, rateLimitUntil, selectProvider, type ProviderSelection 
 import { newRunRecord, summarize, workingTurns, type ActiveRun, type StartOptions, type SupervisorEvents, type SupervisorOptions, type Workspace } from './runState'
 import { RUN_ID, RunStore } from './runStore'
 import { blockedCommand, type AgentAdapter, type RunPolicy } from './types'
-import { chatDevices, prepareWorkspace } from './workspace'
+import { chatDevices, prepareWorkspace, previewReady } from './workspace'
 
 // Public surface of this module; the pieces live in the files above.
 export { DEFAULT_POLICY, DEFAULT_PREFERENCE, MAX_PARALLEL_RUNS } from './policy'
@@ -194,6 +195,13 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       const { servers, secretEnv } = await this.resolveMcp(project, record.id, ws, devices?.ids)
       record.mcpServers = servers.map((s) => s.id)
       this.addEvent(run, { kind: 'status', text: `MCP tools: ${record.mcpServers.join(', ') || 'none'}` })
+      // Read-only turns (plan, review) do no browser check worth starting a server and waiting 30 s for.
+      const previewUp =
+        servers.some((s) => s.id === 'playwright') && ws.previewUrl
+          ? record.mode === 'plan'
+            ? await responds(ws.previewUrl)
+            : await previewReady(this.workspaceContext(), this.opts.devServers, run, project, ws, ws.previewUrl)
+          : true
       if (record.mode === 'plan') this.addEvent(run, { kind: 'status', text: 'Plan mode: this message runs read-only; reply to carry the plan out' })
       const instr = await loadProjectInstructions(ws.cwd)
       record.instructionFiles = instr.files
@@ -204,7 +212,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
         cwd: ws.cwd,
         prompt: record.prompt + attachmentNote(record.attachments ?? []),
         resumeSessionId: run.resumeSessionId,
-        policy: { ...this.policy, appendSystemPrompt: buildInstructions(this.policy.appendSystemPrompt, servers, ws, record.mode ?? 'auto', devices?.ids, run.instructions, instr.text) },
+        policy: { ...this.policy, appendSystemPrompt: buildInstructions(this.policy.appendSystemPrompt, servers, ws, record.mode ?? 'auto', devices?.ids, run.instructions, instr.text, previewUp) },
         mcp: servers,
         secretEnv,
         mode: record.mode ?? 'auto',
