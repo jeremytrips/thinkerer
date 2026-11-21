@@ -52,7 +52,7 @@ test('a protocol chat goes plan → implement (approved by reply) + checks → r
     await page.getByRole('tab', { name: 'Agent' }).click()
     await page.getByRole('button', { name: 'Preview' }).click()
 
-    await expect(page.getByLabel('Software protocol')).toBeChecked()
+    await expect(page.getByLabel('Chat type')).toHaveValue('feature')
     await expect(page.getByLabel('Mode for the next message')).toHaveCount(0)
     const composer = page.getByRole('textbox', { name: 'Message to the agent' })
     await composer.fill('Add a file')

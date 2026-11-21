@@ -69,10 +69,15 @@ export function AgentTranscript(p: Props) {
           <span className="mono">{p.isGit ? 'its base branch' : 'main'}</span>, then <span className="mono">/cleanup</span> to check nothing
           is left and remove the worktree.
         </p>
-        {p.useProtocol && (
+        {p.useProtocol ? (
           <p className="muted">
-            With the software protocol on, your first message is planned read-only. You approve the plan, the agent implements it with
-            tests, Thinkerer runs the checks, a fresh session reviews the diff, and you ship it to the base branch.
+            A feature chat follows the software protocol: your first message is planned read-only. You approve the plan, the agent
+            implements it with tests, Thinkerer runs the checks, a fresh session reviews the diff, and you ship it to the base branch.
+          </p>
+        ) : (
+          <p className="muted">
+            A plain chat has no plan, review or ship steps: each message runs in the mode you pick below. Choose “Feature” under Type for
+            the full protocol.
           </p>
         )}
         {p.liveChats > 0 && (

@@ -165,9 +165,15 @@ export function AgentComposer(p: Props) {
           </>
         )}
         {!chat && (
-          <label className="inline" title="Plan, then implement with tests, then an independent review, then ship. Thinkerer runs the checks and the merge itself.">
-            <input type="checkbox" checked={p.useProtocol} onChange={(e) => p.setUseProtocol(e.target.checked)} />
-            Software protocol
+          <label
+            className="inline"
+            title="Feature: plan, then implement with tests, then an independent review, then ship; Thinkerer runs the checks and the merge itself. Chat: an ordinary conversation, with the mode picker."
+          >
+            Type
+            <select value={p.useProtocol ? 'feature' : 'chat'} onChange={(e) => p.setUseProtocol(e.target.value === 'feature')} aria-label="Chat type">
+              <option value="feature">Feature (plan → review → ship)</option>
+              <option value="chat">Chat</option>
+            </select>
           </label>
         )}
         {!p.protocolChat && (
