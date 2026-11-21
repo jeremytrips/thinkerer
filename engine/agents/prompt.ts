@@ -60,7 +60,7 @@ export function buildInstructions(
   )
   if (servers.some((s) => s.id === 'health')) lines.push('The health MCP server reports project health (git state, preview reachability).')
   if (servers.some((s) => s.id === 'board')) {
-    lines.push('The board MCP server is the project’s task board: board_current_task shows the task this chat works on; tick its criteria (board_check) only once verified, and record follow-up work there (board_create). Never edit files under .thinkerer/local/.')
+    lines.push('The board MCP server is the project’s task board: board_current_task shows the task this chat works on; tick its criteria (board_check) only once verified, and record follow-up work there (board_create). Break work into tasks under an epic (one chat each); a "done when" list holds checks that prove an item is finished, never work items. Never edit files under .thinkerer/local/.')
   }
   if (extra) lines.push(extra)
   // Last, and on its own lines: the project's own instructions, read by Thinkerer (see instructions.ts).

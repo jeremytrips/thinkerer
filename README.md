@@ -122,7 +122,8 @@ The result is commit `8438cfd`; typecheck, unit and e2e tests passed when re-run
   `board_overview`, `board_list`, `board_get`, `board_current_task`, `board_create`, `board_update`, `board_check` (tick
   one criterion), `board_archive`, `board_unarchive`. No delete. Agent changes are recorded as that chat's and appear in
   the Tasks tab within about a second (the app polls SQLite's `data_version`). It runs on Thinkerer's own Node (Electron
-  as Node), not the `node` on your PATH, because it needs `node:sqlite`.
+  as Node), not the `node` on your PATH, because it needs `node:sqlite`. When it is enabled, every run's instructions
+  (any project, any provider) say to break work into tasks under an epic and to keep "done when" lists for checks only.
 - **Verified** 2026-11-21 by `npm test` and `tests/e2e/tasks.spec.ts`, and by hand in the running app after a restart:
   an agent chat moved `docs/ROADMAP.md` into the board through the board MCP server.
 
