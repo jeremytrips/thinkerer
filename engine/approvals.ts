@@ -5,7 +5,7 @@ import { readJson, writeJson } from './store'
 // agent can edit that file, so each one only runs once the user has approved
 // that exact text. One approved command per project and kind.
 
-export type CommandKind = 'dev' | 'setup' | 'teardown'
+export type CommandKind = 'dev' | 'setup' | 'teardown' | 'check'
 
 type ApprovalsFile = Record<string, Partial<Record<CommandKind, string>>>
 

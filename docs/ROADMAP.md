@@ -30,6 +30,14 @@ Why: every later studio reuses it.
 Why: `AgentTab.tsx` (~800 lines) and `supervisor.ts` (~750) make agent runs expensive.
 - [ ] No file over ~400 lines in `src/views` and `engine/agents`; behaviour unchanged; tests pass.
 
+### R-10 · Software protocol · `done` (2026-11-21)
+Why: a repeatable process for software chats that costs fewer tokens: plan, implement + tests, review, ship.
+- [x] Stages plan → implement → review → ship on a chat; the user approves each step.
+- [x] Thinkerer runs the checks and the merge itself; only failing output goes back to the agent.
+- [x] Review in a fresh read-only session with only the plan and the diff; fixes resume the implementer.
+- [x] Report on ship from recorded data, including reported tokens per stage; cleanup stays manual.
+- [ ] Settings form for `protocol` options (today: `.thinkerer/project.json`).
+
 ## Next
 
 ### R-04 · Interactive approvals · `todo`

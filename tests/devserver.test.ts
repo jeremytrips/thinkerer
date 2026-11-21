@@ -32,6 +32,7 @@ const project = (command: string, port: number): Project => ({
     website: { devCommand: command, previewUrl: `http://127.0.0.1:${port}` },
     agent: { provider: 'auto', enabledMcpServers: [], claude: { model: '', effort: '', tools: [] } },
     worktrees: { setupCommand: '', teardownCommand: '', ports: 0 },
+    protocol: { checkCommand: '', maxReviewRounds: 2, review: { model: '', effort: '' } },
     marketing: { enabled: true }
   }
 })

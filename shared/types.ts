@@ -29,7 +29,18 @@ export interface ProjectConfig {
   agent: { provider: ProviderChoice; enabledMcpServers: string[]; claude: ClaudeRunConfig }
   /** Hooks run in every chat's worktree (e.g. docker compose up / down), and how many free ports it gets. */
   worktrees: WorktreeConfig
+  /** The software protocol (Plan → Implement + tests → Review → Ship). */
+  protocol: ProtocolConfig
   marketing: { enabled: boolean }
+}
+
+export interface ProtocolConfig {
+  /** Run by Thinkerer in the worktree after each implement turn (e.g. "npm run typecheck && npm test"). Empty = no checks. */
+  checkCommand: string
+  /** Review rounds allowed before the user has to ship or continue by hand. */
+  maxReviewRounds: number
+  /** Claude model and effort for review turns; empty = the project's Claude options. */
+  review: { model: string; effort: Effort }
 }
 
 export interface WorktreeConfig {
@@ -54,6 +65,7 @@ export interface ProjectConfigPatch {
   website?: { devCommand?: string; previewUrl?: string }
   agent?: { provider?: ProviderChoice; enabledMcpServers?: string[]; claude?: Partial<ClaudeRunConfig> }
   worktrees?: Partial<WorktreeConfig>
+  protocol?: { checkCommand?: string; maxReviewRounds?: number; review?: { model?: string; effort?: Effort } }
 }
 
 export interface FileEntry {
@@ -332,6 +344,8 @@ export interface RunRecord {
   prompt: string
   /** 'plan' = read-only: the agent investigates and proposes a plan. Absent on older runs (= auto). */
   mode?: RunMode
+  /** The protocol stage this turn belongs to; absent outside protocol chats. */
+  protocolStage?: ProtocolTurnStage
   /** What the CLI reported about its session (tools, MCP status, commands…). Absent when it reports nothing. */
   capabilities?: AgentCapabilities | null
   taskId: string | null
@@ -371,10 +385,36 @@ export type RunSummary = Omit<RunRecord, 'events'>
 export type ChatState = 'setting-up' | 'active' | 'merged' | 'done'
 export type ChatCommand = 'merge' | 'cleanup' | 'done' | 'discard'
 
+/** Where a protocol chat is. 'shipped' = merged; cleanup stays a manual /cleanup. */
+export type ProtocolStage = 'plan' | 'implement' | 'review' | 'shipped'
+export type ProtocolTurnStage = 'plan' | 'implement' | 'review'
+/** What the user can do next in a protocol chat (Thinkerer checks it's allowed in the current stage). */
+export type ProtocolAction = 'approve-plan' | 'fix-checks' | 'start-review' | 'fix-findings' | 'ship'
+
+/** The checks Thinkerer ran itself after an implement turn. */
+export interface ProtocolChecks {
+  runId: string
+  command: string
+  status: 'running' | 'passed' | 'failed' | 'not-approved'
+  exitCode: number | null
+  /** Last lines of output; only these go back to the agent when the checks fail. */
+  tail: string[]
+  at: string
+}
+
+export interface ChatProtocol {
+  id: 'software'
+  stage: ProtocolStage
+  /** Review turns started so far. */
+  round: number
+  /** The latest checks; null before the first implement turn finished, or with no check command. */
+  checks: ProtocolChecks | null
+}
+
 /** A system message in a chat: hook output, or the result of a slash command. */
 export interface ChatNote {
   at: string
-  kind: 'setup' | 'teardown' | 'info' | ChatCommand
+  kind: 'setup' | 'teardown' | 'info' | 'checks' | 'protocol' | ChatCommand
   ok: boolean
   title: string
   lines: string[]
@@ -410,6 +450,8 @@ export interface ChatRecord {
   ports: number[]
   composeProject: string | null
   notes: ChatNote[]
+  /** Set when the chat follows the software protocol; absent on ordinary chats. */
+  protocol?: ChatProtocol | null
 }
 
 export interface AppInfo {

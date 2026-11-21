@@ -31,6 +31,7 @@ const project = (enabled: string[], previewUrl = 'http://localhost:5174/'): Proj
     website: { devCommand: 'npm run dev', previewUrl },
     agent: { provider: 'auto', enabledMcpServers: enabled, claude: { model: '', effort: '', tools: [] } },
     worktrees: { setupCommand: '', teardownCommand: '', ports: 0 },
+    protocol: { checkCommand: '', maxReviewRounds: 2, review: { model: '', effort: '' } },
     marketing: { enabled: true }
   }
 })

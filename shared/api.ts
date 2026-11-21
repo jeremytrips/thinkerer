@@ -1,6 +1,7 @@
 import type {
   AppInfo,
   ChatCommand,
+  ProtocolAction,
   ChatRecord,
   Checkpoint,
   DevLogLine,
@@ -143,7 +144,9 @@ export interface ThinkererApi {
       taskId?: string | null,
       attachmentIds?: string[],
       chatId?: string | null,
-      mode?: RunMode
+      mode?: RunMode,
+      /** Start a new chat that follows the software protocol (its first message is planned read-only). */
+      protocol?: boolean
     ): Promise<RunSummary>
     cancel(runId: string): Promise<boolean>
     /** Live runs for the project, oldest first. */
@@ -163,6 +166,8 @@ export interface ThinkererApi {
     get(projectId: string, chatId: string): Promise<ChatRecord>
     /** Runs /merge, /cleanup, /done or /discard; the outcome is added to the chat as a note. */
     command(projectId: string, chatId: string, name: ChatCommand): Promise<ChatRecord>
+    /** Takes the next step of a protocol chat (approve the plan, review, fix, ship). */
+    advance(projectId: string, chatId: string, action: ProtocolAction): Promise<ChatRecord>
     /** Shows the chat's worktree in Finder. */
     reveal(projectId: string, chatId: string): Promise<boolean>
     onUpdate(cb: (chat: ChatRecord) => void): () => void

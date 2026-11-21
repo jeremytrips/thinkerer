@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { app, dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
 import type { AgentSupervisor } from '../../engine/agents/supervisor'
 import type { Approvals } from '../../engine/approvals'
+import { PROTOCOL_ACTIONS, type ProtocolService } from '../../engine/protocol'
 import { removeAttachment, saveAttachment } from '../../engine/attachments'
 import { CHAT_COMMANDS, runChatCommand } from '../../engine/chatCommands'
 import {
@@ -35,6 +36,7 @@ import type {
   Project,
   ProjectConfigPatch,
   PromptAttachment,
+  ProtocolAction,
   ProviderChoice,
   Result,
   RunMode,
@@ -45,6 +47,7 @@ import type { PreviewManager, PreviewScope } from './preview'
 interface Deps {
   projects: ProjectService
   supervisor: AgentSupervisor
+  protocol: ProtocolService
   tasks: TaskStore
   mcp: McpRegistry
   /** Where bundled MCP scripts live and how to run Node, as agent runs get it. */
@@ -81,7 +84,7 @@ function bounds(v: unknown): { x: number; y: number; width: number; height: numb
  * which the renderer cannot fake.
  */
 export function registerIpc(deps: Deps): void {
-  const { projects, supervisor, tasks, mcp, devServers, approvals, preview } = deps
+  const { projects, supervisor, protocol, tasks, mcp, devServers, approvals, preview } = deps
   const chats = supervisor.chats
   // Preview screenshots waiting to be sent with a prompt, keyed by attachment id.
   const captures = new Map<string, { projectId: string; attachment: PromptAttachment }>()
@@ -143,6 +146,19 @@ export function registerIpc(deps: Deps): void {
     )
     if (!ok) throw new Error('Cancelled')
     await approvals.approve(project.id, kind, command)
+  }
+
+  /** The protocol's check command runs after implement turns; like the hooks, only once the user approved its exact text. */
+  async function approveCheck(project: Project): Promise<void> {
+    const command = project.config?.protocol.checkCommand.trim()
+    if (!command || (await approvals.isApproved(project.id, 'check', command))) return
+    const ok = await confirm(
+      'Run this check command after each implementation turn?',
+      `${command}\n\nin the chat's worktree\n\nThinkerer runs it itself, with your user permissions, and only sends failing output back to the agent.`,
+      'Run command'
+    )
+    if (!ok) throw new Error('Cancelled')
+    await approvals.approve(project.id, 'check', command)
   }
 
   async function confirm(message: string, detail: string, button: string): Promise<boolean> {
@@ -431,9 +447,10 @@ export function registerIpc(deps: Deps): void {
 
   // Agent runs
   handle('agents:providers', () => supervisor.providers())
-  handle('runs:start', async (id: unknown, prompt: unknown, provider: unknown, taskId: unknown, attachmentIds: unknown, chatId: unknown, mode: unknown) => {
+  handle('runs:start', async (id: unknown, prompt: unknown, provider: unknown, taskId: unknown, attachmentIds: unknown, chatId: unknown, mode: unknown, useProtocol: unknown) => {
     if (!PROVIDERS.includes(provider as ProviderChoice)) throw new Error('Invalid provider')
     if (mode !== undefined && mode !== null && mode !== 'auto' && mode !== 'plan') throw new Error('Invalid mode')
+    if (useProtocol !== undefined && useProtocol !== null && typeof useProtocol !== 'boolean') throw new Error('Invalid protocol flag')
     const projectId = str(id, 'project id', 100)
     const ids = attachmentIds === undefined || attachmentIds === null ? [] : attachmentIds
     if (!Array.isArray(ids) || ids.length > MAX_ATTACHMENTS) throw new Error('Invalid attachments')
@@ -449,12 +466,22 @@ export function registerIpc(deps: Deps): void {
       const project = await okProject(projectId)
       await approveHook(project, 'setup', followUp?.worktree?.path ?? 'each new chat worktree')
     }
-    const summary = await supervisor.start(projectId, str(prompt, 'prompt', 100_000), provider as ProviderChoice, {
-      taskId: taskId ? str(taskId, 'task id', 100) : null,
-      attachments,
-      chatId: chatId ? str(chatId, 'chat id', 100) : null,
-      mode: (mode as RunMode | null) ?? 'auto'
-    })
+    const text = str(prompt, 'prompt', 100_000)
+    const base = { taskId: taskId ? str(taskId, 'task id', 100) : null, attachments }
+    let summary
+    if (followUp?.protocol && followUp.projectId === projectId) {
+      // Past the plan, a message is more work for the implementer, and its checks run afterwards.
+      if (followUp.protocol.stage !== 'plan') await approveCheck(await okProject(projectId))
+      summary = await protocol.reply(followUp, text, base)
+    } else if (!chatId && useProtocol === true) {
+      summary = await protocol.begin(projectId, text, provider as ProviderChoice, base)
+    } else {
+      summary = await supervisor.start(projectId, text, provider as ProviderChoice, {
+        ...base,
+        chatId: chatId ? str(chatId, 'chat id', 100) : null,
+        mode: (mode as RunMode | null) ?? 'auto'
+      })
+    }
     for (const a of attachments) captures.delete(a.id)
     return summary
   })
@@ -498,6 +525,13 @@ export function registerIpc(deps: Deps): void {
       live: supervisor.isChatLive(chat.id),
       stopDevServer: () => devServers.stop(project.id, chat.id)
     })
+  })
+  handle('chats:advance', async (id: unknown, chatId: unknown, action: unknown) => {
+    if (!PROTOCOL_ACTIONS.includes(action as ProtocolAction)) throw new Error('Unknown protocol step')
+    const project = await okProject(id)
+    const step = action as ProtocolAction
+    if (step === 'approve-plan' || step === 'fix-checks' || step === 'fix-findings') await approveCheck(project)
+    return protocol.advance(project.id, str(chatId, 'chat id', 100), step)
   })
   handle('chats:reveal', async (id: unknown, chatId: unknown) => {
     const chat = await chats.require((await okProject(id)).id, str(chatId, 'chat id', 100))

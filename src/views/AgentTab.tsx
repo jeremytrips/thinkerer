@@ -7,6 +7,7 @@ import type {
   EffectiveMcp,
   PreviewCapture,
   Project,
+  ProtocolAction,
   ProviderChoice,
   ProviderStatus,
   RunEvent,
@@ -21,6 +22,7 @@ import { ChatNoteView, SlashMenu, agentItems, commandOf, matchingCommands, type 
 import { ChatTurn, LIVE } from './ChatTurn'
 import { EmulatorPane } from './EmulatorPane'
 import { PreviewPane, type PreviewDevice } from './PreviewPane'
+import { ProtocolBar } from './ProtocolBar'
 import type { TabId } from './ProjectView'
 import { providerState } from './ProviderList'
 import { StatusPill, relativeTime } from './RunBits'
@@ -93,6 +95,12 @@ function groupChats(runs: RunSummary[], records: ChatRecord[]): Chat[] {
     .sort((a, b) => byCreated(b.last, a.last))
 }
 
+// Chat records arrive both pushed (chats:update) and fetched (chats:list); a
+// fetch that was read before a later push must not overwrite it.
+const newer = (a: ChatRecord, b: ChatRecord | undefined) => (b && b.updatedAt > a.updatedAt ? b : a)
+const upsert = (cur: ChatRecord[], c: ChatRecord) => [newer(c, cur.find((x) => x.id === c.id)), ...cur.filter((x) => x.id !== c.id)]
+const mergeList = (cur: ChatRecord[], list: ChatRecord[]) => list.map((c) => newer(c, cur.find((x) => x.id === c.id)))
+
 /** Done chats leave the main list (a live one stays until it stops). */
 const isDone = (c: Chat) => c.record?.state === 'done' && !c.live
 
@@ -100,6 +108,8 @@ function chatHint(c: Chat): string | null {
   if (c.live) return null
   if (c.record?.state === 'setting-up') return 'Setup failed · send to retry'
   if (c.record?.state === 'merged') return 'Merged · /cleanup'
+  const p = c.record?.protocol
+  if (p) return p.stage === 'plan' ? 'Plan ready · approve' : p.stage === 'review' ? 'Reviewed' : p.checks?.status === 'failed' ? 'Checks failed' : null
   return null
 }
 
@@ -111,6 +121,8 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   const [menuIndex, setMenuIndex] = useState(0)
   // How the next message runs; plan mode is read-only and goes back to auto once sent.
   const [mode, setMode] = useState<RunMode>('auto')
+  // New chats follow the software protocol (plan → implement + tests → review → ship) unless turned off.
+  const [useProtocol, setUseProtocol] = useState(() => loadState('agent.protocol', true))
   // The open chat (null: a new one) and its turns with their events.
   const [chatId, setChatId] = useState<string | null>(null)
   const chatRef = useRef<string | null>(null)
@@ -200,7 +212,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   }
 
   const refreshChats = useCallback(() => {
-    api.chats.list(project.id).then(setRecords, () => {})
+    api.chats.list(project.id).then((list) => setRecords((cur) => mergeList(cur, list)), () => {})
   }, [project.id])
 
   const refreshContext = useCallback(() => {
@@ -223,7 +235,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
     }, () => openChat(null))
 
     const offChat = api.chats.onUpdate((c) => {
-      if (c.projectId === project.id) setRecords((cur) => [c, ...cur.filter((x) => x.id !== c.id)])
+      if (c.projectId === project.id) setRecords((cur) => upsert(cur, c))
     })
     const offEvent = api.runs.onEvent((runId: string, event: RunEvent) => {
       setTurns((cur) => (cur.some((t) => t.id === runId) ? cur.map((t) => (t.id === runId ? { ...t, events: [...t.events, event] } : t)) : cur))
@@ -294,7 +306,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
     setError(null)
     setNotice(null)
     try {
-      const summary = await api.runs.start(project.id, text, choice, target ? null : taskId || null, attach.map((a) => a.id), target, runMode)
+      const summary = await api.runs.start(project.id, text, choice, target ? null : taskId || null, attach.map((a) => a.id), target, runMode, !target && useProtocol)
       if (!target) {
         setTaskId('')
         openChat(chatOf(summary))
@@ -318,7 +330,23 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
     stick.current = true
     try {
       const updated = await api.chats.command(project.id, chatId, name)
-      setRecords((cur) => [updated, ...cur.filter((x) => x.id !== updated.id)])
+      setRecords((cur) => upsert(cur, updated))
+    } catch (err) {
+      if (errorMessage(err) !== 'Cancelled') setError(errorMessage(err))
+    } finally {
+      setStarting(false)
+    }
+  }
+
+  async function advance(action: ProtocolAction) {
+    if (!chatId) return
+    setError(null)
+    setNotice(null)
+    setStarting(true)
+    stick.current = true
+    try {
+      const updated = await api.chats.advance(project.id, chatId, action)
+      setRecords((cur) => upsert(cur, updated))
     } catch (err) {
       if (errorMessage(err) !== 'Cancelled') setError(errorMessage(err))
     } finally {
@@ -447,6 +475,9 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   const chatTask = chat?.turns[0].taskId ? (tasks.find((t) => t.id === chat.turns[0].taskId)?.title ?? 'removed task') : null
   const waiting = chatId ? queued[chatId] : undefined
   const liveTurn = turns.find((t) => LIVE.includes(t.status))
+  // In a protocol chat the stage decides how a message runs, not the mode picker.
+  const protocolChat = chat ? !!record?.protocol : useProtocol
+  const planning = protocolChat ? !chat || record?.protocol?.stage === 'plan' : mode === 'plan'
 
   function chatItem(c: Chat) {
     const hint = chatHint(c)
@@ -532,6 +563,17 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
           </div>
         </div>
 
+        {record?.protocol && (
+          <ProtocolBar
+            protocol={record.protocol}
+            base={worktree?.base ?? null}
+            busy={!!chat?.live || starting}
+            maxRounds={project.config!.protocol.maxReviewRounds}
+            lastReview={chat?.turns.filter((t) => t.protocolStage === 'review').at(-1)}
+            onAction={(a) => void advance(a)}
+          />
+        )}
+
         {isGit === false && (
           <div className="banner banner-info row space">
             <span>Agents need Git so Thinkerer can checkpoint the folder before every message and let you roll back.</span>
@@ -568,6 +610,12 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
                   <span className="mono">{isGit ? 'its base branch' : 'main'}</span>, then <span className="mono">/cleanup</span> to check nothing
                   is left and remove the worktree.
                 </p>
+                {useProtocol && (
+                  <p className="muted">
+                    With the software protocol on, your first message is planned read-only. You approve the plan, the agent implements it with
+                    tests, Thinkerer runs the checks, a fresh session reviews the diff, and you ship it to the base branch.
+                  </p>
+                )}
                 {liveChats.length > 0 && (
                   <p className="muted">
                     {liveChats.length} chat{liveChats.length === 1 ? ' is' : 's are'} working right now.
@@ -704,7 +752,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
                 </button>
               )}
               <button type="submit" className="primary small" disabled={!draft.trim() || starting || isGit === false || finished}>
-                {starting ? 'Sending…' : commandOf(draft) ? 'Run' : chat?.live ? 'Queue' : mode === 'plan' ? 'Plan' : 'Send'}
+                {starting ? 'Sending…' : commandOf(draft) ? 'Run' : chat?.live ? 'Queue' : planning ? 'Plan' : 'Send'}
               </button>
             </div>
           </div>
@@ -738,13 +786,21 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
                 </label>
               </>
             )}
-            <label className="inline" title="Plan: the agent only investigates (read-only) and proposes a plan; reply to carry it out">
-              Mode
-              <select value={mode} onChange={(e) => setMode(e.target.value as RunMode)} aria-label="Mode for the next message" disabled={finished}>
-                <option value="auto">Make changes</option>
-                <option value="plan">Plan only (read-only)</option>
-              </select>
-            </label>
+            {!chat && (
+              <label className="inline" title="Plan, then implement with tests, then an independent review, then ship. Thinkerer runs the checks and the merge itself.">
+                <input type="checkbox" checked={useProtocol} onChange={(e) => (saveState('agent.protocol', e.target.checked), setUseProtocol(e.target.checked))} />
+                Software protocol
+              </label>
+            )}
+            {!protocolChat && (
+              <label className="inline" title="Plan: the agent only investigates (read-only) and proposes a plan; reply to carry it out">
+                Mode
+                <select value={mode} onChange={(e) => setMode(e.target.value as RunMode)} aria-label="Mode for the next message" disabled={finished}>
+                  <option value="auto">Make changes</option>
+                  <option value="plan">Plan only (read-only)</option>
+                </select>
+              </label>
+            )}
             <button type="button" className="link small" onClick={() => onTab('mcp')} title="Tools this provider will receive">
               MCP tools: {includedTools.length ? includedTools.map((s) => s.id).join(', ') : 'none'}
               {excludedTools.length > 0 && ` (${excludedTools.length} unavailable)`}

@@ -100,8 +100,8 @@ const api: ThinkererApi = {
     providers: () => call('agents:providers')
   },
   runs: {
-    start: (projectId, prompt, provider, taskId, attachmentIds, chatId, mode) =>
-      call('runs:start', projectId, prompt, provider, taskId ?? null, attachmentIds ?? [], chatId ?? null, mode ?? 'auto'),
+    start: (projectId, prompt, provider, taskId, attachmentIds, chatId, mode, protocol) =>
+      call('runs:start', projectId, prompt, provider, taskId ?? null, attachmentIds ?? [], chatId ?? null, mode ?? 'auto', protocol ?? false),
     cancel: (runId) => call('runs:cancel', runId),
     active: (projectId) => call('runs:active', projectId),
     list: (projectId) => call('runs:list', projectId),
@@ -116,6 +116,7 @@ const api: ThinkererApi = {
     list: (projectId) => call('chats:list', projectId),
     get: (projectId, chatId) => call('chats:get', projectId, chatId),
     command: (projectId, chatId, name) => call('chats:command', projectId, chatId, name),
+    advance: (projectId, chatId, action) => call('chats:advance', projectId, chatId, action),
     reveal: (projectId, chatId) => call('chats:reveal', projectId, chatId),
     onUpdate: (cb) => subscribe<[ChatRecord]>('chats:update', cb)
   }

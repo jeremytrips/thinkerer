@@ -111,6 +111,9 @@ http.createServer((q, s) => { s.setHeader('content-type', 'text/html'); s.end(pa
 
     // Plan mode is offered per message in the composer
     await page.getByRole('tab', { name: 'Agent' }).click()
+    // New chats follow the software protocol by default; the mode picker is for ordinary chats.
+    await expect(page.getByLabel('Mode for the next message')).toHaveCount(0)
+    await page.getByLabel('Software protocol').uncheck()
     await expect(page.getByLabel('Mode for the next message')).toHaveValue('auto')
     await page.getByLabel('Mode for the next message').selectOption('plan')
     await expect(page.getByRole('button', { name: 'Plan', exact: true })).toBeVisible()
