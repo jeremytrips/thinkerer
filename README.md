@@ -91,7 +91,7 @@ The result is commit `8438cfd`; typecheck, unit and e2e tests passed when re-run
 | Tasks | To do / In progress / Done board in `.thinkerer/tasks.json`; runs attach to tasks |
 | Files | Read-only tree and preview, uncommitted changes with diffs, checkpoints with restore |
 | MCP | Global server registry (built-in + your own stdio, streamable HTTP and SSE servers, Keychain-encrypted secrets), per-project enable, the tools each provider will actually get, **Check** (connect and list a server's tools), **Import from Claude Code** (`.mcp.json`, `~/.claude.json`) |
-| Settings | Name, components, target, dev command, preview URL, chat worktree hooks and ports, default provider, Claude Code model / effort / optional tools, LLM providers, agent permissions |
+| Settings | Name, components, target, dev command, preview URL, chat worktree hooks and ports, default provider, Claude Code model / effort / optional tools, software protocol (check command, review rounds, review model / effort), LLM providers, agent permissions |
 | Marketing | Placeholder (post-MVP) |
 
 ### Claude Code features
@@ -133,9 +133,9 @@ The bar at the top of the chat shows the stage and offers the next step:
    recorded: turns, check result, findings per round and the tokens each stage's provider reported.
    Cleanup stays manual: type `/cleanup`.
 
-Set it in `.thinkerer/project.json` under `protocol`: `checkCommand` (detected from `package.json`
-`typecheck` / `test` scripts on import), `maxReviewRounds` (1–5), and `review.model` / `review.effort`
-(Claude only, e.g. a cheaper model for reviews). There is no Settings form for these yet.
+Settings → **Software protocol** sets the check command (detected from `package.json` `typecheck` /
+`test` scripts on import), the review rounds (1–5), and the review model and effort (Claude only, e.g. a
+cheaper model for reviews). They are saved under `protocol` in `.thinkerer/project.json`.
 
 ### Worktrees, ports and Docker
 

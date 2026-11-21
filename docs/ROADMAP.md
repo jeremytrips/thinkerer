@@ -36,7 +36,7 @@ Why: a repeatable process for software chats that costs fewer tokens: plan, impl
 - [x] Thinkerer runs the checks and the merge itself; only failing output goes back to the agent.
 - [x] Review in a fresh read-only session with only the plan and the diff; fixes resume the implementer.
 - [x] Report on ship from recorded data, including reported tokens per stage; cleanup stays manual.
-- [ ] Settings form for `protocol` options (today: `.thinkerer/project.json`).
+- [x] Settings → Software protocol: check command, review rounds, review model and effort.
 
 ## Next
 

@@ -100,13 +100,29 @@ http.createServer((q, s) => { s.setHeader('content-type', 'text/html'); s.end(pa
 
     // Claude Code run options in Settings, saved to .thinkerer/project.json
     await page.getByRole('tab', { name: 'Settings' }).click()
-    await page.getByLabel('Model').fill('sonnet')
-    await page.getByLabel('Effort').selectOption('high')
+    const claude = page.getByRole('group', { name: 'Claude Code' })
+    await claude.getByLabel('Model').fill('sonnet')
+    await claude.getByLabel('Effort').selectOption('high')
     await page.getByRole('group', { name: 'Optional Claude Code tools' }).getByRole('checkbox', { name: /Web search/ }).check()
     await page.getByRole('button', { name: 'Save', exact: true }).click()
     await expect(page.getByText('Saved to .thinkerer/project.json')).toBeVisible()
     const saved = JSON.parse(readFileSync(join(project, '.thinkerer', 'project.json'), 'utf8'))
     expect(saved.agent.claude).toEqual({ model: 'sonnet', effort: 'high', tools: ['Task', 'Skill', 'WebSearch'] })
+
+    // Software protocol options, saved alongside
+    const protocol = page.getByRole('group', { name: 'Software protocol' })
+    await protocol.getByLabel('Check command').fill('npm test')
+    await protocol.getByLabel('Review rounds').fill('3')
+    await protocol.getByLabel('Review model').fill('haiku')
+    await protocol.getByLabel('Review effort').selectOption('low')
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    await expect(page.getByText('Saved to .thinkerer/project.json')).toBeVisible()
+    expect(JSON.parse(readFileSync(join(project, '.thinkerer', 'project.json'), 'utf8')).protocol).toEqual({
+      checkCommand: 'npm test',
+      maxReviewRounds: 3,
+      review: { model: 'haiku', effort: 'low' }
+    })
+    await page.screenshot({ path: join(shots, 'settings-protocol.png') })
     await page.screenshot({ path: join(shots, 'settings-claude.png') })
 
     // Plan mode is offered per message in the composer
