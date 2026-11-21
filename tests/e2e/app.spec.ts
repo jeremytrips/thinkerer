@@ -116,3 +116,38 @@ test('settings: save tracks unsaved changes, trims values and rejects empty numb
     rmSync(folder, { recursive: true, force: true })
   }
 })
+
+test('dark is the default theme and light still applies', async () => {
+  const appData = mkdtempSync(join(tmpdir(), 'thinkerer-e2e-'))
+  let app: Awaited<ReturnType<typeof launch>>['app'] | undefined
+  try {
+    const launched = await launch(appData)
+    app = launched.app
+    const page = launched.page
+    await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible()
+    // The default is what the top-level :root rule declares, read from the loaded stylesheet so the
+    // result does not depend on the host OS appearance.
+    const defaultBg = await page.evaluate(() => {
+      for (const sheet of Array.from(document.styleSheets)) {
+        for (const rule of Array.from(sheet.cssRules)) {
+          if (rule instanceof CSSStyleRule && rule.selectorText === ':root') {
+            return { bg: rule.style.getPropertyValue('--bg').trim(), scheme: rule.style.getPropertyValue('color-scheme').trim() }
+          }
+        }
+      }
+      return null
+    })
+    expect(defaultBg).toEqual({ bg: '#14161a', scheme: 'dark' })
+    const bg = () => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--bg').trim())
+    await page.emulateMedia({ colorScheme: 'dark' })
+    expect(await bg()).toBe('#14161a')
+    await page.screenshot({ path: join(shots, 'theme-dark.png') })
+    await page.emulateMedia({ colorScheme: 'light' })
+    expect(await bg()).toBe('#f6f6f4')
+    await page.screenshot({ path: join(shots, 'theme-light.png') })
+  } finally {
+    // Close even when an assertion failed, so no Electron process outlives its app-data folder.
+    await app?.close()
+    rmSync(appData, { recursive: true, force: true })
+  }
+})
