@@ -178,6 +178,14 @@ export interface MobileDevice {
   input: boolean
 }
 
+/** A chat's own emulators (one per platform) and the user's devices they can be copied from. */
+export interface ChatDevicesView {
+  devices: MobileDevice[]
+  templates: MobileDevice[]
+  /** Last template picked per platform. */
+  defaults: Partial<Record<MobilePlatform, string>>
+}
+
 export interface MobileToolStatus {
   android: { available: boolean; detail: string }
   ios: { available: boolean; input: boolean; detail: string }

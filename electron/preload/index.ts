@@ -86,7 +86,10 @@ const api: ThinkererApi = {
   mobile: {
     status: () => call('mobile:status'),
     list: () => call('mobile:list'),
-    boot: (id, window) => call('mobile:boot', id, window ?? false),
+    chatDevices: (projectId, chatId) => call('mobile:chatDevices', projectId, chatId),
+    createChatDevice: (projectId, chatId, templateId) => call('mobile:createChatDevice', projectId, chatId, templateId),
+    deleteChatDevice: (projectId, chatId, id) => call('mobile:deleteChatDevice', projectId, chatId, id),
+    boot: (id) => call('mobile:boot', id),
     shutdown: (id) => call('mobile:shutdown', id),
     frame: (id) => call('mobile:frame', id),
     tap: (id, x, y, ms) => call('mobile:tap', id, x, y, ms ?? 0),

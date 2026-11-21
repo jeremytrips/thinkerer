@@ -40,6 +40,8 @@ export interface McpRunContext {
   previewUrl?: string | null
   /** The provider the servers are for; servers it can't use are left out. */
   provider?: ProviderId
+  /** The chat's own emulator ids; the mobile server accepts only these. Undefined: not limited. */
+  devices?: string[]
 }
 
 const ID = /^[a-z][a-z0-9-]{0,30}$/
@@ -191,13 +193,16 @@ export class McpRegistry {
       if (value === null) return null
       secretEnv[name] = value
     }
+    const env = transport === 'stdio' ? { ...(usesNode ? ctx.node.env : {}), ...Object.fromEntries(Object.entries(def.env).map(([k, v]) => [k, fill(v)])) } : {}
+    // The chat's own emulators: the server refuses every other device.
+    if (def.id === 'mobile' && def.builtin && ctx.devices) env.THINKERER_DEVICES = ctx.devices.join(',')
     return {
       server: {
         id: def.id,
         transport,
         command: transport === 'stdio' ? (usesNode ? ctx.node.command : def.command) : '',
         args: transport === 'stdio' ? def.args.map(fill) : [],
-        env: transport === 'stdio' ? { ...(usesNode ? ctx.node.env : {}), ...Object.fromEntries(Object.entries(def.env).map(([k, v]) => [k, fill(v)])) } : {},
+        env,
         url: transport === 'stdio' ? '' : (def.url ?? ''),
         headers: transport === 'stdio' ? {} : { ...(def.headers ?? {}) },
         secretEnv: def.secretEnv
