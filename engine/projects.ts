@@ -12,6 +12,8 @@ const COMPONENTS: Component[] = ['website', 'mobile', 'hardware']
 const TARGETS: Target[] = ['web', 'electron']
 const PROVIDERS: ProviderChoice[] = ['auto', 'claude', 'codex']
 export const EFFORTS: Effort[] = ['', 'low', 'medium', 'high', 'xhigh', 'max']
+// 'Task' is the subagent tool. Claude Code 2.1.330 accepts both 'Task' and 'Agent' in --tools and
+// reports it as 'Task'; the UI accepts either name in the init event.
 export const CLAUDE_OPTIONAL_TOOLS: ClaudeOptionalTool[] = ['Task', 'Skill', 'WebSearch', 'NotebookEdit']
 /** Subagents and skills stay inside the run's limits, so they're on by default; network tools are opt-in. */
 export const DEFAULT_CLAUDE: ClaudeRunConfig = { model: '', effort: '', tools: ['Task', 'Skill'] }

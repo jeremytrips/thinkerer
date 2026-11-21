@@ -9,8 +9,16 @@ import type { AgentAdapter, ParsedUpdate, StreamParser } from './types'
 // Projects can add optional built-ins (subagents, skills, web, notebooks).
 const TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash']
 
+// Plan mode promises a read-only run, and pre-approved allow rules can still let
+// a tool run there, so only commands that cannot change anything stay
+// pre-approved (no npm scripts, no MCP tools: Playwright clicks, mobile installs/taps).
+const READ_ONLY_COMMAND = /^git (status|diff|log)\b/
+
+/** MCP servers still connecting when Claude reports its init event; their tools usually arrive moments later. */
+const TRANSIENT_MCP_STATUS = new Set(['connected', 'pending', 'connecting', 'starting'])
+
 export const CLAUDE_POLICY_SUMMARY =
-  'Restricted mode: file reads and writes confined to the project folder; auto mode: the approved commands (npm scripts, tsc, vitest, Playwright tests, read-only git) always run, and the Claude safety classifier approves or denies any other shell command; nothing waits for a prompt. Plan mode messages are read-only. Optional tools (subagents, skills, web search, notebooks) only as enabled in the project’s settings. MCP: only the servers enabled for this project in Thinkerer; your own Claude MCP servers and settings files are not loaded.'
+  'Restricted mode: file reads and writes confined to the project folder; auto mode: the approved commands (npm scripts, tsc, vitest, Playwright tests, read-only git) always run, and the Claude safety classifier approves or denies any other shell command; nothing waits for a prompt. Plan mode messages are read-only: only read-only git commands are pre-approved, and no npm scripts or MCP tools. Optional tools (subagents, skills, web search, notebooks) only as enabled in the project’s settings. MCP: only the servers enabled for this project in Thinkerer; your own Claude MCP servers and settings files are not loaded.'
 
 /** Commands that only make sense in Claude's interactive terminal, or that Thinkerer handles itself (model, effort, MCP, /clear would break the chat's session). */
 const NOT_IN_CHATS = new Set(['clear', 'config', 'model', 'effort', 'fast', 'mcp', 'agents', 'output-style', 'rename', 'color', 'focus', 'heapdump', 'doctor', 'import', 'reload-plugins', 'reload-skills', 'auto-mode-setup', 'fewer-permission-prompts', 'update-config', 'team-onboarding'])
@@ -42,6 +50,11 @@ export const claudeAdapter: AgentAdapter = {
 
   buildInvocation({ executable, prompt, resumeSessionId, policy, mcp, secretEnv, mode = 'auto', claude }) {
     const tools = [...TOOLS, ...(claude?.tools ?? [])]
+    const plan = mode === 'plan'
+    const allowed = [
+      ...policy.allowedCommands.filter((c) => !plan || READ_ONLY_COMMAND.test(c)).map((c) => `Bash(${c})`),
+      ...(plan ? [] : mcp.map((s) => `mcp__${s.id}`))
+    ]
     return {
       command: executable,
       args: [
@@ -53,9 +66,9 @@ export const claudeAdapter: AgentAdapter = {
         ...(claude?.model ? ['--model', claude.model] : []),
         ...(claude?.effort ? ['--effort', claude.effort] : []),
         '--tools', tools.join(','),
-        '--allowedTools', ...policy.allowedCommands.map((c) => `Bash(${c})`), ...mcp.map((s) => `mcp__${s.id}`),
+        ...(allowed.length ? ['--allowedTools', ...allowed] : []),
         // Plan mode: read-only investigation; the user's next message carries the plan out.
-        '--permission-mode', mode === 'plan' ? 'plan' : 'auto',
+        '--permission-mode', plan ? 'plan' : 'auto',
         // Nothing can answer a prompt, so anything auto mode would ask about is denied.
         '--permission-prompts', 'none',
         // Only the project's Thinkerer-approved MCP servers — never the user's global ones.
@@ -92,21 +105,23 @@ export function claudeMcpConfig(servers: ResolvedMcpServer[]) {
 }
 
 /** The session details from Claude's init event. */
-export function claudeCapabilities(msg: Record<string, any>): AgentCapabilities {
+export function claudeCapabilities(msg: Record<string, unknown>): AgentCapabilities {
   const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
+  const objects = (v: unknown): Record<string, unknown>[] =>
+    Array.isArray(v) ? v.filter((x): x is Record<string, unknown> => x !== null && typeof x === 'object') : []
   const terminalOnly = new Set(strings(msg.terminal_slash_commands))
   return {
     model: typeof msg.model === 'string' ? msg.model : null,
     version: typeof msg.claude_code_version === 'string' ? msg.claude_code_version : null,
     permissionMode: typeof msg.permissionMode === 'string' ? msg.permissionMode : null,
     tools: strings(msg.tools),
-    mcpServers: (Array.isArray(msg.mcp_servers) ? msg.mcp_servers : [])
-      .filter((m: any) => typeof m?.name === 'string')
-      .map((m: any) => ({ name: m.name, status: typeof m.status === 'string' ? m.status : 'unknown' })),
+    mcpServers: objects(msg.mcp_servers).flatMap((m) =>
+      typeof m.name === 'string' ? [{ name: m.name, status: typeof m.status === 'string' ? m.status : 'unknown' }] : []
+    ),
     commands: strings(msg.slash_commands).filter((c) => !terminalOnly.has(c) && !NOT_IN_CHATS.has(c) && !c.startsWith('_')),
     skills: strings(msg.skills),
     agents: strings(msg.agents),
-    plugins: (Array.isArray(msg.plugins) ? msg.plugins : []).map((p: any) => (typeof p?.name === 'string' ? p.name : null)).filter(Boolean)
+    plugins: objects(msg.plugins).flatMap((p) => (typeof p.name === 'string' ? [p.name] : []))
   }
 }
 
@@ -131,8 +146,9 @@ export function parseClaudeLine(line: string): ParsedUpdate[] {
             event: { kind: 'status', text: `Session started · model ${msg.model ?? 'unknown'}${mode}`, meta: { model: msg.model ?? null } }
           },
           // A server that didn't connect is easy to miss and explains missing tools, so say so in the conversation.
+          // Servers still starting aren't failures (Claude connects them asynchronously).
           ...capabilities.mcpServers
-            .filter((m) => m.status !== 'connected')
+            .filter((m) => !TRANSIENT_MCP_STATUS.has(m.status))
             .map((m): ParsedUpdate => ({ event: { kind: 'status', text: `MCP server ${m.name} did not connect (${m.status})`, meta: { notice: true } } }))
         ]
       }
@@ -160,12 +176,15 @@ export function parseClaudeLine(line: string): ParsedUpdate[] {
         cacheReadTokens: num(u.cache_read_input_tokens),
         cacheCreationTokens: num(u.cache_creation_input_tokens)
       }
-      const all: any[] = Array.isArray(msg.permission_denials) ? msg.permission_denials : []
+      type Denial = { tool_name?: unknown; tool_input?: { plan?: unknown } }
+      const all: Denial[] = Array.isArray(msg.permission_denials)
+        ? (msg.permission_denials as unknown[]).filter((d): d is Denial => d !== null && typeof d === 'object')
+        : []
       // In plan mode, leaving plan mode needs a person's approval; that is the user's next message, not a policy denial.
-      const plans = all.filter((d) => d?.tool_name === 'ExitPlanMode')
+      const plans = all.filter((d) => d.tool_name === 'ExitPlanMode')
       const denials = all
-        .filter((d) => d?.tool_name !== 'ExitPlanMode')
-        .map((d: any) => ({ tool: String(d.tool_name), input: truncate(JSON.stringify(d.tool_input ?? {}), 500) }))
+        .filter((d) => d.tool_name !== 'ExitPlanMode')
+        .map((d) => ({ tool: String(d.tool_name), input: truncate(JSON.stringify(d.tool_input ?? {}), 500) }))
       const plan = plans.map((d) => d.tool_input?.plan).find((p): p is string => typeof p === 'string' && !!p.trim())
       const text = typeof msg.result === 'string' && msg.result.trim() ? msg.result : (plan ?? msg.subtype ?? 'finished')
       return [
