@@ -12,6 +12,9 @@ import type {
   GitStatus,
   McpServerDef,
   McpServerView,
+  MobileDevice,
+  MobileFrame,
+  MobileToolStatus,
   PreviewCapture,
   PreviewEvent,
   Project,
@@ -101,6 +104,23 @@ export interface ThinkererApi {
     discard(projectId: string, captureId: string): Promise<boolean>
     approve(projectId: string, chatId: string | null, url: string): Promise<boolean>
     onEvent(cb: (projectId: string, chatId: string | null, event: PreviewEvent) => void): () => void
+  }
+  /** Real Android emulators / iOS simulators. Coordinates are logical points (screen pixels ÷ frame.scale). */
+  mobile: {
+    status(): Promise<MobileToolStatus>
+    list(): Promise<MobileDevice[]>
+    /** Boots and waits until the device is usable; headless unless window is true. */
+    boot(deviceId: string, window?: boolean): Promise<MobileDevice | null>
+    shutdown(deviceId: string): Promise<boolean>
+    frame(deviceId: string): Promise<MobileFrame>
+    tap(deviceId: string, x: number, y: number, durationMs?: number): Promise<boolean>
+    swipe(deviceId: string, x1: number, y1: number, x2: number, y2: number, durationMs?: number): Promise<boolean>
+    type(deviceId: string, text: string): Promise<boolean>
+    key(deviceId: string, key: string): Promise<boolean>
+    /** Opens the project's (or chat worktree's) preview URL on the device; returns the URL. */
+    openPreview(deviceId: string, projectId: string, chatId: string | null): Promise<string>
+    /** Screenshot of the device saved for attaching to the next prompt. */
+    capture(projectId: string, deviceId: string): Promise<PreviewCapture>
   }
   agents: {
     providers(): Promise<ProviderStatus[]>

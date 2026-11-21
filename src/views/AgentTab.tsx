@@ -18,6 +18,7 @@ import { api, errorMessage, loadState, saveState } from '../api'
 import { RestoreDialog } from './Changes'
 import { ChatNoteView, SlashMenu, commandOf, matchingCommands } from './ChatBits'
 import { ChatTurn, LIVE } from './ChatTurn'
+import { EmulatorPane } from './EmulatorPane'
 import { PreviewPane, type PreviewDevice } from './PreviewPane'
 import type { TabId } from './ProjectView'
 import { providerState } from './ProviderList'
@@ -31,10 +32,11 @@ const SIDE_WIDTH = 260 // .agent-side width in styles.css
 const NEW = 'new' // draft key for the "New chat" composer
 
 // What the preview panel beside the chat can show. Add new surfaces here.
-type SurfaceId = 'web' | 'mobile'
-const SURFACES: { id: SurfaceId; label: string }[] = [
-  { id: 'web', label: 'Web browser' },
-  { id: 'mobile', label: 'Mobile simulator' }
+type SurfaceId = 'web' | 'mobile' | 'emulator'
+const SURFACES: { id: SurfaceId; label: string; title: string }[] = [
+  { id: 'web', label: 'Web browser', title: 'The site in the embedded browser' },
+  { id: 'mobile', label: 'Phone viewport', title: 'The site in the embedded browser, sized like a phone (no device emulation)' },
+  { id: 'emulator', label: 'Emulator', title: 'A real Android emulator or iOS simulator running on this machine' }
 ]
 const DEVICES: PreviewDevice[] = [
   { id: 'iphone-15', label: 'iPhone 15', width: 393, height: 852 },
@@ -617,10 +619,10 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
           {attachments.length > 0 && (
             <ul className="composer-attachments" aria-label="Screenshots to send">
               {attachments.map((a) => (
-                <li key={a.id} className="attachment-chip" title={[a.url, ...a.consoleErrors].filter(Boolean).join('\n')}>
-                  <img src={a.dataUrl} alt={`Preview screenshot of ${a.url ?? 'the site'}`} />
+                <li key={a.id} className="attachment-chip" title={[a.device ?? a.url, ...a.consoleErrors].filter(Boolean).join('\n')}>
+                  <img src={a.dataUrl} alt={a.device ? `Screenshot of ${a.device}` : `Preview screenshot of ${a.url ?? 'the site'}`} />
                   <span className="small ellipsis">
-                    {a.url ? new URL(a.url).pathname : 'Preview'}
+                    {a.device ? a.device.replace(/ \[.*\]$/, '') : a.url ? new URL(a.url).pathname : 'Preview'}
                     {a.consoleErrors.length > 0 && <span className="error-text"> · {a.consoleErrors.length} console error{a.consoleErrors.length === 1 ? '' : 's'}</span>}
                   </span>
                   <button type="button" className="chat-tab-close" onClick={() => detach(a)} aria-label="Remove screenshot" title="Remove screenshot">
@@ -754,7 +756,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
             <div className="surface-bar">
               <div className="row segmented" role="tablist" aria-label="Preview surface">
                 {SURFACES.map((s) => (
-                  <button key={s.id} role="tab" aria-selected={surface === s.id} className={surface === s.id ? 'tab active' : 'tab'} onClick={() => chooseSurface(s.id)}>
+                  <button key={s.id} role="tab" aria-selected={surface === s.id} className={surface === s.id ? 'tab active' : 'tab'} title={s.title} onClick={() => chooseSurface(s.id)}>
                     {s.label}
                   </button>
                 ))}
@@ -770,14 +772,18 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
                 </label>
               )}
             </div>
-            <PreviewPane
-              project={project}
-              chatId={previewChat}
-              onCapture={attach}
-              suspended={dragging}
-              reloadNonce={reloadNonce}
-              device={surface === 'mobile' ? device : null}
-            />
+            {surface === 'emulator' ? (
+              <EmulatorPane project={project} chatId={previewChat} onCapture={attach} />
+            ) : (
+              <PreviewPane
+                project={project}
+                chatId={previewChat}
+                onCapture={attach}
+                suspended={dragging}
+                reloadNonce={reloadNonce}
+                device={surface === 'mobile' ? device : null}
+              />
+            )}
           </div>
         </>
       )}
