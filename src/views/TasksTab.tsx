@@ -124,6 +124,7 @@ export function TasksTab({ project, onStartChat, onOpenChat }: Props) {
             onMoveTask={(t, epicId, order) => move(t.id, epicId !== t.epicId ? { epicId } : {}, order)}
             onMoveEpic={(e, milestoneId, order) => move(e.id, milestoneId !== e.milestoneId ? { milestoneId } : {}, order)}
             runEpicId={epicRunActive(run) ? run!.epicId : null}
+            runStatus={epicRunActive(run) ? run!.status : null}
             onRunEpic={(e) => void act(() => api.epicRuns.start(project.id, e.id, project.config!.agent.provider)).then((r) => r && setRun(r))}
           />
         ) : view === 'board' ? (

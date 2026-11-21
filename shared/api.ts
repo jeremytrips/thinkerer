@@ -99,7 +99,7 @@ export interface ThinkererApi {
     status(projectId: string): Promise<EpicRun | null>
     /** Starts running the epic, or resumes it if it is paused or waiting. */
     start(projectId: string, epic: string, provider: ProviderChoice): Promise<EpicRun>
-    /** Stops opening new chats; chats already open are left as they are. */
+    /** Stops opening new chats (chats already open are left as they are), or dismisses a finished run. */
     stop(projectId: string): Promise<EpicRun | null>
     onUpdate(cb: (run: EpicRun) => void): () => void
   }

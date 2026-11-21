@@ -21,8 +21,11 @@ export function registerEpicRunIpc(deps: {
   handle('epicRuns:start', async (id: unknown, epic: unknown, provider: unknown) => {
     if (!PROVIDERS.includes(provider as ProviderChoice)) throw new Error('Invalid provider')
     const project = await okProject(id)
+    const ref = str(epic, 'epic', 100)
+    // Refusals first: never ask to approve a command for a run that won't start.
+    await epicRuns.check(project.id, ref)
     await approveSetup(project)
-    return epicRuns.start(project.id, str(epic, 'epic', 100), provider as ProviderChoice)
+    return epicRuns.start(project.id, ref, provider as ProviderChoice)
   })
   handle('epicRuns:stop', async (id: unknown) => epicRuns.stop((await okProject(id)).id))
 

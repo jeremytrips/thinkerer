@@ -15,8 +15,10 @@ export function useEpicRun(project: Project) {
   const [run, setRun] = useState<EpicRun | null>(null)
   useEffect(() => {
     let alive = true
-    api.epicRuns.status(project.id).then((r) => alive && setRun(r), () => {})
-    const off = api.epicRuns.onUpdate((r) => r.projectId === project.id && setRun(r))
+    // Whichever is newer wins: the first status() reply can arrive after a later update event.
+    const newer = (r: EpicRun | null) => setRun((cur) => (!r || (cur && cur.updatedAt > r.updatedAt) ? cur : r))
+    api.epicRuns.status(project.id).then((r) => alive && newer(r), () => {})
+    const off = api.epicRuns.onUpdate((r) => r.projectId === project.id && newer(r))
     return () => {
       alive = false
       off()
@@ -24,6 +26,8 @@ export function useEpicRun(project: Project) {
   }, [project.id])
   return { run, setRun }
 }
+
+export const EPIC_RUN_LABEL = STATUS_LABEL
 
 export const epicRunActive = (run: EpicRun | null): boolean => !!run && (run.status === 'running' || run.status === 'waiting' || run.status === 'paused')
 
@@ -73,9 +77,9 @@ export function EpicRunBar({ project, run, onRun, onOpenChat }: Props) {
           {run.status === 'paused' && (
             <button className="small primary" disabled={busy} onClick={() => void act(() => api.epicRuns.start(project.id, run.epicId, run.provider))}>Resume</button>
           )}
-          {run.status !== 'finished' && (
-            <button className="small" disabled={busy} onClick={() => void act(() => api.epicRuns.stop(project.id))}>Stop</button>
-          )}
+          <button className="small" disabled={busy} onClick={() => void act(() => api.epicRuns.stop(project.id))}>
+            {run.status === 'finished' ? 'Dismiss' : 'Stop'}
+          </button>
         </span>
       </div>
       {run.reason && <p className="small epic-run-reason">{run.reason}</p>}

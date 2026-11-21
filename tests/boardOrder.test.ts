@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { epicProgress, epicTaskPrompt, nextReadyTask, openEpicTasks, outsideBlockers } from '../shared/boardOrder'
+import { epicProgress, epicTaskPrompt, nextReadyTask, openEpicTasks, outsideBlockers, waitingReason } from '../shared/boardOrder'
 import type { Board, Epic, Task } from '../shared/types'
 
 // Which task an epic run starts next: plan order, skipping done and archived tasks, never a blocked one.
@@ -60,6 +60,21 @@ describe('epic run order', () => {
     expect(outsideBlockers(b, 'e1').map((t) => t.key)).toEqual(['X'])
     // An archived blocker no longer holds anything up.
     expect(nextReadyTask(board([{ ...outside, archivedAt: 'now' }, task('a', 'e1', { blockedBy: ['x'] })]), 'e1')?.id).toBe('a')
+  })
+
+  it('never starts a Backlog task by itself, and says why it waits', () => {
+    const b = board([task('a', 'e1', { status: 'backlog' }), task('b', 'e1', { blockedBy: ['a'] })])
+    expect(nextReadyTask(b, 'e1')).toBeNull()
+    expect(waitingReason(b, 'e1')).toEqual({ reason: 'A is in Backlog; move it to To do to run it', held: true })
+    expect(nextReadyTask(board([task('a', 'e1', { status: 'backlog' }), task('c', 'e1')]), 'e1')?.id).toBe('c')
+  })
+
+  it('names what holds an epic up: blockers outside it, or its own tasks', () => {
+    const outside = board([task('x', 'e2'), task('a', 'e1', { blockedBy: ['x'] })])
+    expect(waitingReason(outside, 'e1')).toEqual({ reason: 'The remaining tasks wait on X (outside this epic)', held: true })
+    // The store refuses blocker loops; should one exist anyway, the tasks are named and the run needs the user.
+    const loop = board([task('a', 'e1', { blockedBy: ['b'] }), task('b', 'e1', { blockedBy: ['a'] })])
+    expect(waitingReason(loop, 'e1')).toEqual({ reason: 'No task can start: A waits on B; B waits on A', held: false })
   })
 
   it('has nothing for an empty epic', () => {

@@ -20,9 +20,12 @@ export function openEpicTasks(board: Board, epicId: string): Task[] {
   return board.tasks.filter((t) => t.epicId === epicId && !t.archivedAt && t.status !== 'done').sort((a, b) => a.position - b.position)
 }
 
-/** The next task an epic run should start: the first open one, in plan order, with no open blockers. */
+/**
+ * The next task an epic run should start: the first open one, in plan order, with no open blockers.
+ * Backlog tasks are parked on purpose, so a run never starts them by itself.
+ */
 export function nextReadyTask(board: Board, epicId: string): Task | null {
-  return openEpicTasks(board, epicId).find((t) => openBlockers(board, t).length === 0) ?? null
+  return openEpicTasks(board, epicId).find((t) => t.status !== 'backlog' && openBlockers(board, t).length === 0) ?? null
 }
 
 /** Done and total live tasks of an epic. */
@@ -36,6 +39,22 @@ export function outsideBlockers(board: Board, epicId: string): Task[] {
   const seen = new Map<string, Task>()
   for (const t of openEpicTasks(board, epicId)) for (const b of openBlockers(board, t)) if (b.epicId !== epicId) seen.set(b.id, b)
   return [...seen.values()]
+}
+
+/**
+ * Why none of an epic's open tasks can start, in words. `held` is true when a change outside the run is
+ * needed (a blocker in another epic done, a task moved out of Backlog), so the run can wait for it; false
+ * when the epic's own tasks hold each other up, which needs the user.
+ */
+export function waitingReason(board: Board, epicId: string): { reason: string; held: boolean } {
+  const outside = outsideBlockers(board, epicId).map((t) => t.key)
+  const parked = openEpicTasks(board, epicId).filter((t) => t.status === 'backlog').map((t) => t.key)
+  const parts: string[] = []
+  if (outside.length) parts.push(`the remaining tasks wait on ${outside.join(', ')} (outside this epic)`)
+  if (parked.length) parts.push(`${parked.join(', ')} ${parked.length === 1 ? 'is' : 'are'} in Backlog; move ${parked.length === 1 ? 'it' : 'them'} to To do to run ${parked.length === 1 ? 'it' : 'them'}`)
+  if (parts.length) return { reason: parts.join('; ').replace(/^./, (c) => c.toUpperCase()), held: true }
+  const blocked = openEpicTasks(board, epicId).map((t) => `${t.key} waits on ${openBlockers(board, t).map((b) => b.key).join(', ')}`)
+  return { reason: `No task can start: ${blocked.join('; ')}`, held: false }
 }
 
 /** An epic-run chat's first message: the task (it names the chat), then which epic it belongs to, so the agent stays within its task. */

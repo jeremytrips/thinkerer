@@ -44,6 +44,7 @@ let board: BoardService
 let sup: AgentSupervisor
 let protocol: ProtocolService
 let runs: EpicRunService
+let approvals: Approvals
 let calls: InvocationOptions[]
 let epic: Epic
 let t1: Task
@@ -64,7 +65,7 @@ beforeEach(async () => {
   t1 = board.create(repo, { kind: 'task', title: 'First', epicId: epic.id }) as Task
   t2 = board.create(repo, { kind: 'task', title: 'Second', epicId: epic.id, blockedBy: [t1.id] }) as Task
   calls = []
-  const approvals = new Approvals(appData)
+  approvals = new Approvals(appData)
   sup = new AgentSupervisor(appData, projects, { adapters: [standIn(calls)], approvals, board })
   board.followChats(sup.chats, async () => repo)
   protocol = new ProtocolService({ supervisor: sup, projects, approvals })
@@ -76,7 +77,8 @@ afterEach(async () => {
   rmSync(tmp, { recursive: true, force: true })
 })
 
-const newService = () => new EpicRunService(appData, { board, chats: sup.chats, projects, begin: (...a) => protocol.begin(...a) })
+const newService = (over: Partial<ConstructorParameters<typeof EpicRunService>[1]> = {}) =>
+  new EpicRunService(appData, { board, chats: sup.chats, projects, begin: (...a) => protocol.begin(...a), isChatLive: (id) => sup.isChatLive(id), onTurnEnded: (cb) => sup.on('update', (s) => s.endedAt && cb(s.projectId, s.chatId ?? s.id)), ...over })
 
 function runWhen(service: EpicRunService, pred: (r: EpicRun) => boolean): Promise<EpicRun> {
   return new Promise((resolve) => {
@@ -183,6 +185,9 @@ describe('epic runs', () => {
     await runs.start(projectId, epic.id, 'claude')
     const chatId = (await first).currentChatId!
     await expect(runs.start(projectId, other.id, 'claude')).rejects.toThrow(/E-1 is already running/)
+    // The same refusal is available before any approval dialog, and changes nothing.
+    await expect(runs.check(projectId, other.id)).rejects.toThrow(/E-1 is already running/)
+    await expect(runs.check(projectId, epic.id)).resolves.toBeUndefined()
     await turnEnded(chatId)
 
     expect((await runs.stop(projectId))?.status).toBe('stopped')
@@ -214,9 +219,79 @@ describe('epic runs', () => {
     expect((await waiting).reason).toMatch(/wait on T-3/)
     expect(calls).toHaveLength(1)
 
+    // Starting it again while it waits resumes it (still waiting), not an error.
+    expect(await runs.start(projectId, epic.id, 'claude')).toMatchObject({ status: 'waiting', epicId: epic.id })
+
     const next = runWhen(runs, (r) => r.status === 'running' && r.currentTaskId === t2.id && !!r.currentChatId)
     board.update(repo, outside.id, { status: 'done' })
     await turnEnded((await next).currentChatId!)
+  })
+
+  it('pauses when a chat’s worktree setup fails, instead of showing it in progress', async () => {
+    await projects.updateConfig(projectId, { worktrees: { setupCommand: 'exit 3' } })
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'setup command')
+    await approvals.approve(projectId, 'setup', 'exit 3')
+    const paused = runWhen(runs, (r) => r.status === 'paused')
+    await runs.start(projectId, epic.id, 'claude')
+    const r = await paused
+    expect(r.reason).toMatch(/chat on T-1 could not be set up/)
+    expect((await sup.chats.get(r.currentChatId!))?.state).toBe('setting-up')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('stops at once while a chat is still being set up, and keeps that chat', async () => {
+    let release = () => {}
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    let called = () => {}
+    const beginning = new Promise<void>((resolve) => (called = resolve))
+    const slow = newService({ begin: async (...a) => (called(), await gate, protocol.begin(...a)) })
+    const starting = slow.start(projectId, epic.id, 'claude')
+    await beginning
+    // Stop doesn't wait for the chat being set up.
+    expect((await slow.stop(projectId))?.status).toBe('stopped')
+    release()
+    const after = await starting
+    expect(after).toMatchObject({ status: 'stopped', currentTaskId: t1.id })
+    expect(after.currentChatId).toBeTruthy()
+    await turnEnded(after.currentChatId!)
+    expect((await slow.status(projectId))?.status).toBe('stopped')
+  })
+
+  it('pauses with the error when a step fails, rather than looking busy', async () => {
+    const first = runWhen(runs, (r) => !!r.currentChatId)
+    await runs.start(projectId, epic.id, 'claude')
+    await turnEnded((await first).currentChatId!)
+    const real = board.board.bind(board)
+    board.board = () => {
+      throw new Error('database is locked')
+    }
+    const paused = runWhen(runs, (r) => r.status === 'paused')
+    board.emit('change', repo)
+    expect((await paused).reason).toMatch(/stopped on an error: database is locked\. Resume/)
+    board.board = real
+  })
+
+  it('pauses a saved run whose project folder is gone at startup', async () => {
+    const now = new Date().toISOString()
+    await writeJson(join(appData, 'epic-runs', `${projectId}.json`), { projectId, epicId: epic.id, epicKey: 'E-1', epicTitle: 'Blink', provider: 'claude', status: 'running', currentTaskId: t1.id, currentTaskKey: 'T-1', currentChatId: null, reason: null, done: 0, total: 2, startedAt: now, updatedAt: now } satisfies EpicRun)
+    const gone = newService({ projects: { get: async () => { throw new Error('Project not found') } } })
+    const r = await runWhen(gone, (x) => x.status === 'paused')
+    expect(r.reason).toMatch(/Project not found/)
+  })
+
+  it('dismisses a finished run', async () => {
+    board.update(repo, t1.id, { status: 'done' })
+    board.update(repo, t2.id, { status: 'done' })
+    board.create(repo, { kind: 'task', title: 'Last', epicId: epic.id })
+    const first = runWhen(runs, (r) => !!r.currentChatId)
+    await runs.start(projectId, epic.id, 'claude')
+    const chatId = (await first).currentChatId!
+    await turnEnded(chatId)
+    const finished = runWhen(runs, (r) => r.status === 'finished')
+    await finish(chatId, 'shipped')
+    await finished
+    expect((await runs.stop(projectId))?.status).toBe('stopped')
   })
 
   it('picks up a saved run after a restart', async () => {

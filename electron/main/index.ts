@@ -55,7 +55,9 @@ board.followChats(supervisor.chats, async (projectId) => {
 })
 const protocol = new ProtocolService({ supervisor, projects, approvals, stopDevServer: (projectId, chatId) => devServers.stop(projectId, chatId) })
 // Created after followChats: an epic run reads the board once it has followed a chat update.
-const epicRuns = new EpicRunService(appData, { board, chats: supervisor.chats, projects, begin: (...args) => protocol.begin(...args) })
+const epicRuns = new EpicRunService(appData, { board, chats: supervisor.chats, projects, begin: (...args) => protocol.begin(...args), isChatLive: (id) => supervisor.isChatLive(id),
+  onTurnEnded: (cb) => supervisor.on('update', (s) => s.endedAt && cb(s.projectId, s.chatId ?? s.id))
+})
 let mainWindow: BrowserWindow | null = null
 const preview = new PreviewManager(
   () => mainWindow,

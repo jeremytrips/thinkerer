@@ -119,14 +119,17 @@ test check this (2026-11-21).
   `/discard` moves it back to To do unless another open chat works on it. Each chat applies each of these once, so a
   status you set by hand afterwards sticks.
 - **Run an epic.** **Run epic** on an epic row in Plan opens a protocol chat on its first ready task (plan order, not
-  done or archived, no open blockers), with a line saying which epic it belongs to. When that task is Done (it ships or
-  is merged), the next ready task gets its own chat by itself, one at a time. You still approve each chat's plan, review
-  and ship. A bar in the Tasks tab and in that chat shows the task (`task 2 of 5 · T-12 in progress`), **Open chat** and
-  **Stop**. A chat discarded before its task is done, or one that cannot start, pauses the run with the reason (**Resume**
-  starts a new chat on that task). Tasks waiting on a blocker outside the epic make it wait, and it goes on once that
-  blocker is done. A chat you already opened on a task is used, not doubled. The epic moves to In progress, then Done.
-  One epic at a time per project. Runs are saved in `<appData>/epic-runs/` and go on after a restart. The worktree setup
-  command is approved when you click Run epic.
+  done, archived or in Backlog, no open blockers), with a line saying which epic it belongs to. When that task is Done
+  (it ships or is merged), the next ready task gets its own chat by itself, one at a time. You still approve each chat's
+  plan, review and ship. A bar in the Tasks tab and in that chat shows the task (`task 2 of 5 · T-12 in progress`),
+  **Open chat** and **Stop** (applied at once, also while a chat is being set up; open chats stay). The run pauses with
+  the reason when a chat is discarded before its task is done (**Resume** starts a new chat on it), when a chat cannot
+  start, or when a step fails. If a chat's worktree setup fails, the run pauses, and goes on by itself once you retry in
+  that chat. It waits, and goes on by itself, while the remaining tasks wait on a blocker outside the epic or sit in
+  Backlog; the bar names them. A chat you already opened on a task is used, not doubled. The epic moves to In progress,
+  then Done; **Dismiss** hides a finished run. One epic at a time per project. Runs are saved in `<appData>/epic-runs/`
+  and go on after a restart. The worktree setup command is approved when you click Run epic, after the checks that would
+  refuse the run.
 - **Storage.** `<project>/.thinkerer/local/board.sqlite` (Node's built-in `node:sqlite`, no dependency). Thinkerer
   writes `.thinkerer/local/.gitignore` (`*`), so the board is never committed, checkpointed or merged. The database is
   created on the first change (yours or an agent's), not when a project is only opened. It is always the
