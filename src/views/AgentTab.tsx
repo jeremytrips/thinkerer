@@ -24,6 +24,7 @@ import { RestoreDialog } from './Changes'
 import { agentItems, commandOf, matchingCommands, type SlashItem } from './ChatBits'
 import { LIVE } from './ChatTurn'
 import { ProtocolBar } from './ProtocolBar'
+import { composerMode } from './composerMode'
 import { modeAfterGiveBack, type Queued } from './queue'
 import type { TabId } from './ProjectView'
 import { useFollowUps } from './useFollowUps'
@@ -357,7 +358,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill, onPrefillUsed 
   const liveTurn = turns.find((t) => LIVE.includes(t.status))
   // In a protocol chat the stage decides how a message runs, not the mode picker.
   const protocolChat = chat ? !!record?.protocol : useProtocol
-  const planning = protocolChat ? !chat || record?.protocol?.stage === 'plan' : mode === 'plan'
+  const { approving, planning } = composerMode({ hasChat: !!chat, protocolChat, stage: record?.protocol?.stage, mode, draft })
 
   const items = transcriptItems(turns, record?.notes ?? [])
   const lastTurnId = turns.at(-1)?.id
@@ -455,6 +456,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill, onPrefillUsed 
           setUseProtocol={(on) => (saveState('agent.protocol', on), setUseProtocol(on))}
           protocolChat={protocolChat}
           planning={planning}
+          approving={approving}
           providers={providers}
           choice={choice}
           setChoice={setChoice}

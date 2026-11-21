@@ -9,5 +9,6 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   root: resolve(import.meta.dirname, 'src'),
   plugins: [react()],
-  server: { port: 5174, strictPort: true }
+  // A chat worktree serves on its own reserved port (THINKERER_PORT_1); the project folder on 5174.
+  server: { port: Number(process.env.THINKERER_PORT_1) || 5174, strictPort: true }
 })

@@ -1,5 +1,5 @@
 import type { ChatRecord, ChatWorktree, Effort, ProtocolChecks, RunRecord, UsageObservation } from '../shared/types'
-import { branchExists, git } from './worktrees'
+import { git } from './worktrees'
 
 // What the software protocol tells the agent at each stage, and the report it
 // leaves when the chat ships. Everything here is kept short on purpose: these
@@ -91,11 +91,6 @@ export function pickPlan(turns: Pick<RunRecord, 'protocolStage' | 'status' | 're
   return (real.at(-1) ?? ok.at(-1) ?? plans.at(-1))?.resultText ?? null
 }
 
-/** The commits a chat's review covers: from its base branch (or the commit it started at) to HEAD. */
-export async function reviewRange(wt: ChatWorktree, cwd: string): Promise<string> {
-  return (await branchExists(cwd, wt.base)) ? `${wt.base}...HEAD` : `${wt.baseCommit}..HEAD`
-}
-
 function checkStatus(checks: ProtocolChecks): string {
   return checks.status === 'passed' ? 'passed' : checks.status === 'failed' ? `failed (exit code ${checks.exitCode})` : 'not run'
 }
@@ -120,18 +115,34 @@ export function fixFindingsPrompt(findings: string): string {
   ].join('\n')
 }
 
-/** The reviewer's whole input: acceptance criteria, check result and the branch diff, nothing from the implementer's conversation. */
-export async function reviewPrompt(wt: ChatWorktree, cwd: string, plan: string | null, checks: ProtocolChecks | null): Promise<string> {
-  const base = await reviewRange(wt, cwd)
-  const stat = (await git(cwd, ['diff', '--stat=120', base, '--', '.', ...NOISE_SPECS]).catch(() => '')).trim()
-  const diff = await git(cwd, ['diff', '--no-color', '-U3', base, '--', '.', ...NOISE_SPECS]).catch(() => '')
+/**
+ * What the reviewer looks at: from HEAD as it was before the first implement
+ * turn ran (its checkpoint), to HEAD now. Not `base...HEAD`: once the base
+ * branch has this branch merged, that diff is empty although the work is there.
+ * Not the turn's own commit either: that is only what Thinkerer committed
+ * after the agent stopped, so commits the agent made itself would be missed.
+ * Without a recorded checkpoint, the commit the worktree started from.
+ * Null when the range has no changes, so no review is spent on nothing.
+ */
+export async function reviewRange(wt: ChatWorktree, cwd: string, turns: RunRecord[]): Promise<string | null> {
+  const first = turns.find((t) => (t.protocolStage ?? 'implement') === 'implement')
+  const range = `${first?.checkpoint?.head ?? wt.baseCommit}..HEAD`
+  // Same filter as the prompt: a lockfile-only change would otherwise start a review of an empty diff.
+  const files = (await git(cwd, ['diff', '--name-only', range, '--', '.', ...NOISE_SPECS]).catch(() => '')).trim()
+  return files ? range : null
+}
+
+/** The reviewer's whole input: acceptance criteria, check result and the diff of the implement turns, nothing from the implementer's conversation. */
+export async function reviewPrompt(cwd: string, range: string, plan: string | null, checks: ProtocolChecks | null): Promise<string> {
+  const stat = (await git(cwd, ['diff', '--stat=120', range, '--', '.', ...NOISE_SPECS]).catch(() => '')).trim()
+  const diff = await git(cwd, ['diff', '--no-color', '-U3', range, '--', '.', ...NOISE_SPECS]).catch(() => '')
   const lines = ['Review the change on this branch against the plan below.', '', '## Plan', plan ? clip(plan, MAX_PLAN_CHARS) : '(no plan recorded)', '']
   if (checks) lines.push('## Checks', `\`${checks.command}\`: ${checkStatus(checks)}`, '')
   lines.push('## Files changed', stat || '(no changes)', '')
   if (diff.length <= MAX_REVIEW_DIFF_CHARS) {
     lines.push('## Diff', '```diff', diff.trimEnd(), '```')
   } else {
-    lines.push(`The diff is too large to include (${Math.round(diff.length / 1000)}k characters). Open what you need with \`git diff ${base} -- <file>\`.`)
+    lines.push(`The diff is too large to include (${Math.round(diff.length / 1000)}k characters). Open what you need with \`git diff ${range} -- <file>\`.`)
   }
   return lines.join('\n')
 }

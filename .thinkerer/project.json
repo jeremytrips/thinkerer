@@ -7,7 +7,7 @@
   "target": "electron",
   "website": {
     "devCommand": "npm run dev:web",
-    "previewUrl": "http://localhost:5174"
+    "previewUrl": "http://localhost:{port1:5174}"
   },
   "agent": {
     "provider": "auto",
@@ -33,5 +33,10 @@
   },
   "marketing": {
     "enabled": true
+  },
+  "worktrees": {
+    "setupCommand": "npm ci",
+    "teardownCommand": "",
+    "ports": 1
   }
 }

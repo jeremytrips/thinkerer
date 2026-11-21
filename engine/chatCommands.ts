@@ -29,6 +29,8 @@ export interface CommandContext {
   chat: ChatRecord
   chats: ChatStore
   approvals: Approvals
+  /** Set by the protocol's Ship step, the one merge a protocol chat allows before it has shipped. */
+  fromProtocol?: boolean
   /** Whether a turn of this chat is running or starting. */
   live: boolean
   /** Stops the dev server running in the chat's worktree, if any. */
@@ -53,10 +55,18 @@ const COMMANDS: Record<ChatCommand, (ctx: CommandContext) => Promise<Outcome>> =
 const fail = (title: string, ...lines: string[]): Outcome => ({ note: { ok: false, title, lines } })
 const list = (items: string[], max = 15) => [...items.slice(0, max).map((i) => `  ${i}`), ...(items.length > max ? [`  … and ${items.length - max} more`] : [])]
 
-async function merge({ project, chat, live }: CommandContext): Promise<Outcome> {
+async function merge({ project, chat, live, fromProtocol }: CommandContext): Promise<Outcome> {
   const wt = chat.worktree
   if (live) return fail('Not merged: this chat is still working', 'Wait for it to finish or stop it, then run /merge again.')
   if (!wt || chat.worktreeRemoved) return fail('Nothing to merge', 'This chat works in the project folder, not in a worktree.')
+  // A merge before the review lands unreviewed work in the base branch and leaves the reviewer an empty diff.
+  if (chat.protocol && chat.protocol.stage !== 'shipped' && !fromProtocol) {
+    return fail(
+      `Not merged: this chat follows the software protocol (stage: ${chat.protocol.stage})`,
+      'Finish the steps above the composer: review the change, then use Ship, which merges it.',
+      'To try the change before that, open this chat\'s preview.'
+    )
+  }
   const lines: string[] = []
   const leftover = await commitAll(wt.path, 'Uncommitted changes in the chat worktree', `Thinkerer-Chat: ${chat.id}`)
   if (leftover) lines.push(`✅ Committed uncommitted changes in the worktree (${leftover.slice(0, 7)})`)

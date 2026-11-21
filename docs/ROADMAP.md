@@ -39,6 +39,9 @@ Why: a repeatable process for software chats that costs fewer tokens: plan, impl
 - [x] Review in a fresh read-only session (Claude: `/code-review` on the chat's range, with the plan; Codex: the plan and the diff); fixes resume the implementer.
 - [x] Report on ship from recorded data, including reported tokens per stage; cleanup stays manual.
 - [x] Settings → Software protocol: check command, review rounds, review model and effort.
+- [x] Fixes from the first real use (2026-11-21): a plain "ok implement" reply approves the plan; the
+  review diffs the implement commits and refuses an empty diff; `/merge` waits for Ship; lockfile-based
+  worktree setup suggestion; per-chat preview started before a turn, or the browser check is skipped.
 
 ### R-11 · Project management (board) · `doing`
 Why: the Tasks tab grows from a flat list into the project's plan, shared by the user and every agent.
