@@ -107,9 +107,10 @@ function blocks(text: string): ReactNode[] {
 
 const TABLE_RULE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/
 
-/** A GFM table: a row with pipes followed by a `|---|:--:|` separator line. */
+/** A GFM table: a row with pipes followed by a `|---|:--:|` separator line with as many columns. */
 function isTableStart(lines: string[], i: number): boolean {
-  return lines[i].includes('|') && i + 1 < lines.length && lines[i + 1].includes('-') && TABLE_RULE.test(lines[i + 1])
+  if (!lines[i].includes('|') || i + 1 >= lines.length || !lines[i + 1].includes('-') || !TABLE_RULE.test(lines[i + 1])) return false
+  return cells(lines[i]).length === cells(lines[i + 1]).length
 }
 
 /** Split a table row on unescaped pipes outside inline code, dropping the outer ones. */
