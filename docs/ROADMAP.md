@@ -3,8 +3,9 @@
 **Format.** Three horizons: **Now** (being worked on, at most ~3 items), **Next** (agreed, ordered),
 **Later** (direction, unordered). Each item has an ID, a one-line why, and acceptance criteria an
 agent can verify. Status: `todo`, `doing`, `done`. When an item ships, mark it `done` with the date
-and commit, and move the facts into the README. Break `doing` items into tasks on the project board
-(the board MCP server) so they show in the Tasks tab (see `.thinkerer/skills/roadmap-item.md`).
+and commit, and move the facts into the README. On the project board (the board MCP server), every
+item is an epic and each piece of work in it is a task, also the work listed as acceptance
+checkboxes here; "done when" lists hold checks, not work (see `.thinkerer/skills/roadmap-item.md`).
 
 Priorities among the engineering components are not decided yet. The order below is a proposal:
 foundations first, then the component plug-in model, then components.

@@ -76,6 +76,14 @@ describe('buildInstructions', () => {
     expect(text).not.toContain('PASSED or FAILED')
   })
 
+  it('tells agents with the board to plan work as tasks, not "done when" lines', () => {
+    const board = [{ id: 'board' }] as ResolvedMcpServer[]
+    const text = buildInstructions('B', board, folder, 'auto', undefined, '')
+    expect(text).toContain('Break work into tasks under an epic (one chat each)')
+    expect(text).toContain('a "done when" list holds checks that prove an item is finished, never work items')
+    expect(buildInstructions('B', [], folder, 'auto', undefined, '')).not.toContain('done when')
+  })
+
   it('puts extra instructions before the project instructions, which come last', () => {
     const text = buildInstructions('B', [], folder, 'auto', undefined, 'STAGE', '# Rules')
     expect(text.indexOf('STAGE')).toBeLessThan(text.indexOf('Project instructions'))

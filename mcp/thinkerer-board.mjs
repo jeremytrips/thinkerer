@@ -18,7 +18,7 @@ const source = `agent:${chatId}`
 
 const ref = { type: 'string', description: 'Key such as T-12, E-3 or M-1 (or the item id)' }
 const strings = (description) => ({ type: 'array', items: { type: 'string' }, description })
-const criteria = { type: 'array', items: { type: 'string' }, description: '"Done when" checklist, one line per criterion (replaces the whole list; use board_check to tick one)' }
+const criteria = { type: 'array', items: { type: 'string' }, description: '"Done when" checklist: checks that prove the item is finished, not work to do (work is a task under the epic). One line per criterion; replaces the whole list; use board_check to tick one' }
 const fields = {
   title: { type: 'string', maxLength: 300 },
   description: { type: 'string', description: 'Milestones and epics' },
