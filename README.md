@@ -159,17 +159,22 @@ The bar at the top of the chat shows the stage and offers the next step:
 2. **Implement + tests.** The agent continues the same session, implements the plan and adds its tests.
    Then Thinkerer runs the project's check command itself in the worktree (shown as a **Checks** note).
    If the checks fail, **Fix failing checks** sends only the last 50 lines of output back to the agent.
-3. **Review.** A fresh, read-only session (no sub-agents) gets only the plan, the check result and the
-   branch diff (lockfiles and minified files left out; above 60k characters, only the file list). It
-   replies one finding per line. **Fix findings** sends just those findings back to the implementer's
-   session. Review rounds are capped (2 by default).
+3. **Review.** A fresh, read-only session. With Claude Code it runs the `/code-review` skill on the chat's
+   branch (`/code-review <level> <branch>`; the turn gets the Skill tool, and sub-agents only if the project
+   enables them). Its instructions pin the range to the chat's own base (`<base>...HEAD`), skip lockfiles
+   and minified files, add the plan and the check result, and ask for one finding per line. Codex has no
+   review command, so it gets the plan, the check result and the branch diff in the message (same files
+   left out; above 60k characters, only the file list). The plan is the latest plan-stage reply with
+   acceptance criteria. **Fix findings** sends just the findings back to the implementer's session.
+   Review rounds are capped (2 by default).
 4. **Ship.** Thinkerer runs the same steps as `/merge`, then adds a report built only from what was
    recorded: turns, check result, findings per round and the tokens each stage's provider reported.
    Cleanup stays manual: type `/cleanup`.
 
 Settings → **Software protocol** sets the check command (detected from `package.json` `typecheck` /
 `test` scripts on import), the review rounds (1–5), and the review model and effort (Claude only, e.g. a
-cheaper model for reviews). They are saved under `protocol` in `.thinkerer/project.json`.
+cheaper model for reviews). The review effort is also the `/code-review` level; when it is unset the agent
+effort is used (max held at xhigh) or `medium`. They are saved under `protocol` in `.thinkerer/project.json`.
 
 ### Worktrees, ports and Docker
 

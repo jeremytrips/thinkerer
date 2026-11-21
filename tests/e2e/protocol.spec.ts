@@ -74,7 +74,7 @@ test('a protocol chat goes plan → implement + checks → review → ship', asy
     await expect(bar.getByRole('button', { name: 'Fix findings' })).toBeVisible()
     await expect(bar.locator('[aria-current="step"]')).toContainText('Review')
     await expect(bar).toContainText('round 1/2')
-    const review = page.getByRole('article', { name: /^Message: Review the change on this branch/ })
+    const review = page.getByRole('article', { name: /^Message: \/code-review medium thinkerer\// })
     await expect(review).toContainText('[high] made.txt:1: example finding; fix it')
     await expect(review).toContainText('Fresh session')
     await page.screenshot({ path: join(shots, 'protocol-review.png') })
