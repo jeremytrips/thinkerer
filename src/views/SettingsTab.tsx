@@ -200,8 +200,8 @@ export function SettingsTab({ project, onChanged, onRemoved }: { project: Projec
           <legend>Software protocol</legend>
           <p className="small muted">
             Protocol chats go plan → implement + tests → review → ship. Thinkerer runs the check command itself after each implementation
-            turn (it asks for approval when the command changes) and sends only failing output back to the agent. Reviews run in a fresh,
-            read-only session that sees just the plan and the diff.
+            turn (it asks for approval when the command changes) and sends only failing output back to the agent. Reviews run Claude Code’s
+            <span className="mono"> /code-review</span> on the chat’s branch in a fresh, read-only session (Codex chats get the plan and the diff).
           </p>
           <label>
             Check command
@@ -223,6 +223,7 @@ export function SettingsTab({ project, onChanged, onRemoved }: { project: Projec
             <select value={reviewEffort} onChange={(e) => setReviewEffort(e.target.value as Effort)}>
               {EFFORTS.map((x) => <option key={x.id} value={x.id}>{x.id ? x.label : 'Same as above'}</option>)}
             </select>
+            <span className="small muted">Also the <span className="mono">/code-review</span> level (medium when neither is set).</span>
           </label>
         </fieldset>
         <div className="row">

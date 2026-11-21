@@ -5,9 +5,11 @@ import { runChatCommand } from './chatCommands'
 import type { ProjectService } from './projects'
 import {
   CHECK_TAIL_LINES,
+  CODE_REVIEW_INSTRUCTIONS,
   IMPLEMENT_PROMPT,
   PLAN_INSTRUCTIONS,
   REVIEW_INSTRUCTIONS,
+  codeReviewPrompt,
   fixChecksPrompt,
   fixFindingsPrompt,
   implementInstructions,
@@ -108,17 +110,22 @@ export class ProtocolService {
         if (p.stage !== 'implement' && !retry) throw new Error(p.stage === 'plan' ? 'Approve the plan first' : 'There is nothing new to review')
         if (p.round >= max) throw new Error(`This chat already had ${max} review round${max === 1 ? '' : 's'} (the project's limit). Ship it, or keep working by sending messages.`)
         if (!chat.worktree) throw new Error('Reviews need the chat to have its own worktree and branch')
-        const plan = (await latest('plan'))?.resultText ?? null
-        const prompt = await reviewPrompt(chat.worktree, chat.worktree.path, plan, p.checks)
         const { protocol: { review }, agent } = project.config!
-        await this.startStage(chat, { stage: 'review', round: p.round + 1 }, prompt, {
-          mode: 'plan',
-          protocolStage: 'review',
-          freshSession: true,
-          instructions: REVIEW_INSTRUCTIONS,
-          // A reviewer reads one diff; sub-agents would multiply its tokens for little gain.
-          claude: { model: review.model, effort: review.effort, tools: agent.claude.tools.filter((t) => t !== 'Task') }
-        })
+        const provider = (await this.deps.supervisor.getChat(projectId, chatId)).at(-1)?.provider
+        const base = { mode: 'plan' as const, protocolStage: 'review' as const, freshSession: true }
+        if (provider === 'claude') {
+          // Claude Code's own /code-review skill; it may use sub-agents, and needs the Skill tool.
+          const tools = [...new Set([...agent.claude.tools, 'Skill' as const])]
+          await this.startStage(chat, { stage: 'review', round: p.round + 1 }, codeReviewPrompt(review.effort || agent.claude.effort, chat.worktree.branch), {
+            ...base,
+            instructions: CODE_REVIEW_INSTRUCTIONS,
+            claude: { model: review.model, effort: review.effort, tools }
+          })
+        } else {
+          const plan = (await latest('plan'))?.resultText ?? null
+          const prompt = await reviewPrompt(chat.worktree, chat.worktree.path, plan, p.checks)
+          await this.startStage(chat, { stage: 'review', round: p.round + 1 }, prompt, { ...base, instructions: REVIEW_INSTRUCTIONS })
+        }
         break
       }
       case 'fix-findings': {

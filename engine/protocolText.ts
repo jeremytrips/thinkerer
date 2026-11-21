@@ -39,6 +39,17 @@ export const REVIEW_INSTRUCTIONS = [
   'If there are none, reply exactly: No findings.'
 ].join(' ')
 
+/** With /code-review the skill does the reviewing; this only fixes the shape of its answer so findings can be counted and forwarded. */
+export const CODE_REVIEW_INSTRUCTIONS = [
+  'Thinkerer software protocol, stage 3 of 4 (code review). You are read-only: do not use --fix or --comment.',
+  'End your reply with the findings, one line each: `[high|medium|low] path:line: problem; fix`. If there are none, end with exactly: No findings.'
+].join(' ')
+
+/** The review turn's prompt in a Claude chat: Claude Code's own /code-review skill on the chat's branch. */
+export function codeReviewPrompt(level: string, branch: string): string {
+  return `/code-review ${level || 'medium'} ${branch}`
+}
+
 export const IMPLEMENT_PROMPT = 'The plan is approved. Implement it now, with the tests it lists.'
 
 export function fixChecksPrompt(checks: ProtocolChecks): string {

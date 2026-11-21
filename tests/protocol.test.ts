@@ -10,7 +10,7 @@ import { Approvals } from '../engine/approvals'
 import { ProjectService } from '../engine/projects'
 import { ProtocolService } from '../engine/protocol'
 import { countFindings } from '../engine/protocolText'
-import type { ChatRecord, ProtocolAction, RunSummary } from '../shared/types'
+import type { ChatRecord, Effort, ProtocolAction, RunSummary } from '../shared/types'
 
 // The software protocol end to end with a stand-in agent, a real temp repo and
 // real git: plan → implement (+ checks Thinkerer runs) → fresh-session review →
@@ -20,12 +20,12 @@ const FIXTURE = join(__dirname, 'fixtures', 'stand-in-agent.mjs')
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
 
 /** Records what each turn was started with; read-only turns write nothing (like a real plan or review). */
-function recordingStandIn(calls: InvocationOptions[]): AgentAdapter {
+function recordingStandIn(calls: InvocationOptions[], id: 'claude' | 'codex' = 'claude'): AgentAdapter {
   return {
-    id: 'claude',
+    id,
     label: 'Stand-in',
     policySummary: 'test',
-    detect: async () => ({ id: 'claude', label: 'Stand-in', installed: true, executable: process.execPath, version: 'test', authenticated: true, adapterAvailable: true, detail: '', policy: 'test' }),
+    detect: async () => ({ id, label: 'Stand-in', installed: true, executable: process.execPath, version: 'test', authenticated: true, adapterAvailable: true, detail: '', policy: 'test' }),
     buildInvocation: (opts) => {
       calls.push(opts)
       return { command: opts.executable, args: [FIXTURE, opts.mode === 'plan' ? 'readonly' : 'ok'], stdin: opts.prompt, env: process.env }
@@ -43,7 +43,7 @@ let sup: AgentSupervisor
 let protocol: ProtocolService
 let calls: InvocationOptions[]
 
-async function setup(config: { checkCommand?: string; maxReviewRounds?: number; review?: { model?: string } } = {}) {
+async function setup(config: { checkCommand?: string; maxReviewRounds?: number; review?: { model?: string; effort?: Effort } } = {}) {
   await projects.updateConfig(projectId, { protocol: config })
   git(repo, 'add', '-A')
   git(repo, 'commit', '-qm', 'protocol config')
@@ -104,7 +104,7 @@ const checksDone = (c: ChatRecord) => !!c.protocol?.checks && c.protocol.checks.
 describe('software protocol', () => {
   it('plans, implements with checks, reviews in a fresh session, fixes in the implementer session, and ships', async () => {
     const check = 'test -f made.txt && echo checks-ok'
-    await setup({ checkCommand: check, review: { model: 'sonnet' } })
+    await setup({ checkCommand: check, review: { model: 'sonnet', effort: 'medium' } })
 
     // 1. The first message is the task, planned read-only.
     const ended = turnEnded()
@@ -128,16 +128,17 @@ describe('software protocol', () => {
     expect(chat.notes.at(-1)!.lines).toContain('checks-ok')
     await expect(protocol.advance(projectId, chatId, 'approve-plan')).rejects.toThrow('already approved')
 
-    // 3. Review: a fresh session, read-only, without sub-agents, on the review model; it gets the plan and the diff only.
+    // 3. Review: Claude Code's /code-review on the chat's branch, in a fresh read-only session on the review model.
     const review = await step(chatId, 'start-review')
     expect(review.protocolStage).toBe('review')
-    expect(calls[2]).toMatchObject({ mode: 'plan', resumeSessionId: null })
-    expect(calls[2].claude).toMatchObject({ model: 'sonnet' })
-    expect(calls[2].claude!.tools).not.toContain('Task')
-    expect(calls[2].prompt).toContain('## Plan')
-    expect(calls[2].prompt).toContain('passed')
-    expect(calls[2].prompt).toMatch(/## Diff[\s\S]*\+\+\+ b\/made\.txt/)
+    const branch = (await sup.chats.get(chatId))!.worktree!.branch
+    expect(calls[2]).toMatchObject({ mode: 'plan', resumeSessionId: null, prompt: `/code-review medium ${branch}` })
+    expect(review.prompt).toBe(`/code-review medium ${branch}`)
+    expect(calls[2].prompt).not.toContain('## Plan')
+    expect(calls[2].claude).toMatchObject({ model: 'sonnet', effort: 'medium' })
+    expect(calls[2].claude!.tools).toContain('Skill')
     expect(calls[2].policy.appendSystemPrompt).toContain('stage 3 of 4 (code review)')
+    expect(calls[2].policy.appendSystemPrompt).toContain('[high|medium|low] path:line')
     chat = (await sup.chats.get(chatId))!
     expect(chat.protocol).toMatchObject({ stage: 'review', round: 1 })
 
@@ -201,6 +202,21 @@ describe('software protocol', () => {
     const chat = await chatWhen(plan.id, checksDone)
     expect(chat.protocol!.checks).toMatchObject({ status: 'not-approved', tail: [] })
     expect(chat.notes.some((n) => n.kind === 'checks')).toBe(false)
+  })
+
+  it('keeps the review prompt with the plan and diff for Codex chats, which have no skills', async () => {
+    sup = new AgentSupervisor(join(tmp, 'appdata'), projects, { adapters: [recordingStandIn(calls, 'codex')], approvals })
+    protocol = new ProtocolService({ supervisor: sup, projects, approvals })
+    await setup()
+    const ended = turnEnded()
+    const plan = await protocol.begin(projectId, 'Add a file', 'codex')
+    await ended
+    await step(plan.id, 'approve-plan')
+    await step(plan.id, 'start-review')
+    const prompt = calls.at(-1)!.prompt
+    expect(prompt).not.toContain('/code-review')
+    expect(prompt).toContain('## Plan')
+    expect(prompt).toMatch(/## Diff[\s\S]*\+\+\+ b\/made\.txt/)
   })
 
   it('caps review rounds at the project limit', async () => {
