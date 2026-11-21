@@ -58,6 +58,15 @@ Why: the Tasks tab grows from a flat list into the project's plan, shared by the
 - [x] Move this roadmap into the board through the MCP server (the user does this when needed).
 - [x] Manual check in the running app after **Restart app** (create items, a chat moving a task, an agent edit).
 
+### R-12 · Run a whole epic · `doing`
+Why: an epic's tasks shouldn't each need a chat started by hand.
+- [x] **Run epic** in Plan: a protocol chat on the first ready task (plan order, no open blockers); when it ships,
+      the next one starts by itself. One task at a time (each ship merges into the base the next branches from).
+- [x] Pauses with a reason (chat discarded, chat couldn't start), waits on blockers outside the epic, Stop, Resume,
+      survives a restart; sets the epic In progress, then Done.
+- [ ] Manual check in the running app after **Restart app** (run an epic through two shipped tasks).
+- [ ] Later, behind R-08: optionally approve plans / ship without the user; parallel independent tasks (R-09).
+
 ## Next
 
 ### R-04 · Interactive approvals · `todo`

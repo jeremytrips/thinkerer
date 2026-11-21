@@ -35,7 +35,8 @@ import type {
   BoardHistoryEntry,
   BoardItem,
   BoardKind,
-  BoardPatch
+  BoardPatch,
+  EpicRun
 } from './types'
 
 export interface Bounds {
@@ -91,6 +92,16 @@ export interface ThinkererApi {
     move(projectId: string, item: string, patch: BoardPatch, ids: string[]): Promise<BoardItem>
     /** The board of the project at this path changed (here, or by an agent through MCP). */
     onChange(cb: (projectPath: string) => void): () => void
+  }
+  /** An epic worked through task by task: one protocol chat per task, the next once the last is done. */
+  epicRuns: {
+    /** The project's current (or last) epic run, or null. */
+    status(projectId: string): Promise<EpicRun | null>
+    /** Starts running the epic, or resumes it if it is paused or waiting. */
+    start(projectId: string, epic: string, provider: ProviderChoice): Promise<EpicRun>
+    /** Stops opening new chats (chats already open are left as they are), or dismisses a finished run. */
+    stop(projectId: string): Promise<EpicRun | null>
+    onUpdate(cb: (run: EpicRun) => void): () => void
   }
   mcp: {
     list(): Promise<McpServerView[]>
