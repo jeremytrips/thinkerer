@@ -6,6 +6,19 @@ export type Target = 'web' | 'electron'
 export type ProviderId = 'claude' | 'codex'
 export type ProviderChoice = 'auto' | ProviderId
 
+/** How a message runs: 'auto' edits and runs commands; 'plan' only investigates and proposes a plan (read-only). */
+export type RunMode = 'auto' | 'plan'
+export type Effort = '' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+/** Claude Code built-in tools a project can opt into, on top of the file tools and Bash. */
+export type ClaudeOptionalTool = 'Task' | 'Skill' | 'WebSearch' | 'NotebookEdit'
+
+/** Claude Code options for a project's runs. Empty model/effort = the CLI's own default. */
+export interface ClaudeRunConfig {
+  model: string
+  effort: Effort
+  tools: ClaudeOptionalTool[]
+}
+
 export interface ProjectConfig {
   schemaVersion: 1
   name: string
@@ -13,7 +26,7 @@ export interface ProjectConfig {
   target: Target
   /** previewUrl may use {port1}…{portN}: the ports Thinkerer gives each chat's worktree. */
   website: { devCommand: string; previewUrl: string }
-  agent: { provider: ProviderChoice; enabledMcpServers: string[] }
+  agent: { provider: ProviderChoice; enabledMcpServers: string[]; claude: ClaudeRunConfig }
   /** Hooks run in every chat's worktree (e.g. docker compose up / down), and how many free ports it gets. */
   worktrees: WorktreeConfig
   marketing: { enabled: boolean }
@@ -39,7 +52,7 @@ export interface ProjectConfigPatch {
   components?: Component[]
   target?: Target
   website?: { devCommand?: string; previewUrl?: string }
-  agent?: { provider?: ProviderChoice; enabledMcpServers?: string[] }
+  agent?: { provider?: ProviderChoice; enabledMcpServers?: string[]; claude?: Partial<ClaudeRunConfig> }
   worktrees?: Partial<WorktreeConfig>
 }
 
@@ -159,18 +172,55 @@ export interface Task {
   updatedAt: string
 }
 
+export type McpTransport = 'stdio' | 'http' | 'sse'
+
 export interface McpServerDef {
   /** Lowercase id used as the server name in both CLIs' configs. */
   id: string
   label: string
   description: string
   builtin: boolean
+  /** Absent on servers saved before remote servers existed: stdio. */
+  transport?: McpTransport
+  /** stdio: the program to start and its arguments (empty for remote servers). */
   command: string
   args: string[]
   /** Non-secret environment. */
   env: Record<string, string>
-  /** Names of secret env vars; values live in OS-protected storage, never in config files. */
+  /** http/sse: the server's URL. */
+  url?: string
+  /** http/sse: request headers. A value may reference a secret as ${NAME}, e.g. "Bearer ${API_TOKEN}". */
+  headers?: Record<string, string>
+  /** Names of secrets (env vars for stdio, ${NAME} in headers for remote); values live in OS-protected storage, never in config files. */
   secretEnv: string[]
+}
+
+/** An MCP server found in Claude Code's own configuration, offered for import. Never carries secret values. */
+export interface McpImportCandidate {
+  /** Opaque key to import it with. */
+  key: string
+  source: 'project' | 'user' | 'user-project'
+  /** Where it was found, e.g. ".mcp.json" or "~/.claude.json". */
+  sourceLabel: string
+  name: string
+  def: McpServerDef
+  /** Secret values that will be copied into Thinkerer's encrypted store on import. */
+  secretsFound: string[]
+  /** Secrets referenced from your shell environment (${VAR}); set them after importing. */
+  secretsMissing: string[]
+  /** Set when a server with this id is already in the registry. */
+  exists: boolean
+  /** Set when Thinkerer can't run this server type. */
+  unsupported: string | null
+}
+
+/** Result of connecting to a server and listing its tools. */
+export interface McpCheckResult {
+  ok: boolean
+  serverInfo: string | null
+  tools: { name: string; description: string }[]
+  error: string | null
+  ms: number
 }
 
 export interface McpServerView extends McpServerDef {
@@ -179,6 +229,22 @@ export interface McpServerView extends McpServerDef {
 }
 
 /** What a provider will actually receive for a project's enabled servers. */
+/** What a provider CLI reported about its session when it started (Claude Code's init event). */
+export interface AgentCapabilities {
+  model: string | null
+  version: string | null
+  permissionMode: string | null
+  tools: string[]
+  /** MCP servers and their connection status (connected, failed, needs-auth, pending…). */
+  mcpServers: { name: string; status: string }[]
+  /** Slash commands usable in a message (interactive-only ones left out), skills included. */
+  commands: string[]
+  skills: string[]
+  /** Subagents the Task tool can start. */
+  agents: string[]
+  plugins: string[]
+}
+
 export interface EffectiveMcp {
   provider: ProviderId
   servers: { id: string; label: string; included: boolean; reason: string | null }[]
@@ -232,6 +298,10 @@ export interface RunRecord {
   /** The provider's own session/thread id, as reported by its CLI. Used to resume the chat. */
   sessionId?: string | null
   prompt: string
+  /** 'plan' = read-only: the agent investigates and proposes a plan. Absent on older runs (= auto). */
+  mode?: RunMode
+  /** What the CLI reported about its session (tools, MCP status, commands…). Absent when it reports nothing. */
+  capabilities?: AgentCapabilities | null
   taskId: string | null
   checkpoint: Checkpoint | null
   afterCommit: string | null

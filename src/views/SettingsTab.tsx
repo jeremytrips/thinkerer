@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { Component, Project, ProviderChoice, ProviderStatus, Target } from '../../shared/types'
+import type { ClaudeOptionalTool, Component, Effort, Project, ProviderChoice, ProviderStatus, Target } from '../../shared/types'
 import { api, errorMessage } from '../api'
 import { ProviderList } from './ProviderList'
 
@@ -7,6 +7,21 @@ const COMPONENTS: { id: Component; label: string; note?: string }[] = [
   { id: 'website', label: 'Website' },
   { id: 'mobile', label: 'Mobile', note: 'studio post-MVP' },
   { id: 'hardware', label: 'Hardware', note: 'studio post-MVP' }
+]
+
+const CLAUDE_TOOLS: { id: ClaudeOptionalTool; label: string; note: string }[] = [
+  { id: 'Task', label: 'Subagents', note: 'Lets Claude hand work to Explore, Plan and general-purpose subagents. They have the same limits as the run.' },
+  { id: 'Skill', label: 'Skills', note: 'Lets Claude use skills (yours and built-in ones) on its own. You can always type /skill-name.' },
+  { id: 'WebSearch', label: 'Web search', note: 'Searches the web. Search queries leave your machine.' },
+  { id: 'NotebookEdit', label: 'Jupyter notebooks', note: 'Edits .ipynb cells in the project.' }
+]
+const EFFORTS: { id: Effort; label: string }[] = [
+  { id: '', label: 'Default' },
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'high', label: 'High' },
+  { id: 'xhigh', label: 'Extra high' },
+  { id: 'max', label: 'Max' }
 ]
 
 export function SettingsTab({ project, onChanged, onRemoved }: { project: Project; onChanged: () => Promise<void>; onRemoved: () => void }) {
@@ -20,6 +35,9 @@ export function SettingsTab({ project, onChanged, onRemoved }: { project: Projec
   const [setupCommand, setSetupCommand] = useState(config.worktrees.setupCommand)
   const [teardownCommand, setTeardownCommand] = useState(config.worktrees.teardownCommand)
   const [ports, setPorts] = useState(String(config.worktrees.ports))
+  const [model, setModel] = useState(config.agent.claude.model)
+  const [effort, setEffort] = useState<Effort>(config.agent.claude.effort)
+  const [claudeTools, setClaudeTools] = useState<ClaudeOptionalTool[]>(config.agent.claude.tools)
   const [status, setStatus] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
   const [confirmRemove, setConfirmRemove] = useState(false)
   const [providers, setProviders] = useState<ProviderStatus[] | null>(null)
@@ -38,7 +56,7 @@ export function SettingsTab({ project, onChanged, onRemoved }: { project: Projec
         components,
         target,
         website: { devCommand, previewUrl },
-        agent: { provider },
+        agent: { provider, claude: { model, effort, tools: claudeTools } },
         worktrees: { setupCommand, teardownCommand, ports: Number(ports) }
       })
       await onChanged()
@@ -134,6 +152,45 @@ export function SettingsTab({ project, onChanged, onRemoved }: { project: Projec
             <option value="codex">Codex</option>
           </select>
         </label>
+        <fieldset>
+          <legend>Claude Code</legend>
+          <p className="small muted">
+            Options for this project’s Claude Code runs. Each message can also run in <strong>plan mode</strong> (read-only), chosen under the
+            composer. Claude’s own slash commands and skills (<span className="mono">/compact</span>, <span className="mono">/init</span>,{' '}
+            <span className="mono">/code-review</span>…) work in chats: type <span className="mono">/</span> to see them.
+          </p>
+          <label>
+            Model
+            <input className="mono" list="claude-models" value={model} onChange={(e) => setModel(e.target.value)} placeholder="Claude Code’s default" />
+            <datalist id="claude-models">
+              {['fable', 'opus', 'sonnet', 'haiku', 'opus[1m]', 'sonnet[1m]'].map((m) => <option key={m} value={m} />)}
+            </datalist>
+            <span className="small muted">An alias such as <span className="mono">opus</span> or <span className="mono">sonnet</span>, or a full model name. Leave empty for Claude Code’s default.</span>
+          </label>
+          <label>
+            Effort
+            <select value={effort} onChange={(e) => setEffort(e.target.value as Effort)}>
+              {EFFORTS.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+            </select>
+          </label>
+          <div className="tool-options" role="group" aria-label="Optional Claude Code tools">
+            <span className="small">Optional tools (file tools and the approved shell commands are always on)</span>
+            {CLAUDE_TOOLS.map((t) => (
+              <label key={t.id} className="check">
+                <input
+                  type="checkbox"
+                  checked={claudeTools.includes(t.id)}
+                  onChange={(e) => setClaudeTools(e.target.checked ? [...claudeTools, t.id] : claudeTools.filter((x) => x !== t.id))}
+                />
+                <span>
+                  {t.label} <span className="mono small muted">{t.id}</span>
+                  <br />
+                  <span className="small muted">{t.note}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
         <div className="row">
           <button type="submit" className="primary">Save</button>
           {status && <span className={status.tone === 'ok' ? 'small muted' : 'small error-text'}>{status.text}</span>}

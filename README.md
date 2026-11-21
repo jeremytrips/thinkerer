@@ -88,9 +88,30 @@ The result is commit `8438cfd`; typecheck, unit and e2e tests passed when re-run
 | Website | Approved dev command runner with logs. Sandboxed embedded preview (Electron `WebContentsView`), locked to the preview origin, with other origins only after approval. Preview console. The agent's browser checks |
 | Tasks | To do / In progress / Done board in `.thinkerer/tasks.json`; runs attach to tasks |
 | Files | Read-only tree and preview, uncommitted changes with diffs, checkpoints with restore |
-| MCP | Global server registry (built-in + your own stdio servers, Keychain-encrypted secrets), per-project enable, and the tools each provider will actually get |
-| Settings | Name, components, target, dev command, preview URL, chat worktree hooks and ports, default provider, LLM providers, agent permissions |
+| MCP | Global server registry (built-in + your own stdio, streamable HTTP and SSE servers, Keychain-encrypted secrets), per-project enable, the tools each provider will actually get, **Check** (connect and list a server's tools), **Import from Claude Code** (`.mcp.json`, `~/.claude.json`) |
+| Settings | Name, components, target, dev command, preview URL, chat worktree hooks and ports, default provider, Claude Code model / effort / optional tools, LLM providers, agent permissions |
 | Marketing | Placeholder (post-MVP) |
+
+### Claude Code features
+
+- **Slash commands and skills.** Type `/` in the composer: Thinkerer's own commands (`/merge`, `/cleanup`, `/done`,
+  `/discard`) come first, then the commands and skills Claude Code reported for this chat (`/compact`, `/context`,
+  `/init`, `/code-review`, `/security-review`, your skills…). Those are sent to the agent as the message. Commands that only
+  work in Claude's interactive terminal, or that Thinkerer handles itself (`/model`, `/effort`, `/mcp`, `/clear`), are left out.
+- **Plan mode.** The composer's **Mode** select runs one message read-only (`--permission-mode plan` for Claude, a
+  read-only sandbox for Codex). The agent replies with a plan; your next message (back in **Make changes**) carries it out.
+- **Model, effort, optional tools.** Settings → **Claude Code**: a model alias or name (`--model`), an effort level
+  (`--effort`), and opt-in built-in tools: subagents (`Task`) and skills (`Skill`), on by default; web search and
+  Jupyter notebooks, off by default. Stored in `.thinkerer/project.json` under `agent.claude`.
+- **Session details.** Each turn's **Details** show what Claude reported when its session started: model, tools, each
+  MCP server's connection status, subagents, skills and commands. An MCP server that failed to connect is also noted in
+  the conversation.
+- **MCP.** Remote servers (streamable HTTP, or SSE for Claude only) with headers that reference secrets as `${NAME}`.
+  Codex gets the same server when it can express the header (a whole value, or `Authorization: Bearer ${NAME}`); otherwise
+  the MCP tab says why it's left out. **Check** runs the MCP handshake and lists tools without calling any. **Import from
+  Claude Code** reads (never writes) `.mcp.json` and `~/.claude.json`. Secret-looking values go to encrypted storage and
+  never reach the UI, and `${VAR}` references become secrets to set. Servers that rely on `claude mcp login` OAuth may not
+  authenticate.
 
 ### Worktrees, ports and Docker
 

@@ -24,7 +24,16 @@ const previewApi: ThinkererApi = {
   git: { status: async () => null, init: unavailable, workingChanges: async () => [], workingDiff: unavailable, runDiff: unavailable },
   checkpoints: { list: async () => [], preview: unavailable, restore: unavailable },
   tasks: { list: async () => [], create: unavailable, update: unavailable, remove: unavailable },
-  mcp: { list: async () => [], upsert: unavailable, remove: unavailable, setSecret: unavailable, effective: async () => [] },
+  mcp: {
+    list: async () => [],
+    upsert: unavailable,
+    remove: unavailable,
+    setSecret: unavailable,
+    effective: async () => [],
+    check: unavailable,
+    importCandidates: async () => [],
+    import: unavailable
+  },
   website: { state: unavailable, logs: async () => [], start: unavailable, stop: unavailable, onLog: noop, onState: noop },
   preview: {
     show: unavailable,

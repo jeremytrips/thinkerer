@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, readdir, realpath, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { promisify } from 'node:util'
-import type { Component, Project, ProjectConfig, ProjectConfigPatch, ProviderChoice, Target } from '../shared/types'
+import type { ClaudeOptionalTool, ClaudeRunConfig, Component, Effort, Project, ProjectConfig, ProjectConfigPatch, ProviderChoice, Target } from '../shared/types'
 import { readJson, writeJson } from './store'
 
 const exec = promisify(execFile)
@@ -11,6 +11,20 @@ const exec = promisify(execFile)
 const COMPONENTS: Component[] = ['website', 'mobile', 'hardware']
 const TARGETS: Target[] = ['web', 'electron']
 const PROVIDERS: ProviderChoice[] = ['auto', 'claude', 'codex']
+export const EFFORTS: Effort[] = ['', 'low', 'medium', 'high', 'xhigh', 'max']
+export const CLAUDE_OPTIONAL_TOOLS: ClaudeOptionalTool[] = ['Task', 'Skill', 'WebSearch', 'NotebookEdit']
+/** Subagents and skills stay inside the run's limits, so they're on by default; network tools are opt-in. */
+export const DEFAULT_CLAUDE: ClaudeRunConfig = { model: '', effort: '', tools: ['Task', 'Skill'] }
+/** A model alias (opus, sonnet…) or full name, optionally with a context suffix such as [1m]. */
+const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:\-]{0,99}(\[[0-9a-z]{1,10}\])?$/
+
+function normalizeClaude(raw: Partial<ClaudeRunConfig> | undefined): ClaudeRunConfig {
+  return {
+    model: typeof raw?.model === 'string' && MODEL.test(raw.model) ? raw.model : DEFAULT_CLAUDE.model,
+    effort: EFFORTS.includes(raw?.effort as Effort) ? (raw!.effort as Effort) : DEFAULT_CLAUDE.effort,
+    tools: Array.isArray(raw?.tools) ? CLAUDE_OPTIONAL_TOOLS.filter((t) => raw!.tools!.includes(t)) : [...DEFAULT_CLAUDE.tools]
+  }
+}
 
 interface IndexEntry {
   id: string
@@ -143,7 +157,7 @@ async function detectDefaults(folder: string): Promise<ProjectConfig> {
       devCommand: pkg?.scripts?.dev ? 'npm run dev' : hasFiles ? '' : 'npm run dev',
       previewUrl: 'http://localhost:5173'
     },
-    agent: { provider: 'auto', enabledMcpServers: [] },
+    agent: { provider: 'auto', enabledMcpServers: [], claude: normalizeClaude(undefined) },
     worktrees: { setupCommand: '', teardownCommand: '', ports: 0 },
     marketing: { enabled: true }
   }
@@ -166,7 +180,8 @@ export function normalizeConfig(raw: Partial<ProjectConfig> | null, fallbackName
       provider: PROVIDERS.includes(r.agent?.provider as ProviderChoice) ? (r.agent!.provider as ProviderChoice) : 'auto',
       enabledMcpServers: Array.isArray(r.agent?.enabledMcpServers)
         ? r.agent!.enabledMcpServers.filter((s) => typeof s === 'string')
-        : []
+        : [],
+      claude: normalizeClaude(r.agent?.claude)
     },
     worktrees: {
       setupCommand: typeof r.worktrees?.setupCommand === 'string' ? r.worktrees.setupCommand : '',
@@ -223,6 +238,22 @@ function applyPatch(config: ProjectConfig, patch: ProjectConfigPatch): ProjectCo
       throw new Error('Invalid MCP server list')
     }
     next.agent.enabledMcpServers = [...new Set(ids)]
+  }
+  const claude = patch.agent?.claude
+  if (claude !== undefined) {
+    if (!claude || typeof claude !== 'object') throw new Error('Invalid Claude options')
+    if (claude.model !== undefined) {
+      if (typeof claude.model !== 'string' || (claude.model !== '' && !MODEL.test(claude.model.trim()))) throw new Error('Model must be an alias like "opus" or a model name')
+      next.agent.claude.model = claude.model.trim()
+    }
+    if (claude.effort !== undefined) {
+      if (!EFFORTS.includes(claude.effort)) throw new Error('Invalid effort level')
+      next.agent.claude.effort = claude.effort
+    }
+    if (claude.tools !== undefined) {
+      if (!Array.isArray(claude.tools) || claude.tools.some((t) => !CLAUDE_OPTIONAL_TOOLS.includes(t))) throw new Error('Invalid Claude tools')
+      next.agent.claude.tools = CLAUDE_OPTIONAL_TOOLS.filter((t) => claude.tools!.includes(t))
+    }
   }
   for (const key of ['setupCommand', 'teardownCommand'] as const) {
     const v = patch.worktrees?.[key]

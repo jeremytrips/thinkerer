@@ -1,4 +1,4 @@
-import type { ProviderId, ProviderStatus, RunEvent, UsageObservation } from '../../shared/types'
+import type { AgentCapabilities, ClaudeRunConfig, ProviderId, ProviderStatus, RunEvent, RunMode, UsageObservation } from '../../shared/types'
 import type { ResolvedMcpServer } from '../mcp'
 
 export interface Invocation {
@@ -15,6 +15,8 @@ export interface ParsedUpdate {
   /** The CLI's session/thread id, for resuming the conversation in the next turn. */
   sessionId?: string
   usage?: UsageObservation
+  /** What the CLI reported about its session when it started. */
+  capabilities?: AgentCapabilities
   result?: { text: string; isError: boolean; denials: { tool: string; input: string }[] }
 }
 
@@ -40,6 +42,10 @@ export interface InvocationOptions {
   mcp: ResolvedMcpServer[]
   /** Secret values for those servers, passed via the CLI's environment, never argv. */
   secretEnv: Record<string, string>
+  /** 'plan' runs read-only. Defaults to 'auto'. */
+  mode?: RunMode
+  /** The project's Claude Code options (model, effort, extra tools); other adapters ignore them. */
+  claude?: ClaudeRunConfig
 }
 
 /** Every provider CLI is integrated through this interface (spec F2). */

@@ -58,7 +58,10 @@ const api: ThinkererApi = {
     upsert: (def) => call('mcp:upsert', def),
     remove: (id) => call('mcp:remove', id),
     setSecret: (id, name, value) => call('mcp:setSecret', id, name, value),
-    effective: (projectId) => call('mcp:effective', projectId)
+    effective: (projectId) => call('mcp:effective', projectId),
+    check: (projectId, serverId) => call('mcp:check', projectId, serverId),
+    importCandidates: (projectId) => call('mcp:importCandidates', projectId),
+    import: (projectId, key) => call('mcp:import', projectId, key)
   },
   website: {
     state: (projectId, chatId) => call('website:state', projectId, chatId ?? null),
@@ -84,8 +87,8 @@ const api: ThinkererApi = {
     providers: () => call('agents:providers')
   },
   runs: {
-    start: (projectId, prompt, provider, taskId, attachmentIds, chatId) =>
-      call('runs:start', projectId, prompt, provider, taskId ?? null, attachmentIds ?? [], chatId ?? null),
+    start: (projectId, prompt, provider, taskId, attachmentIds, chatId, mode) =>
+      call('runs:start', projectId, prompt, provider, taskId ?? null, attachmentIds ?? [], chatId ?? null, mode ?? 'auto'),
     cancel: (runId) => call('runs:cancel', runId),
     active: (projectId) => call('runs:active', projectId),
     list: (projectId) => call('runs:list', projectId),

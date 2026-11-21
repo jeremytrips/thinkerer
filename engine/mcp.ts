@@ -1,5 +1,6 @@
 import { join } from 'node:path'
-import type { EffectiveMcp, McpServerDef, McpServerView, Project, ProviderId } from '../shared/types'
+import type { EffectiveMcp, McpServerDef, McpServerView, McpTransport, Project, ProviderId } from '../shared/types'
+import { codexHeaderRef } from './agents/codex'
 import { readJson, writeJson } from './store'
 
 // One global registry of MCP servers (built-ins + user-added), with a
@@ -16,9 +17,13 @@ export interface SecretStore {
 /** A server ready to launch for one run: placeholders filled, secrets as env var names. */
 export interface ResolvedMcpServer {
   id: string
+  transport: McpTransport
   command: string
   args: string[]
   env: Record<string, string>
+  /** Remote servers only (empty for stdio). Header values may still contain ${SECRET} references. */
+  url: string
+  headers: Record<string, string>
   /** Secret env var names; values are supplied through the CLI process environment. */
   secretEnv: string[]
 }
@@ -33,10 +38,15 @@ export interface McpRunContext {
   cwd?: string
   /** Preview URL resolved for that worktree's ports; defaults to the configured one. */
   previewUrl?: string | null
+  /** The provider the servers are for; servers it can't use are left out. */
+  provider?: ProviderId
 }
 
 const ID = /^[a-z][a-z0-9-]{0,30}$/
 const ENV_NAME = /^[A-Z_][A-Z0-9_]{0,63}$/
+const HEADER_NAME = /^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/
+const TRANSPORTS: McpTransport[] = ['stdio', 'http', 'sse']
+const SECRET_REF = /\$\{([A-Z_][A-Z0-9_]{0,63})\}/g
 
 export const BUILTIN_SERVERS: McpServerDef[] = [
   {
@@ -128,7 +138,7 @@ export class McpRegistry {
       enabled.map(async (id) => {
         const def = await this.get(id)
         if (!def) return { id, label: id, included: false, reason: 'Not in the registry' }
-        const reason = await this.exclusionReason(def, project)
+        const reason = await this.exclusionReason(def, project, provider)
         return { id, label: def.label, included: !reason, reason }
       })
     )
@@ -141,32 +151,56 @@ export class McpRegistry {
     const secretEnv: Record<string, string> = {}
     for (const id of project.config?.agent.enabledMcpServers ?? []) {
       const def = await this.get(id)
-      if (!def || (await this.exclusionReason(def, project))) continue
-      const preview = ctx.previewUrl !== undefined ? (ctx.previewUrl ?? '') : project.config!.website.previewUrl
-      if (def.id === 'playwright' && !preview) continue
-      const vars: Record<string, string> = {
-        appRoot: ctx.appRoot,
-        artifacts: ctx.artifactsDir,
-        project: ctx.cwd ?? project.path,
-        previewUrl: preview,
-        previewOrigin: preview ? new URL(preview).origin : ''
-      }
-      const fill = (s: string) => s.replace(/\{(appRoot|artifacts|project|previewUrl|previewOrigin)\}/g, (_m, k: string) => vars[k])
-      const usesNode = def.command === '{node}'
-      servers.push({
-        id: def.id,
-        command: usesNode ? ctx.node.command : def.command,
-        args: def.args.map(fill),
-        env: { ...(usesNode ? ctx.node.env : {}), ...Object.fromEntries(Object.entries(def.env).map(([k, v]) => [k, fill(v)])) },
-        secretEnv: def.secretEnv
-      })
-      for (const name of def.secretEnv) secretEnv[name] = (await this.secrets.get(def.id, name))!
+      if (!def || (await this.exclusionReason(def, project, ctx.provider))) continue
+      const one = await this.resolveOne(def, project, ctx)
+      if (!one) continue
+      servers.push(one.server)
+      Object.assign(secretEnv, one.secretEnv)
     }
     return { servers, secretEnv }
   }
 
-  private async exclusionReason(def: McpServerDef, project: Project): Promise<string | null> {
+  /** One server ready to launch (placeholders filled), or null if it can't run in this context. */
+  async resolveOne(def: McpServerDef, project: Project, ctx: McpRunContext): Promise<{ server: ResolvedMcpServer; secretEnv: Record<string, string> } | null> {
+    const preview = ctx.previewUrl !== undefined ? (ctx.previewUrl ?? '') : (project.config?.website.previewUrl ?? '')
+    if (def.id === 'playwright' && !preview) return null
+    const vars: Record<string, string> = {
+      appRoot: ctx.appRoot,
+      artifacts: ctx.artifactsDir,
+      project: ctx.cwd ?? project.path,
+      previewUrl: preview,
+      previewOrigin: preview ? new URL(preview).origin : ''
+    }
+    const fill = (s: string) => s.replace(/\{(appRoot|artifacts|project|previewUrl|previewOrigin)\}/g, (_m, k: string) => vars[k])
+    const transport = def.transport ?? 'stdio'
+    const usesNode = def.command === '{node}'
+    const secretEnv: Record<string, string> = {}
+    for (const name of def.secretEnv) {
+      const value = await this.secrets.get(def.id, name)
+      if (value === null) return null
+      secretEnv[name] = value
+    }
+    return {
+      server: {
+        id: def.id,
+        transport,
+        command: transport === 'stdio' ? (usesNode ? ctx.node.command : def.command) : '',
+        args: transport === 'stdio' ? def.args.map(fill) : [],
+        env: transport === 'stdio' ? { ...(usesNode ? ctx.node.env : {}), ...Object.fromEntries(Object.entries(def.env).map(([k, v]) => [k, fill(v)])) } : {},
+        url: transport === 'stdio' ? '' : (def.url ?? ''),
+        headers: transport === 'stdio' ? {} : { ...(def.headers ?? {}) },
+        secretEnv: def.secretEnv
+      },
+      secretEnv
+    }
+  }
+
+  private async exclusionReason(def: McpServerDef, project: Project, provider?: ProviderId): Promise<string | null> {
     if (def.id === 'playwright' && !project.config?.website.previewUrl) return 'Set a preview URL — the browser is restricted to that origin'
+    if (provider === 'codex' && def.transport === 'sse') return 'Codex supports stdio and streamable HTTP servers, not SSE'
+    if (provider === 'codex' && Object.entries(def.headers ?? {}).some(([n, v]) => codexHeaderRef(n, v) === 'unsupported')) {
+      return 'Codex can only use a secret as a whole header value or as "Authorization: Bearer ${NAME}"'
+    }
     const set = await this.secrets.names(def.id)
     const missing = def.secretEnv.filter((n) => !set.includes(n))
     if (missing.length) return `Missing secret${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}`
@@ -188,20 +222,38 @@ export function validateDef(def: McpServerDef): McpServerDef {
   if (!def || typeof def !== 'object') throw new Error('Invalid server')
   if (typeof def.id !== 'string' || !ID.test(def.id)) throw new Error('Server id must be lowercase letters, digits and dashes')
   if (typeof def.label !== 'string' || !def.label.trim() || def.label.length > 100) throw new Error('Label is required')
-  if (typeof def.command !== 'string' || !def.command.trim() || def.command.length > 500) throw new Error('Command is required')
-  if (!Array.isArray(def.args) || def.args.some((a) => typeof a !== 'string' || a.length > 2000) || def.args.length > 100) throw new Error('Invalid arguments')
-  const env = def.env ?? {}
-  if (typeof env !== 'object' || Object.entries(env).some(([k, v]) => !ENV_NAME.test(k) || typeof v !== 'string')) throw new Error('Invalid environment')
+  const transport = def.transport ?? 'stdio'
+  if (!TRANSPORTS.includes(transport)) throw new Error('Transport must be stdio, http or sse')
   const secretEnv = def.secretEnv ?? []
   if (!Array.isArray(secretEnv) || secretEnv.some((n) => typeof n !== 'string' || !ENV_NAME.test(n))) throw new Error('Secret names must look like ENV_VAR names')
-  return {
+  const base = {
     id: def.id,
     label: def.label.trim(),
     description: typeof def.description === 'string' ? def.description.slice(0, 500) : '',
     builtin: false,
-    command: def.command.trim(),
-    args: def.args,
-    env: { ...env },
     secretEnv: [...new Set(secretEnv)]
   }
+  if (transport !== 'stdio') {
+    let url: URL
+    try {
+      url = new URL(typeof def.url === 'string' ? def.url.trim() : '')
+    } catch {
+      throw new Error('A remote server needs a valid URL')
+    }
+    if (!/^https?:$/.test(url.protocol) || (def.url as string).length > 2000) throw new Error('The server URL must be http(s)')
+    const headers = def.headers ?? {}
+    if (typeof headers !== 'object' || Object.keys(headers).length > 30) throw new Error('Invalid headers')
+    for (const [k, v] of Object.entries(headers)) {
+      if (!HEADER_NAME.test(k) || typeof v !== 'string' || v.length > 4000 || /[\r\n]/.test(v)) throw new Error(`Invalid header ${k}`)
+      for (const [, ref] of v.matchAll(SECRET_REF)) {
+        if (!base.secretEnv.includes(ref)) throw new Error(`Header ${k} uses \${${ref}}; add ${ref} to the secrets`)
+      }
+    }
+    return { ...base, transport, command: '', args: [], env: {}, url: url.toString(), headers: { ...headers } }
+  }
+  if (typeof def.command !== 'string' || !def.command.trim() || def.command.length > 500) throw new Error('Command is required')
+  if (!Array.isArray(def.args) || def.args.some((a) => typeof a !== 'string' || a.length > 2000) || def.args.length > 100) throw new Error('Invalid arguments')
+  const env = def.env ?? {}
+  if (typeof env !== 'object' || Object.entries(env).some(([k, v]) => !ENV_NAME.test(k) || typeof v !== 'string')) throw new Error('Invalid environment')
+  return { ...base, transport: 'stdio', command: def.command.trim(), args: def.args, env: { ...env } }
 }

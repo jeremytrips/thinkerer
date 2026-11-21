@@ -30,7 +30,7 @@ const project = (command: string, port: number): Project => ({
     components: ['website'],
     target: 'web',
     website: { devCommand: command, previewUrl: `http://127.0.0.1:${port}` },
-    agent: { provider: 'auto', enabledMcpServers: [] },
+    agent: { provider: 'auto', enabledMcpServers: [], claude: { model: '', effort: '', tools: [] } },
     worktrees: { setupCommand: '', teardownCommand: '', ports: 0 },
     marketing: { enabled: true }
   }

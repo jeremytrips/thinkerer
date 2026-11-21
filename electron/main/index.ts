@@ -27,21 +27,19 @@ const approvals = new Approvals(appData)
 const devServers = new DevServerManager(appData, approvals)
 // End-to-end tests drive chats with a stand-in agent script; never in a packaged app.
 const e2eAgent = !app.isPackaged ? process.env.THINKERER_E2E_AGENT : undefined
+// Bundled MCP scripts live in the app root (mcp/, node_modules/).
+const mcpContext = async (): Promise<{ appRoot: string; node: { command: string; env: Record<string, string> } }> => {
+  const node = await findExecutable('node')
+  return {
+    appRoot: app.getAppPath(),
+    node: node ? { command: node, env: {} } : { command: process.execPath, env: { ELECTRON_RUN_AS_NODE: '1' } }
+  }
+}
 const supervisor = new AgentSupervisor(appData, projects, {
   adapters: e2eAgent ? [scriptAdapter(e2eAgent)] : undefined,
   tasks,
   approvals,
-  mcp: {
-    registry: mcp,
-    // Bundled MCP scripts live in the app root (mcp/, node_modules/).
-    context: async (): Promise<{ appRoot: string; node: { command: string; env: Record<string, string> } }> => {
-      const node = await findExecutable('node')
-      return {
-        appRoot: app.getAppPath(),
-        node: node ? { command: node, env: {} } : { command: process.execPath, env: { ELECTRON_RUN_AS_NODE: '1' } }
-      }
-    }
-  }
+  mcp: { registry: mcp, context: mcpContext }
 })
 let mainWindow: BrowserWindow | null = null
 const preview = new PreviewManager(
@@ -104,6 +102,7 @@ app.whenReady().then(() => {
     supervisor,
     tasks,
     mcp,
+    mcpContext,
     devServers,
     approvals,
     preview,

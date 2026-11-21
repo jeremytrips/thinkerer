@@ -1,4 +1,6 @@
-import { realpath } from 'node:fs/promises'
+import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { app, dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
 import type { AgentSupervisor } from '../../engine/agents/supervisor'
 import type { Approvals } from '../../engine/approvals'
@@ -17,7 +19,10 @@ import {
 import { projectTarget, type DevServerManager, type DevTarget } from '../../engine/devserver'
 import { listDir, readFilePreview } from '../../engine/files'
 import { gitStatus } from '../../engine/git'
-import type { McpRegistry } from '../../engine/mcp'
+import { childEnv } from '../../engine/agents/detect'
+import type { McpRegistry, McpRunContext } from '../../engine/mcp'
+import { checkMcpServer } from '../../engine/mcpCheck'
+import { findClaudeMcpServers } from '../../engine/mcpImport'
 import type { ProjectService } from '../../engine/projects'
 import type { TaskStore } from '../../engine/tasks'
 import { commitsAhead, resolvePreviewUrl, worktreeEnv } from '../../engine/worktrees'
@@ -31,6 +36,7 @@ import type {
   PromptAttachment,
   ProviderChoice,
   Result,
+  RunMode,
   TaskStatus
 } from '../../shared/types'
 import type { PreviewManager, PreviewScope } from './preview'
@@ -40,6 +46,8 @@ interface Deps {
   supervisor: AgentSupervisor
   tasks: TaskStore
   mcp: McpRegistry
+  /** Where bundled MCP scripts live and how to run Node, as agent runs get it. */
+  mcpContext: () => Promise<Omit<McpRunContext, 'artifactsDir'>>
   devServers: DevServerManager
   approvals: Approvals
   preview: PreviewManager
@@ -244,15 +252,48 @@ export function registerIpc(deps: Deps): void {
 
   // MCP registry
   handle('mcp:list', () => mcp.list())
+  /** What a server will do, in words for a native confirmation. */
+  const describeServer = (d: McpServerDef) =>
+    d?.transport === 'http' || d?.transport === 'sse'
+      ? `Agents in projects that enable it will connect to:\n\n${typeof d.url === 'string' ? d.url : ''}${Object.keys(d.headers ?? {}).length ? `\n\nHeaders: ${Object.keys(d.headers ?? {}).join(', ')}` : ''}`
+      : `Agents in projects that enable it will start:\n\n${typeof d?.command === 'string' ? d.command : ''} ${Array.isArray(d?.args) ? d.args.join(' ') : ''}`
   handle('mcp:upsert', async (def: unknown) => {
     const d = def as McpServerDef
-    const ok = await confirm(
-      `Save MCP server "${typeof d?.label === 'string' ? d.label : '?'}"?`,
-      `Agents in projects that enable it will start:\n\n${typeof d?.command === 'string' ? d.command : ''} ${Array.isArray(d?.args) ? d.args.join(' ') : ''}`,
-      'Save server'
-    )
+    const ok = await confirm(`Save MCP server "${typeof d?.label === 'string' ? d.label : '?'}"?`, describeServer(d), 'Save server')
     if (!ok) throw new Error('Cancelled')
     return mcp.upsert(d)
+  })
+  handle('mcp:check', async (id: unknown, serverId: unknown) => {
+    const project = await okProject(id)
+    const def = await mcp.get(str(serverId, 'server id', 40))
+    if (!def) throw new Error('Unknown server')
+    // Throwaway folder for anything the server writes (e.g. Playwright output); removed afterwards.
+    const scratch = await mkdtemp(join(tmpdir(), 'thinkerer-mcp-check-'))
+    try {
+      const resolved = await mcp.resolveOne(def, project, { ...(await deps.mcpContext()), artifactsDir: scratch })
+      if (!resolved) throw new Error(def.id === 'playwright' ? 'Set a preview URL first' : 'Set its secrets first')
+      return await checkMcpServer(resolved.server, resolved.secretEnv, { cwd: project.path, env: childEnv() })
+    } finally {
+      await rm(scratch, { recursive: true, force: true }).catch(() => {})
+    }
+  })
+  const claudeServers = async (project: Project) => findClaudeMcpServers(project.path, homedir(), (await mcp.list()).map((s) => s.id))
+  handle('mcp:importCandidates', async (id: unknown) => (await claudeServers(await okProject(id))).map((f) => f.candidate))
+  handle('mcp:import', async (id: unknown, key: unknown) => {
+    const project = await okProject(id)
+    const found = (await claudeServers(project)).find((f) => f.candidate.key === str(key, 'server key', 300))
+    if (!found) throw new Error('That server is no longer in the Claude Code configuration')
+    const { candidate, secrets } = found
+    if (candidate.unsupported) throw new Error(candidate.unsupported)
+    const ok = await confirm(
+      `Import MCP server "${candidate.name}" from ${candidate.sourceLabel}?`,
+      `${describeServer(candidate.def)}${candidate.secretsFound.length ? `\n\nSecrets copied to encrypted storage: ${candidate.secretsFound.join(', ')}` : ''}${candidate.exists ? `\n\nThis replaces the server "${candidate.def.id}" already in the registry.` : ''}`,
+      'Import server'
+    )
+    if (!ok) throw new Error('Cancelled')
+    const saved = await mcp.upsert(candidate.def)
+    for (const [name, value] of Object.entries(secrets)) await mcp.setSecret(saved.id, name, value)
+    return saved
   })
   handle('mcp:remove', async (serverId: unknown) => {
     await mcp.remove(str(serverId, 'server id', 40))
@@ -344,8 +385,9 @@ export function registerIpc(deps: Deps): void {
 
   // Agent runs
   handle('agents:providers', () => supervisor.providers())
-  handle('runs:start', async (id: unknown, prompt: unknown, provider: unknown, taskId: unknown, attachmentIds: unknown, chatId: unknown) => {
+  handle('runs:start', async (id: unknown, prompt: unknown, provider: unknown, taskId: unknown, attachmentIds: unknown, chatId: unknown, mode: unknown) => {
     if (!PROVIDERS.includes(provider as ProviderChoice)) throw new Error('Invalid provider')
+    if (mode !== undefined && mode !== null && mode !== 'auto' && mode !== 'plan') throw new Error('Invalid mode')
     const projectId = str(id, 'project id', 100)
     const ids = attachmentIds === undefined || attachmentIds === null ? [] : attachmentIds
     if (!Array.isArray(ids) || ids.length > MAX_ATTACHMENTS) throw new Error('Invalid attachments')
@@ -364,7 +406,8 @@ export function registerIpc(deps: Deps): void {
     const summary = await supervisor.start(projectId, str(prompt, 'prompt', 100_000), provider as ProviderChoice, {
       taskId: taskId ? str(taskId, 'task id', 100) : null,
       attachments,
-      chatId: chatId ? str(chatId, 'chat id', 100) : null
+      chatId: chatId ? str(chatId, 'chat id', 100) : null,
+      mode: (mode as RunMode | null) ?? 'auto'
     })
     for (const a of attachments) captures.delete(a.id)
     return summary
