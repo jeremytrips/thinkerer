@@ -131,8 +131,8 @@ The bar at the top of the chat shows the stage and offers the next step:
 3. **Review.** A fresh, read-only session (no sub-agents) gets only the plan, the check result and the
    diff of the implement turns (from HEAD before the first implement turn to the branch head, so it holds
    even if the base branch already has the work, and includes commits the agent made itself). A review with nothing to diff is refused, and no turn runs.
-   The diff leaves lockfiles and minified files left out; above 60k characters, only the file list). It
-   replies one finding per line. **Fix findings** sends just those findings back to the implementer's
+   Lockfiles and minified files are left out; above 60k characters, only the file list is included.
+   The reviewer replies one finding per line. **Fix findings** sends just those findings back to the implementer's
    session. Review rounds are capped (2 by default).
 4. **Ship.** Thinkerer runs the same steps as `/merge`, then adds a report built only from what was
    recorded: turns, check result, findings per round and the tokens each stage's provider reported.

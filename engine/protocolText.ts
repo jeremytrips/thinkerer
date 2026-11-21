@@ -71,7 +71,8 @@ export function fixFindingsPrompt(findings: string): string {
 export async function reviewRange(wt: ChatWorktree, cwd: string, turns: RunRecord[]): Promise<string | null> {
   const first = turns.find((t) => (t.protocolStage ?? 'implement') === 'implement')
   const range = `${first?.checkpoint?.head ?? wt.baseCommit}..HEAD`
-  const files = (await git(cwd, ['diff', '--name-only', range]).catch(() => '')).trim()
+  // Same filter as the prompt: a lockfile-only change would otherwise start a review of an empty diff.
+  const files = (await git(cwd, ['diff', '--name-only', range, '--', '.', ...NOISE_SPECS]).catch(() => '')).trim()
   return files ? range : null
 }
 
