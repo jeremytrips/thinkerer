@@ -5,7 +5,9 @@ Each project is a real folder on disk. You describe changes in the Agent tab, an
 coding-agent CLI (Claude Code or Codex) makes them. You review the diff, test in the browser, and
 roll back if needed. Thinkerer has no source editor.
 
-This implements the MVP in [`docs/THINKERER_MVP_v0.1.md`](docs/THINKERER_MVP_v0.1.md) (Phases 0 and 1).
+This implements the MVP in [`docs/THINKERER_MVP_v0.1.md`](docs/THINKERER_MVP_v0.1.md) (Phases 0 and 1, now historical).
+Where it is going: [`docs/PRODUCT.md`](docs/PRODUCT.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md). Agents follow
+[`AGENTS.md`](AGENTS.md) and the playbooks in `.thinkerer/skills/`; UI follows [`docs/DESIGN.md`](docs/DESIGN.md).
 Thinkerer opens its own repository as a project and develops itself from inside the app.
 
 ## Requirements

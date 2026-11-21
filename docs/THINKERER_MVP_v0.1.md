@@ -1,3 +1,5 @@
+> **Historical.** This was the v0.1 build spec and is no longer updated. Current product: [`PRODUCT.md`](PRODUCT.md); plan: [`ROADMAP.md`](ROADMAP.md).
+
 # Thinkerer — MVP Product & Build Specification v0.1
 
 **Status:** Proposed implementation specification  
