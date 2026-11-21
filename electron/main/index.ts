@@ -21,6 +21,10 @@ export const DEV_RESTART_EXIT_CODE = 75
 
 app.setName('Thinkerer')
 if (process.env.THINKERER_APP_DATA) app.setPath('userData', process.env.THINKERER_APP_DATA)
+// The e2e tests run the app in the background: the window is never shown, and on
+// macOS there is no Dock icon, so a test run doesn't take the user's focus.
+const background = !app.isPackaged && process.env.THINKERER_BACKGROUND === '1'
+if (background && process.platform === 'darwin') app.setActivationPolicy('accessory')
 
 const isDev = !app.isPackaged && !!process.env.ELECTRON_RENDERER_URL
 const appData = app.getPath('userData')
@@ -89,10 +93,12 @@ function createWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      webSecurity: true
+      webSecurity: true,
+      // A hidden window would otherwise have its timers and animation frames throttled.
+      backgroundThrottling: !background
     }
   })
-  win.once('ready-to-show', () => win.show())
+  if (!background) win.once('ready-to-show', () => win.show())
   const onTheme = () => { if (!win.isDestroyed()) win.setBackgroundColor(windowBackground()) }
   nativeTheme.on('updated', onTheme)
   win.on('closed', () => nativeTheme.off('updated', onTheme))
