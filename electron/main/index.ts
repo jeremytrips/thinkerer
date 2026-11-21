@@ -5,8 +5,10 @@ import { scriptAdapter } from '../../engine/agents/script'
 import { AgentSupervisor } from '../../engine/agents/supervisor'
 import { ProtocolService } from '../../engine/protocol'
 import { Approvals } from '../../engine/approvals'
+import { ChatDevices } from '../../engine/chatDevices'
 import { DevServerManager } from '../../engine/devserver'
 import { McpRegistry } from '../../engine/mcp'
+import { deviceTools } from '../../engine/mobile'
 import { ProjectService } from '../../engine/projects'
 import { TaskStore } from '../../engine/tasks'
 import { registerIpc } from './ipc'
@@ -26,6 +28,8 @@ const tasks = new TaskStore()
 const mcp = new McpRegistry(appData, new SafeSecretStore(appData))
 const approvals = new Approvals(appData)
 const devServers = new DevServerManager(appData, approvals)
+// Each chat's own emulators (one per platform), copied from the user's devices.
+const chatDevices = new ChatDevices(appData, deviceTools)
 // End-to-end tests drive chats with a stand-in agent script; never in a packaged app.
 const e2eAgent = !app.isPackaged ? process.env.THINKERER_E2E_AGENT : undefined
 // Bundled MCP scripts live in the app root (mcp/, node_modules/).
@@ -40,7 +44,8 @@ const supervisor = new AgentSupervisor(appData, projects, {
   adapters: e2eAgent ? [scriptAdapter(e2eAgent)] : undefined,
   tasks,
   approvals,
-  mcp: { registry: mcp, context: mcpContext }
+  mcp: { registry: mcp, context: mcpContext },
+  devices: chatDevices
 })
 const protocol = new ProtocolService({ supervisor, projects, approvals, stopDevServer: (projectId, chatId) => devServers.stop(projectId, chatId) })
 let mainWindow: BrowserWindow | null = null
@@ -109,6 +114,7 @@ app.whenReady().then(() => {
     devServers,
     approvals,
     preview,
+    chatDevices,
     isDev,
     getWindow: () => mainWindow,
     rendererOrigin,

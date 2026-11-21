@@ -50,6 +50,9 @@ const previewApi: ThinkererApi = {
   mobile: {
     status: async () => ({ android: { available: false, detail: 'Not available in the browser preview' }, ios: { available: false, input: false, detail: 'Not available in the browser preview' } }),
     list: async () => [],
+    chatDevices: async () => ({ devices: [], templates: [], defaults: {} }),
+    createChatDevice: unavailable,
+    deleteChatDevice: unavailable,
     boot: unavailable,
     shutdown: unavailable,
     frame: unavailable,

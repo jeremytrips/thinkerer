@@ -10,6 +10,7 @@ export type ProviderChoice = 'auto' | ProviderId
 export type RunMode = 'auto' | 'plan'
 export type Effort = '' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 /** Claude Code built-in tools a project can opt into, on top of the file tools and Bash. */
+/** `Task` is Claude Code's subagent tool (it also accepts the name `Agent`). */
 export type ClaudeOptionalTool = 'Task' | 'Skill' | 'WebSearch' | 'NotebookEdit'
 
 /** Claude Code options for a project's runs. Empty model/effort = the CLI's own default. */
@@ -190,6 +191,14 @@ export interface MobileDevice {
   input: boolean
 }
 
+/** A chat's own emulators (one per platform) and the user's devices they can be copied from. */
+export interface ChatDevicesView {
+  devices: MobileDevice[]
+  templates: MobileDevice[]
+  /** Last template picked per platform. */
+  defaults: Partial<Record<MobilePlatform, string>>
+}
+
 export interface MobileToolStatus {
   android: { available: boolean; detail: string }
   ios: { available: boolean; input: boolean; detail: string }
@@ -256,6 +265,8 @@ export interface McpImportCandidate {
   exists: boolean
   /** Set when Thinkerer can't run this server type. */
   unsupported: string | null
+  /** Things to know before importing, e.g. a rename or a value to set in full. */
+  notes: string[]
 }
 
 /** Result of connecting to a server and listing its tools. */

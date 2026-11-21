@@ -68,6 +68,9 @@ describe('Claude run options', () => {
     const updated = await projects.updateConfig(p.id, { agent: { claude: { model: 'sonnet', effort: 'max', tools: ['WebSearch', 'Task'] } } })
     // Tools are kept in a stable order.
     expect(updated.config!.agent.claude).toEqual({ model: 'sonnet', effort: 'max', tools: ['Task', 'WebSearch'] })
+    // Claude Code also accepts 'Agent' for the subagent tool; it is stored as 'Task'.
+    const alias = await projects.updateConfig(p.id, { agent: { claude: { tools: ['Agent' as never, 'Skill'] } } })
+    expect(alias.config!.agent.claude.tools).toEqual(['Task', 'Skill'])
     await expect(projects.updateConfig(p.id, { agent: { claude: { model: '--dangerously-skip-permissions' } } })).rejects.toThrow(/Model/)
     await expect(projects.updateConfig(p.id, { agent: { claude: { effort: 'ultra' as never } } })).rejects.toThrow(/effort/)
     await expect(projects.updateConfig(p.id, { agent: { claude: { tools: ['Bash' as never] } } })).rejects.toThrow(/tools/)

@@ -69,6 +69,10 @@ describe('MCP registry', () => {
         secretEnv: []
       }
     ])
+    // A chat run limits the server to the chat's own devices (an empty list means none).
+    const chat = await reg.resolveForRun(project(['mobile']), { ...ctx, devices: ['ios:AAA', 'android:Thinkerer_x'] })
+    expect(chat.servers[0].env.THINKERER_DEVICES).toBe('ios:AAA,android:Thinkerer_x')
+    expect((await reg.resolveForRun(project(['mobile']), { ...ctx, devices: [] })).servers[0].env.THINKERER_DEVICES).toBe('')
   })
 
   it('explains why a server is excluded', async () => {
@@ -184,11 +188,42 @@ describe('thinkerer-mobile MCP server', () => {
     const names = replies[2].result.tools.map((t: { name: string }) => t.name)
     expect(names).toEqual(expect.arrayContaining(['mobile_list_devices', 'mobile_boot', 'mobile_screenshot', 'mobile_tap', 'mobile_swipe', 'mobile_type', 'mobile_describe_ui', 'mobile_open_url', 'mobile_install_app', 'mobile_launch_app']))
     expect(replies[2].result.tools.every((t: { inputSchema?: { type: string } }) => t.inputSchema?.type === 'object')).toBe(true)
+    // Agents can only boot headless: no option to open a desktop window.
+    const boot = replies[2].result.tools.find((t: { name: string }) => t.name === 'mobile_boot')
+    expect(Object.keys(boot.inputSchema.properties)).toEqual(['device'])
     const listed = JSON.parse(replies[3].result.content[0].text)
     expect(listed.tools).toHaveProperty('android.available')
     expect(listed.tools).toHaveProperty('ios.available')
     expect(Array.isArray(listed.devices)).toBe(true)
     expect(replies[4].result).toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/Invalid device id/) }] })
     expect(replies[5].result).toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/Invalid app id/) }] })
+  }, 40_000)
+
+  it('only shows and drives the chat’s own devices when THINKERER_DEVICES is set', async () => {
+    const child = spawn(process.execPath, [resolve(__dirname, '..', 'mcp', 'thinkerer-mobile.mjs')], {
+      env: { ...process.env, THINKERER_ARTIFACTS: join(dir, 'art'), THINKERER_PROJECT_ROOT: dir, THINKERER_DEVICES: 'ios:00000000-0000-0000-0000-000000000000' }
+    })
+    const replies: Record<number, any> = {}
+    let buf = ''
+    child.stdout.on('data', (d) => {
+      buf += d
+      for (let nl; (nl = buf.indexOf('\n')) >= 0; buf = buf.slice(nl + 1)) {
+        const msg = JSON.parse(buf.slice(0, nl))
+        replies[msg.id] = msg
+      }
+    })
+    const send = (o: object) => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...o }) + '\n')
+    send({ id: 1, method: 'tools/call', params: { name: 'mobile_list_devices', arguments: {} } })
+    send({ id: 2, method: 'tools/call', params: { name: 'mobile_shutdown', arguments: { device: 'android:Someone_elses' } } })
+    const deadline = Date.now() + 30_000
+    while (![1, 2].every((i) => replies[i])) {
+      if (Date.now() > deadline) throw new Error('timeout')
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    child.kill()
+    const listed = JSON.parse(replies[1].result.content[0].text)
+    // Real devices on this machine never show up unless they are the chat's.
+    expect(listed.devices.every((d: { id: string }) => d.id === 'ios:00000000-0000-0000-0000-000000000000')).toBe(true)
+    expect(replies[2].result).toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/not this chat's device/) }] })
   }, 40_000)
 })

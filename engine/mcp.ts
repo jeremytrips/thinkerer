@@ -40,6 +40,8 @@ export interface McpRunContext {
   previewUrl?: string | null
   /** The provider the servers are for; servers it can't use are left out. */
   provider?: ProviderId
+  /** The chat's own emulator ids; the mobile server accepts only these. Undefined: not limited. */
+  devices?: string[]
 }
 
 const ID = /^[a-z][a-z0-9-]{0,30}$/
@@ -119,7 +121,7 @@ export class McpRegistry {
   /** Add or replace a user-defined server. Secrets are never stored here. */
   async upsert(def: McpServerDef): Promise<McpServerDef> {
     const clean = validateDef(def)
-    if (BUILTIN_SERVERS.some((b) => b.id === clean.id)) throw new Error('That id belongs to a built-in server')
+    if (isBuiltinId(clean.id)) throw new Error('That id belongs to a built-in server')
     const reg = await this.read()
     reg.servers = [...reg.servers.filter((s) => s.id !== clean.id), clean]
     await writeJson(this.file, reg)
@@ -127,7 +129,7 @@ export class McpRegistry {
   }
 
   async remove(id: string): Promise<void> {
-    if (BUILTIN_SERVERS.some((b) => b.id === id)) throw new Error('Built-in servers cannot be removed')
+    if (isBuiltinId(id)) throw new Error('Built-in servers cannot be removed')
     const reg = await this.read()
     const def = reg.servers.find((s) => s.id === id)
     reg.servers = reg.servers.filter((s) => s.id !== id)
@@ -174,13 +176,14 @@ export class McpRegistry {
   /** One server ready to launch (placeholders filled), or null if it can't run in this context. */
   async resolveOne(def: McpServerDef, project: Project, ctx: McpRunContext): Promise<{ server: ResolvedMcpServer; secretEnv: Record<string, string> } | null> {
     const preview = ctx.previewUrl !== undefined ? (ctx.previewUrl ?? '') : (project.config?.website.previewUrl ?? '')
-    if (def.id === 'playwright' && !preview) return null
+    // The browser is fenced to the preview origin; without a valid one it must not start.
+    if (def.id === 'playwright' && !originOf(preview)) return null
     const vars: Record<string, string> = {
       appRoot: ctx.appRoot,
       artifacts: ctx.artifactsDir,
       project: ctx.cwd ?? project.path,
       previewUrl: preview,
-      previewOrigin: preview ? new URL(preview).origin : ''
+      previewOrigin: originOf(preview)
     }
     const fill = (s: string) => s.replace(/\{(appRoot|artifacts|project|previewUrl|previewOrigin)\}/g, (_m, k: string) => vars[k])
     const transport = def.transport ?? 'stdio'
@@ -191,13 +194,16 @@ export class McpRegistry {
       if (value === null) return null
       secretEnv[name] = value
     }
+    const env = transport === 'stdio' ? { ...(usesNode ? ctx.node.env : {}), ...Object.fromEntries(Object.entries(def.env).map(([k, v]) => [k, fill(v)])) } : {}
+    // The chat's own emulators: the server refuses every other device.
+    if (def.id === 'mobile' && def.builtin && ctx.devices) env.THINKERER_DEVICES = ctx.devices.join(',')
     return {
       server: {
         id: def.id,
         transport,
         command: transport === 'stdio' ? (usesNode ? ctx.node.command : def.command) : '',
         args: transport === 'stdio' ? def.args.map(fill) : [],
-        env: transport === 'stdio' ? { ...(usesNode ? ctx.node.env : {}), ...Object.fromEntries(Object.entries(def.env).map(([k, v]) => [k, fill(v)])) } : {},
+        env,
         url: transport === 'stdio' ? '' : (def.url ?? ''),
         headers: transport === 'stdio' ? {} : { ...(def.headers ?? {}) },
         secretEnv: def.secretEnv
@@ -225,7 +231,42 @@ export class McpRegistry {
   private async read(): Promise<RegistryFile> {
     const raw = await readJson<Partial<RegistryFile>>(this.file).catch(() => null)
     const servers = Array.isArray(raw?.servers) ? raw.servers.flatMap((s) => { try { return [validateDef(s)] } catch { return [] } }) : []
-    return { schemaVersion: 1, servers }
+    const reg: RegistryFile = { schemaVersion: 1, servers }
+    if (servers.some((s) => isBuiltinId(s.id))) await this.renameShadowed(reg)
+    return reg
+  }
+
+  /**
+   * A user server saved before a built-in took its id (e.g. 'mobile') would be
+   * hidden behind the built-in and impossible to edit or remove. Give it a free
+   * id, move its secrets along and say so in its label, then save. Projects that
+   * enabled the old id now get the built-in; the renamed server can be enabled again.
+   */
+  private async renameShadowed(reg: RegistryFile): Promise<void> {
+    const taken = new Set([...BUILTIN_SERVERS, ...reg.servers].map((s) => s.id))
+    for (const [i, def] of reg.servers.entries()) {
+      if (!isBuiltinId(def.id)) continue
+      const id = freeId(`${def.id}-custom`, taken)
+      taken.add(id)
+      for (const name of def.secretEnv) {
+        const value = await this.secrets.get(def.id, name)
+        if (value === null) continue
+        await this.secrets.set(id, name, value)
+        await this.secrets.set(def.id, name, null)
+      }
+      reg.servers[i] = { ...def, id, label: `${def.label} (renamed from "${def.id}", now a built-in id)`.slice(0, 100) }
+    }
+    await writeJson(this.file, reg)
+  }
+}
+
+/** Origin of an http(s) URL, or '' for an empty, unfilled ({portN}) or invalid one. */
+function originOf(url: string): string {
+  try {
+    const u = new URL(url)
+    return /^https?:$/.test(u.protocol) && !/[{}]/.test(url) ? u.origin : ''
+  } catch {
+    return ''
   }
 }
 
@@ -267,4 +308,14 @@ export function validateDef(def: McpServerDef): McpServerDef {
   const env = def.env ?? {}
   if (typeof env !== 'object' || Object.entries(env).some(([k, v]) => !ENV_NAME.test(k) || typeof v !== 'string')) throw new Error('Invalid environment')
   return { ...base, transport: 'stdio', command: def.command.trim(), args: def.args, env: { ...env } }
+}
+
+export const isBuiltinId = (id: string) => BUILTIN_SERVERS.some((b) => b.id === id)
+
+/** `base`, or `base-2`, `base-3`… — the first one not in `taken`, within the id length limit. */
+export function freeId(base: string, taken: Set<string>): string {
+  const fit = (stem: string, suffix: string) => stem.slice(0, 31 - suffix.length).replace(/-+$/, '') + suffix
+  let id = fit(base, '')
+  for (let n = 2; taken.has(id); n++) id = fit(base, `-${n}`)
+  return id
 }

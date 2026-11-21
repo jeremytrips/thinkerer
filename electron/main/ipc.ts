@@ -43,6 +43,7 @@ import type {
   TaskStatus
 } from '../../shared/types'
 import type { PreviewManager, PreviewScope } from './preview'
+import { deviceScope, type ChatDevices } from '../../engine/chatDevices'
 
 interface Deps {
   projects: ProjectService
@@ -55,6 +56,7 @@ interface Deps {
   devServers: DevServerManager
   approvals: Approvals
   preview: PreviewManager
+  chatDevices: ChatDevices
   isDev: boolean
   getWindow: () => BrowserWindow | null
   rendererOrigin: () => string
@@ -84,7 +86,7 @@ function bounds(v: unknown): { x: number; y: number; width: number; height: numb
  * which the renderer cannot fake.
  */
 export function registerIpc(deps: Deps): void {
-  const { projects, supervisor, protocol, tasks, mcp, devServers, approvals, preview } = deps
+  const { projects, supervisor, protocol, tasks, mcp, devServers, approvals, preview, chatDevices } = deps
   const chats = supervisor.chats
   // Preview screenshots waiting to be sent with a prompt, keyed by attachment id.
   const captures = new Map<string, { projectId: string; attachment: PromptAttachment }>()
@@ -287,8 +289,20 @@ export function registerIpc(deps: Deps): void {
     // Throwaway folder for anything the server writes (e.g. Playwright output); removed afterwards.
     const scratch = await mkdtemp(join(tmpdir(), 'thinkerer-mcp-check-'))
     try {
-      const resolved = await mcp.resolveOne(def, project, { ...(await deps.mcpContext()), artifactsDir: scratch })
-      if (!resolved) throw new Error(def.id === 'playwright' ? 'Set a preview URL first' : 'Set its secrets first')
+      // Resolve the preview URL the way runs in the project folder do; {portN} only exists in chat worktrees.
+      const configured = project.config?.website.previewUrl ?? ''
+      const previewUrl = resolvePreviewUrl(configured, [])
+      const resolved = await mcp.resolveOne(def, project, { ...(await deps.mcpContext()), artifactsDir: scratch, previewUrl })
+      if (!resolved) {
+        if (def.id !== 'playwright') throw new Error('Set its secrets first')
+        throw new Error(
+          !configured
+            ? 'Set a preview URL first'
+            : previewUrl === null
+              ? `The preview URL ${configured} uses chat ports, which only exist in a chat; Playwright can't be checked from the project folder`
+              : `The preview URL ${configured} is not a valid URL`
+        )
+      }
       return await checkMcpServer(resolved.server, resolved.secretEnv, { cwd: project.path, env: childEnv() })
     } finally {
       await rm(scratch, { recursive: true, force: true }).catch(() => {})
@@ -407,7 +421,32 @@ export function registerIpc(deps: Deps): void {
   }
   handle('mobile:status', () => mobile.status())
   handle('mobile:list', () => mobile.list())
-  handle('mobile:boot', (id: unknown, window: unknown) => mobile.boot(deviceId(id), window === true))
+  // Headless only: devices show in the Emulator panel, never as desktop windows.
+  handle('mobile:boot', (id: unknown) => mobile.boot(deviceId(id)))
+  /**
+   * The device scope for a chat with a worktree, else the project folder's
+   * (the same rule the supervisor uses), and the name its devices get.
+   */
+  async function devicesOf(projectId: unknown, chatId: unknown): Promise<{ scope: string; title: string }> {
+    const project = await okProject(projectId)
+    const id = chatIdOf(chatId)
+    const chat = id ? await chats.require(project.id, id) : null
+    if (!chat?.worktree || chat.worktreeRemoved) return { scope: deviceScope(project.id, null), title: project.config?.name ?? 'Project' }
+    return { scope: deviceScope(project.id, chat.id), title: chat.title }
+  }
+  handle('mobile:chatDevices', async (projectId: unknown, chatId: unknown) => chatDevices.view((await devicesOf(projectId, chatId)).scope))
+  handle('mobile:createChatDevice', async (projectId: unknown, chatId: unknown, templateId: unknown) => {
+    const { scope, title } = await devicesOf(projectId, chatId)
+    return chatDevices.create(scope, deviceId(templateId), title)
+  })
+  handle('mobile:deleteChatDevice', async (projectId: unknown, chatId: unknown, id: unknown) => {
+    const { scope } = await devicesOf(projectId, chatId)
+    const dev = deviceId(id)
+    if (!(await chatDevices.owns(scope, dev))) throw new Error('Not one of this chat’s devices')
+    const ok = await confirm('Delete this chat’s device?', `${dev}\n\nShuts it down and deletes it with its apps and data. Your own devices are not touched.`, 'Delete')
+    if (!ok) throw new Error('Cancelled')
+    return chatDevices.remove(scope, dev)
+  })
   handle('mobile:shutdown', (id: unknown) => mobile.shutdown(deviceId(id)))
   handle('mobile:frame', (id: unknown) => mobile.frame(deviceId(id)))
   handle('mobile:tap', (id: unknown, x: unknown, y: unknown, ms: unknown) =>
@@ -432,14 +471,14 @@ export function registerIpc(deps: Deps): void {
   handle('mobile:capture', async (projectId: unknown, id: unknown): Promise<PreviewCapture> => {
     const project = await okProject(projectId)
     const dev = deviceId(id)
-    const info = (await mobile.list()).find((d) => d.id === dev)
+    const [info, owned] = await Promise.all([mobile.list().then((all) => all.find((d) => d.id === dev)), chatDevices.nameOf(dev)])
     const png = await mobile.png(dev)
     const attachment: PromptAttachment = {
       id: await saveAttachment(project.path, png),
       url: null,
       consoleErrors: [],
       at: new Date().toISOString(),
-      device: `${info ? `${info.name}${info.detail ? `, ${info.detail}` : ''}` : dev} [${dev}]`
+      device: `${owned ?? (info ? `${info.name}${info.detail ? `, ${info.detail}` : ''}` : dev)} [${dev}]`
     }
     captures.set(attachment.id, { projectId: project.id, attachment })
     return { ...attachment, dataUrl: `data:image/png;base64,${png.toString('base64')}` }
@@ -517,7 +556,7 @@ export function registerIpc(deps: Deps): void {
       if (!ok) throw new Error('Cancelled')
     }
     if ((command === 'cleanup' || command === 'discard') && wt) await approveHook(project, 'teardown', wt.path)
-    return runChatCommand(command, {
+    const result = await runChatCommand(command, {
       project,
       chat,
       chats,
@@ -525,6 +564,13 @@ export function registerIpc(deps: Deps): void {
       live: supervisor.isChatLive(chat.id),
       stopDevServer: () => devServers.stop(project.id, chat.id)
     })
+    // The worktree is gone, so is the chat's browser and its own emulators.
+    if ((await chats.get(chat.id))?.worktreeRemoved) {
+      preview.close({ projectId: project.id, chatId: chat.id })
+      const errors = await chatDevices.removeAll(deviceScope(project.id, chat.id))
+      if (errors.length) chats.emit('update', await chats.addNote(chat.id, { kind: 'teardown', ok: false, title: 'Some of this chat’s devices were not deleted', lines: errors }))
+    }
+    return result
   })
   handle('chats:advance', async (id: unknown, chatId: unknown, action: unknown) => {
     if (!PROTOCOL_ACTIONS.includes(action as ProtocolAction)) throw new Error('Unknown protocol step')

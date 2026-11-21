@@ -8,6 +8,7 @@ import { AgentSupervisor, MAX_PARALLEL_RUNS } from '../engine/agents/supervisor'
 import type { AgentAdapter, InvocationOptions } from '../engine/agents/types'
 import { attachmentRelPath, saveAttachment } from '../engine/attachments'
 import { restoreCheckpoint } from '../engine/checkpoints'
+import { ChatDevices } from '../engine/chatDevices'
 import { McpRegistry } from '../engine/mcp'
 import { ProjectService } from '../engine/projects'
 import { TaskStore } from '../engine/tasks'
@@ -213,7 +214,37 @@ describe('AgentSupervisor', () => {
     expect(seen[0].mcp.map((s) => s.id)).toEqual(['health'])
     expect(seen[0].mcp[0].env.THINKERER_PROJECT_ROOT).toBe(repo)
     expect(seen[0].policy.appendSystemPrompt).toMatch(/health MCP server/)
+    // No mobile server enabled: the agent is still told to keep emulators headless, inside Thinkerer.
+    expect(seen[0].policy.appendSystemPrompt).toMatch(/emulator -avd <name> -no-window/)
+    expect(seen[0].policy.appendSystemPrompt).toMatch(/Never open a device window yourself/)
     expect((await tasks.list(repo))[0]).toMatchObject({ status: 'doing', runIds: [final.id] })
+  })
+
+  it('gives a run the chat’s own emulators and limits the mobile server to them', async () => {
+    await projects.updateConfig(projectId, { agent: { enabledMcpServers: ['mobile'] } })
+    const listed = [{ id: 'ios:BASE', platform: 'ios' as const, name: 'iPhone 17 Pro', kind: 'simulator' as const, state: 'shutdown' as const, detail: 'iOS 26.5', input: true }]
+    const devices = new ChatDevices(join(tmp, 'appdata'), {
+      list: async () => listed,
+      available: () => ({ ios: true, android: false }),
+      create: async () => {
+        listed.push({ ...listed[0], id: 'ios:OWNED', name: 'Thinkerer · go' })
+        return 'ios:OWNED'
+      },
+      remove: async () => true,
+      isOwned: (d) => d.id === 'ios:OWNED'
+    })
+    const seen: InvocationOptions[] = []
+    const registry = new McpRegistry(join(tmp, 'appdata'), { get: async () => null, set: async () => {}, names: async () => [] })
+    const sup = new AgentSupervisor(join(tmp, 'appdata'), projects, {
+      adapters: [standIn('ok', '', seen)],
+      devices,
+      mcp: { registry, context: async () => ({ appRoot: '/app', node: { command: 'node', env: {} } }) }
+    })
+    const finished = waitFor(sup, done)
+    await sup.start(projectId, 'go', 'claude')
+    await finished
+    expect(seen[0].mcp[0].env.THINKERER_DEVICES).toBe('ios:OWNED')
+    expect(seen[0].policy.appendSystemPrompt).toMatch(/This chat has its own devices, which only it uses: ios:OWNED/)
   })
 
   it('hands preview screenshots to the agent without them reaching Git, and keeps a copy with the run', async () => {

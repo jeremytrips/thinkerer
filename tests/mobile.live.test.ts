@@ -22,6 +22,21 @@ describe.skipIf(!live)('mobile driver against real devices', () => {
         for (const e of ui) expect(e.center.x).toBeLessThanOrEqual(shot.pointWidth + 1)
         await mobile.pressKey(d.id, 'home')
       }
+      if (d.platform === 'ios' && mobile.toolStatus().ios.input) {
+        const ui = (await mobile.describeUi(d.id)) as unknown[]
+        expect(ui.length).toBeGreaterThan(0)
+        await mobile.pressKey(d.id, 'home')
+        await mobile.tap(d.id, shot.pointWidth / 2, shot.pointHeight / 2)
+      }
     }
   }, 120_000)
+})
+
+describe('idb recovery', () => {
+  it('recognises the errors a stale idb companion produces', () => {
+    // Observed with idb 1.7.x on Xcode 26 after the companion outlived its simulator session.
+    expect(mobile.STALE_IDB.test('idb ui button HOME: Mach port invalid, device disconnected')).toBe(true)
+    expect(mobile.STALE_IDB.test("The simulator's accessibility service did not answer a frontmost request within 5.0s")).toBe(true)
+    expect(mobile.STALE_IDB.test('idb ui tap: Unknown app com.example')).toBe(false)
+  })
 })

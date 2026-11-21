@@ -204,6 +204,13 @@ select, input, textarea {
 .md blockquote { border-left: 3px solid var(--border); padding-left: 10px; color: var(--muted); }
 .md hr { border: none; border-top: 1px solid var(--border); }
 .md-link { color: var(--accent); }
+.md-table-wrap { overflow-x: auto; margin: 0 0 8px; border: 1px solid var(--border); border-radius: 6px; }
+.md-table { border-collapse: collapse; width: 100%; font-size: 12.5px; overflow-wrap: normal; }
+.md-table th, .md-table td { padding: 6px 10px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--border); }
+.md-table th { background: var(--surface-2); font-weight: 600; color: var(--text); white-space: nowrap; }
+.md-table td + td, .md-table th + th { border-left: 1px solid var(--border); }
+.md-table tbody tr:last-child td { border-bottom: none; }
+.md-table tbody tr:nth-child(even) td { background: var(--surface); }
 .run-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .usage { display: inline-flex; gap: 10px; flex-wrap: wrap; align-items: baseline; }
 .current-action { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-family: var(--mono); font-size: 12.5px; }

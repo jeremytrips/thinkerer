@@ -16,19 +16,30 @@ export interface PreviewScope {
 
 const key = (s: PreviewScope) => (s.chatId ? `${s.projectId}:${s.chatId}` : s.projectId)
 
+/** One chat's (or the project folder's) browser: its view and the console errors since its page loaded. */
+interface Tab {
+  scope: PreviewScope
+  view: WebContentsView
+  errors: string[]
+}
+
+/** Browsers kept alive at once; the least recently shown one is closed beyond this. */
+const MAX_TABS = 6
+
 /**
- * Embedded website preview (spec F5): a sandboxed WebContentsView with no
- * preload and no Node, its own session per project, and navigation limited to
- * the preview origin (per project folder or chat worktree, which have their own
- * ports) unless the user approves another origin.
- * It is a separate browser session from the agent's Playwright browser.
+ * Embedded website preview (spec F5): one sandboxed WebContentsView per chat
+ * (and one for the project folder), with no preload and no Node. Each has its
+ * own session, so chats never share cookies or storage (localhost cookies
+ * ignore the port, so worktree ports alone would not separate them).
+ * Navigation is limited to the preview origin unless the user approves
+ * another. Switching chats keeps each browser's page; they are separate from
+ * the agent's Playwright browser.
  */
 export class PreviewManager {
-  private view: WebContentsView | null = null
-  private scope: PreviewScope | null = null
+  /** Insertion order is recency: the last entry was shown most recently. */
+  private readonly tabs = new Map<string, Tab>()
+  private shown: string | null = null
   private readonly allowed = new Map<string, Set<string>>() // scope key → origins
-  /** Console errors since the current page loaded, sent along with a capture. */
-  private errors: string[] = []
 
   constructor(
     private readonly getWindow: () => BrowserWindow | null,
@@ -38,56 +49,64 @@ export class PreviewManager {
   show(scope: PreviewScope, url: string, bounds: Bounds): void {
     const origin = new URL(url).origin
     if (!/^https?:$/.test(new URL(url).protocol)) throw new Error('Preview URL must be http(s)')
-    const set = this.allowed.get(key(scope)) ?? new Set<string>()
+    const k = key(scope)
+    const set = this.allowed.get(k) ?? new Set<string>()
     set.add(origin)
-    this.allowed.set(key(scope), set)
+    this.allowed.set(k, set)
 
-    if (!this.view || !this.isOpen(scope)) {
-      this.destroy()
-      this.view = this.createView(scope)
-      this.scope = scope
-      void this.view.webContents.loadURL(url)
+    let tab = this.tabs.get(k)
+    if (!tab) {
+      tab = { scope, view: this.createView(scope), errors: [] }
+      void tab.view.webContents.loadURL(url)
     }
+    this.tabs.delete(k)
+    this.tabs.set(k, tab)
+    if (this.shown !== k) this.hide()
+    this.shown = k
     const win = this.getWindow()
-    if (win && !win.contentView.children.includes(this.view)) win.contentView.addChildView(this.view)
-    this.view.setBounds(round(bounds))
+    if (win && !win.contentView.children.includes(tab.view)) win.contentView.addChildView(tab.view)
+    tab.view.setBounds(round(bounds))
+    this.evict()
   }
 
   setBounds(bounds: Bounds): void {
-    this.view?.setBounds(round(bounds))
+    this.current()?.view.setBounds(round(bounds))
   }
 
+  /** Takes the shown browser off screen; its page stays loaded for when the chat is shown again. */
   hide(): void {
     const win = this.getWindow()
-    if (this.view && win?.contentView.children.includes(this.view)) win.contentView.removeChildView(this.view)
+    const view = this.current()?.view
+    if (view && win?.contentView.children.includes(view)) win.contentView.removeChildView(view)
+    this.shown = null
   }
 
   reload(): void {
-    this.view?.webContents.reloadIgnoringCache()
+    this.current()?.view.webContents.reloadIgnoringCache()
   }
 
   navigate(scope: PreviewScope, url: string): void {
-    if (!this.view || !this.isOpen(scope)) throw new Error('The preview is not open for this project')
+    const tab = this.tabs.get(key(scope))
+    if (!tab) throw new Error('The preview is not open for this chat')
     if (!this.isAllowed(scope, url)) {
       this.emit(scope, { at: now(), kind: 'navigation-blocked', text: `Blocked navigation to ${url}`, url })
       return
     }
-    void this.view.webContents.loadURL(url)
+    void tab.view.webContents.loadURL(url)
   }
 
   currentUrl(scope: PreviewScope): string | null {
-    return this.view && this.isOpen(scope) ? this.view.webContents.getURL() || null : null
+    return this.tabs.get(key(scope))?.view.webContents.getURL() || null
   }
 
   /** What the user is looking at right now: the visible page as PNG, its URL, and recent console errors. */
   async capture(scope: PreviewScope): Promise<{ png: Buffer; url: string; consoleErrors: string[] }> {
     const win = this.getWindow()
-    if (!this.view || !this.isOpen(scope) || !win?.contentView.children.includes(this.view)) {
-      throw new Error('Open the preview first')
-    }
-    const image = await this.view.webContents.capturePage()
+    const tab = this.shown === key(scope) ? this.tabs.get(key(scope)) : undefined
+    if (!tab || !win?.contentView.children.includes(tab.view)) throw new Error('Open the preview first')
+    const image = await tab.view.webContents.capturePage()
     if (image.isEmpty()) throw new Error('The preview has nothing to capture yet')
-    return { png: image.toPNG(), url: this.view.webContents.getURL(), consoleErrors: this.errors.slice(-10) }
+    return { png: image.toPNG(), url: tab.view.webContents.getURL(), consoleErrors: tab.errors.slice(-10) }
   }
 
   /** The user approved an origin outside the preview origin for this session. */
@@ -95,19 +114,38 @@ export class PreviewManager {
     const parsed = new URL(url)
     if (!/^https?:$/.test(parsed.protocol)) throw new Error('Only http(s) URLs can be opened in the preview')
     this.allowed.get(key(scope))?.add(parsed.origin)
-    if (this.isOpen(scope)) void this.view?.webContents.loadURL(url)
+    void this.tabs.get(key(scope))?.view.webContents.loadURL(url)
+  }
+
+  /** Closes a chat's browser for good and wipes its cookies and storage (its worktree is gone). */
+  close(scope: PreviewScope): void {
+    this.closeTab(key(scope))
+    this.allowed.delete(key(scope))
+    if (scope.chatId) void session.fromPartition(partition(scope)).clearStorageData().catch(() => {})
   }
 
   destroy(): void {
-    this.hide()
-    this.view?.webContents.close()
-    this.view = null
-    this.scope = null
-    this.errors = []
+    for (const k of [...this.tabs.keys()]) this.closeTab(k)
   }
 
-  private isOpen(scope: PreviewScope): boolean {
-    return !!this.scope && key(this.scope) === key(scope)
+  private current(): Tab | undefined {
+    return this.shown ? this.tabs.get(this.shown) : undefined
+  }
+
+  private closeTab(k: string): void {
+    const tab = this.tabs.get(k)
+    if (!tab) return
+    if (this.shown === k) this.hide()
+    this.tabs.delete(k)
+    tab.view.webContents.close()
+  }
+
+  /** Keeps memory bounded: closes the least recently shown browsers (never the one on screen). */
+  private evict(): void {
+    for (const k of this.tabs.keys()) {
+      if (this.tabs.size <= MAX_TABS) break
+      if (k !== this.shown) this.closeTab(k)
+    }
   }
 
   private isAllowed(scope: PreviewScope, url: string): boolean {
@@ -119,12 +157,13 @@ export class PreviewManager {
   }
 
   private createView(scope: PreviewScope): WebContentsView {
-    const ses = session.fromPartition(`persist:thinkerer-preview-${scope.projectId}`)
+    const ses = session.fromPartition(partition(scope))
     ses.setPermissionRequestHandler((_wc, _p, cb) => cb(false))
     const view = new WebContentsView({
       webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, session: ses, webSecurity: true }
     })
     const wc = view.webContents
+    const tabOf = () => this.tabs.get(key(scope))
     const guard = (event: { preventDefault: () => void; url: string; isMainFrame?: boolean }) => {
       if (event.isMainFrame === false) return
       if (!this.isAllowed(scope, event.url)) {
@@ -143,12 +182,14 @@ export class PreviewManager {
       const d = args[0] as { level?: unknown; message?: unknown }
       const level = typeof d?.level === 'string' ? d.level : (['debug', 'info', 'warning', 'error'][args[1] as number] ?? 'info')
       const message = typeof d?.message === 'string' ? d.message : String(args[2] ?? '')
-      if (level === 'error') this.errors = [...this.errors.slice(-49), message]
+      const tab = tabOf()
+      if (level === 'error' && tab) tab.errors = [...tab.errors.slice(-49), message]
       this.emit(scope, { at: now(), kind: 'console', level: level as PreviewEvent['level'], text: message })
     })
     // Only committed page loads reset the errors; blocked navigations leave the page (and its errors) in place.
     wc.on('did-navigate', () => {
-      this.errors = []
+      const tab = tabOf()
+      if (tab) tab.errors = []
     })
     wc.on('did-fail-load', (_e, code, description, url, isMainFrame) => {
       if (isMainFrame && code !== -3) this.emit(scope, { at: now(), kind: 'load-failed', text: `${description} (${code})`, url })
@@ -159,6 +200,11 @@ export class PreviewManager {
     wc.on('did-finish-load', () => this.emit(scope, { at: now(), kind: 'loaded', text: 'Loaded', url: wc.getURL() }))
     return view
   }
+}
+
+/** Each chat its own persistent session; the project folder keeps the one it always had. */
+function partition(scope: PreviewScope): string {
+  return scope.chatId ? `persist:thinkerer-preview-${scope.projectId}-${scope.chatId}` : `persist:thinkerer-preview-${scope.projectId}`
 }
 
 function round(b: Bounds): Bounds {
