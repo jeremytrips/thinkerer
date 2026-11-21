@@ -6,6 +6,7 @@ import type {
   EffectiveMcp,
   PreviewCapture,
   Project,
+  ProtocolAction,
   ProviderChoice,
   ProviderStatus,
   RunEvent,
@@ -16,12 +17,13 @@ import type {
 } from '../../shared/types'
 import { api, errorMessage, loadState, saveState } from '../api'
 import { AgentComposer } from './AgentComposer'
-import { ChatHeader, ChatList, byCreated, chatOf, groupChats } from './AgentChats'
+import { ChatHeader, ChatList, byCreated, chatOf, groupChats, mergeRecords, upsertRecord } from './AgentChats'
 import { AgentPreviewSide, usePreviewLayout } from './AgentPreview'
 import { AgentTranscript, lastAgentPage, transcriptItems } from './AgentTranscript'
 import { RestoreDialog } from './Changes'
 import { agentItems, commandOf, matchingCommands, type SlashItem } from './ChatBits'
 import { LIVE } from './ChatTurn'
+import { ProtocolBar } from './ProtocolBar'
 import { modeAfterGiveBack, type Queued } from './queue'
 import type { TabId } from './ProjectView'
 import { useFollowUps } from './useFollowUps'
@@ -50,6 +52,8 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   const [menuIndex, setMenuIndex] = useState(0)
   // How each composer's next message runs (keyed like drafts); plan mode is read-only and goes back to auto once sent.
   const [modes, setModes] = useState<Record<string, RunMode>>({})
+  // New chats follow the software protocol (plan → implement + tests → review → ship) unless turned off.
+  const [useProtocol, setUseProtocol] = useState(() => loadState('agent.protocol', true))
   // The open chat (null: a new one) and its turns with their events.
   const [chatId, setChatId] = useState<string | null>(null)
   const chatRef = useRef<string | null>(null)
@@ -130,7 +134,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   }
 
   const refreshChats = useCallback(() => {
-    api.chats.list(project.id).then(setRecords, () => {})
+    api.chats.list(project.id).then((list) => setRecords((cur) => mergeRecords(cur, list)), () => {})
   }, [project.id])
 
   const refreshContext = useCallback(() => {
@@ -153,7 +157,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
     }, () => openChat(null))
 
     const offChat = api.chats.onUpdate((c) => {
-      if (c.projectId === project.id) setRecords((cur) => [c, ...cur.filter((x) => x.id !== c.id)])
+      if (c.projectId === project.id) setRecords((cur) => upsertRecord(cur, c))
     })
     const offEvent = api.runs.onEvent((runId: string, event: RunEvent) => {
       setTurns((cur) => (cur.some((t) => t.id === runId) ? cur.map((t) => (t.id === runId ? { ...t, events: [...t.events, event] } : t)) : cur))
@@ -207,7 +211,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
     setError(null)
     setNotice(null)
     try {
-      const summary = await api.runs.start(project.id, text, choice, target ? null : taskId || null, attach.map((a) => a.id), target, runMode)
+      const summary = await api.runs.start(project.id, text, choice, target ? null : taskId || null, attach.map((a) => a.id), target, runMode, !target && useProtocol)
       if (!target) {
         setTaskId('')
         openChat(chatOf(summary))
@@ -231,7 +235,23 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
     stick.current = true
     try {
       const updated = await api.chats.command(project.id, chatId, name)
-      setRecords((cur) => [updated, ...cur.filter((x) => x.id !== updated.id)])
+      setRecords((cur) => upsertRecord(cur, updated))
+    } catch (err) {
+      if (errorMessage(err) !== 'Cancelled') setError(errorMessage(err))
+    } finally {
+      setStarting(false)
+    }
+  }
+
+  async function advance(action: ProtocolAction) {
+    if (!chatId) return
+    setError(null)
+    setNotice(null)
+    setStarting(true)
+    stick.current = true
+    try {
+      const updated = await api.chats.advance(project.id, chatId, action)
+      setRecords((cur) => upsertRecord(cur, updated))
     } catch (err) {
       if (errorMessage(err) !== 'Cancelled') setError(errorMessage(err))
     } finally {
@@ -325,6 +345,9 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   const chatTask = chat?.turns[0].taskId ? (tasks.find((t) => t.id === chat.turns[0].taskId)?.title ?? 'removed task') : null
   const waiting = chatId ? queued[chatId] : undefined
   const liveTurn = turns.find((t) => LIVE.includes(t.status))
+  // In a protocol chat the stage decides how a message runs, not the mode picker.
+  const protocolChat = chat ? !!record?.protocol : useProtocol
+  const planning = protocolChat ? !chat || record?.protocol?.stage === 'plan' : mode === 'plan'
 
   const items = transcriptItems(turns, record?.notes ?? [])
   const lastTurnId = turns.at(-1)?.id
@@ -337,6 +360,17 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
 
       <div className="agent-main" ref={mainRef} style={layout.mainStyle}>
         <ChatHeader chat={chat} layout={layout} onReveal={() => api.chats.reveal(project.id, chatId!).catch((e) => setError(errorMessage(e)))} />
+
+        {record?.protocol && (
+          <ProtocolBar
+            protocol={record.protocol}
+            base={worktree?.base ?? null}
+            busy={!!chat?.live || starting}
+            maxRounds={project.config!.protocol.maxReviewRounds}
+            lastReview={chat?.turns.filter((t) => t.protocolStage === 'review').at(-1)}
+            onAction={(a) => void advance(a)}
+          />
+        )}
 
         {isGit === false && (
           <div className="banner banner-info row space">
@@ -361,6 +395,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
             pending={pending}
             isGit={isGit}
             liveChats={liveChats.length}
+            useProtocol={useProtocol}
             items={items}
             lastTurnId={lastTurnId}
             chatTask={chatTask}
@@ -406,6 +441,10 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
           onStop={cancel}
           mode={mode}
           setMode={setMode}
+          useProtocol={useProtocol}
+          setUseProtocol={(on) => (saveState('agent.protocol', on), setUseProtocol(on))}
+          protocolChat={protocolChat}
+          planning={planning}
           providers={providers}
           choice={choice}
           setChoice={setChoice}

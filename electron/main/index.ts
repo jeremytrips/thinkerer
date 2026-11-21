@@ -3,6 +3,7 @@ import { app, BrowserWindow, session, shell } from 'electron'
 import { findExecutable } from '../../engine/agents/detect'
 import { scriptAdapter } from '../../engine/agents/script'
 import { AgentSupervisor } from '../../engine/agents/supervisor'
+import { ProtocolService } from '../../engine/protocol'
 import { Approvals } from '../../engine/approvals'
 import { ChatDevices } from '../../engine/chatDevices'
 import { DevServerManager } from '../../engine/devserver'
@@ -46,6 +47,7 @@ const supervisor = new AgentSupervisor(appData, projects, {
   mcp: { registry: mcp, context: mcpContext },
   devices: chatDevices
 })
+const protocol = new ProtocolService({ supervisor, projects, approvals, stopDevServer: (projectId, chatId) => devServers.stop(projectId, chatId) })
 let mainWindow: BrowserWindow | null = null
 const preview = new PreviewManager(
   () => mainWindow,
@@ -105,6 +107,7 @@ app.whenReady().then(() => {
   registerIpc({
     projects,
     supervisor,
+    protocol,
     tasks,
     mcp,
     mcpContext,

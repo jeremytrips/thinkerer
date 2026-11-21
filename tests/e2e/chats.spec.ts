@@ -50,6 +50,7 @@ test('a chat works in its own worktree and is finished with /merge and /cleanup'
     await page.getByRole('tab', { name: 'Agent' }).click()
     await page.getByRole('button', { name: 'Preview' }).click() // no dev server in this project
 
+    await page.getByLabel('Software protocol').uncheck() // an ordinary chat; the protocol has its own test
     const composer = page.getByRole('textbox', { name: 'Message to the agent' })
     await composer.fill('Add a file')
     await composer.press('Enter')

@@ -39,8 +39,16 @@ function chatHint(c: Chat): string | null {
   if (c.live) return null
   if (c.record?.state === 'setting-up') return 'Setup failed · send to retry'
   if (c.record?.state === 'merged') return 'Merged · /cleanup'
+  const p = c.record?.protocol
+  if (p) return p.stage === 'plan' ? 'Plan ready · approve' : p.stage === 'review' ? 'Reviewed' : p.checks?.status === 'failed' ? 'Checks failed' : null
   return null
 }
+
+// Chat records arrive both pushed (chats:update) and fetched (chats:list); a
+// fetch that was read before a later push must not overwrite it.
+const newer = (a: ChatRecord, b: ChatRecord | undefined) => (b && b.updatedAt > a.updatedAt ? b : a)
+export const upsertRecord = (cur: ChatRecord[], c: ChatRecord) => [newer(c, cur.find((x) => x.id === c.id)), ...cur.filter((x) => x.id !== c.id)]
+export const mergeRecords = (cur: ChatRecord[], list: ChatRecord[]) => list.map((c) => newer(c, cur.find((x) => x.id === c.id)))
 
 interface Props {
   chats: Chat[]

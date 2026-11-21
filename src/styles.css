@@ -167,6 +167,11 @@ select, input, textarea {
 .chat-meta { gap: 10px; flex-wrap: wrap; }
 .chat-note { align-self: stretch; border: 1px solid var(--border); border-left: 3px solid var(--ok); border-radius: var(--radius); background: var(--surface); padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
 .chat-note-failed { border-left-color: var(--danger); }
+.protocol-bar { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.protocol-steps { display: flex; gap: 4px; list-style: none; margin: 0; padding: 0; font-size: 12px; flex-wrap: wrap; }
+.protocol-steps li { padding: 2px 10px; border-radius: 999px; background: var(--surface-2); color: var(--muted); }
+.protocol-steps li.current { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.protocol-steps li.done { background: var(--ok-soft); color: var(--ok); }
 .note-lines { margin: 0; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; background: var(--code-bg); padding: 6px 8px; border-radius: 6px; }
 .inline { display: flex; align-items: center; gap: 8px; color: var(--muted); }
 .chat-tab-close { border-color: transparent; background: none; padding: 2px 8px; color: var(--muted); }

@@ -43,6 +43,7 @@ const project = (previewUrl: string, enabled: string[] = ['playwright']): Projec
     website: { devCommand: 'npm run dev', previewUrl },
     agent: { provider: 'auto', enabledMcpServers: enabled, claude: { model: '', effort: '', tools: [] } },
     worktrees: { setupCommand: '', teardownCommand: '', ports: 1 },
+    protocol: { checkCommand: '', maxReviewRounds: 2, review: { model: '', effort: '' } },
     marketing: { enabled: true }
   }
 })

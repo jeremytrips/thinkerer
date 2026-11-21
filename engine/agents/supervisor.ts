@@ -4,9 +4,12 @@ import { EventEmitter } from 'node:events'
 import { copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type {
+  ChatProtocol,
   ChatRecord,
+  ClaudeRunConfig,
   Project,
   PromptAttachment,
+  ProtocolTurnStage,
   ProviderChoice,
   ProviderId,
   ProviderStatus,
@@ -81,6 +84,10 @@ interface ActiveRun {
   resumeSessionId: string | null
   /** A new chat gets a worktree; false in a repo with no commits (it works in the project folder). */
   wantsWorktree: boolean
+  /** Extra system instructions for this turn (e.g. the protocol stage's). */
+  instructions: string
+  /** Claude options that override the project's for this turn. */
+  claude: Partial<ClaudeRunConfig>
 }
 
 /** Where a turn runs and what it gets: the chat's worktree, ports and preview, or the project folder. */
@@ -111,6 +118,16 @@ export interface StartOptions {
   chatId?: string | null
   /** 'plan' runs this message read-only. */
   mode?: RunMode
+  /** Start a new provider session instead of resuming the chat's (e.g. an independent review). */
+  freshSession?: boolean
+  /** Extra system instructions for this turn only. */
+  instructions?: string
+  /** Claude options for this turn only (others come from the project). */
+  claude?: Partial<ClaudeRunConfig>
+  /** Recorded on the turn; review turns are never resumed by later turns. */
+  protocolStage?: ProtocolTurnStage
+  /** A new chat that follows the software protocol. */
+  protocol?: ChatProtocol
 }
 
 export interface SupervisorEvents {
@@ -207,6 +224,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
         sessionId: null,
         prompt,
         mode,
+        ...(opts.protocolStage ? { protocolStage: opts.protocolStage } : {}),
         capabilities: null,
         taskId: chat ? chat.taskId : (opts.taskId ?? null),
         checkpoint: null,
@@ -232,15 +250,18 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
         concurrentRunIds: others.map((r) => r.id),
         events: []
       }
-      run = { record, child: null, cancelRequested: false, killTimer: null, resumeSessionId: chat?.sessionId ?? null, wantsWorktree }
-      if (!chatId) this.chats.emit('update', await this.chats.create(newChat(id, projectId, chatTitle(prompt))))
+      const resumeSessionId = opts.freshSession ? null : (chat?.sessionId ?? null)
+      run = { record, child: null, cancelRequested: false, killTimer: null, resumeSessionId, wantsWorktree, instructions: opts.instructions ?? '', claude: opts.claude ?? {} }
+      if (!chatId) this.chats.emit('update', await this.chats.create({ ...newChat(id, projectId, chatTitle(prompt)), protocol: opts.protocol ?? null }))
       for (const other of others) {
         other.concurrentRunIds = [...(other.concurrentRunIds ?? []), record.id]
         this.emitUpdate(other)
       }
       this.active.set(record.id, run)
       this.addEvent(run, { kind: 'status', text: `Provider: ${this.adapters[provider]!.label}` })
-      if (chat) {
+      if (chat && opts.freshSession) {
+        this.addEvent(run, { kind: 'status', text: 'Fresh session: the agent starts without the earlier conversation' })
+      } else if (chat) {
         this.addEvent(run, {
           kind: 'status',
           text: chat.sessionId
@@ -304,11 +325,11 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
         cwd: ws.cwd,
         prompt: record.prompt + attachmentNote(record.attachments ?? []),
         resumeSessionId: run.resumeSessionId,
-        policy: { ...this.policy, appendSystemPrompt: this.instructions(servers, ws, record.mode ?? 'auto', devices?.ids) },
+        policy: { ...this.policy, appendSystemPrompt: this.instructions(servers, ws, record.mode ?? 'auto', devices?.ids, run.instructions) },
         mcp: servers,
         secretEnv,
         mode: record.mode ?? 'auto',
-        claude: project.config!.agent.claude
+        claude: mergeClaude(project.config!.agent.claude, run.claude)
       })
       if (run.cancelRequested) return void (await this.finish(run, 'cancelled', null, null))
       const child = spawn(inv.command, inv.args, {
@@ -445,7 +466,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     return this.opts.mcp.registry.resolveForRun(project, { ...ctx, artifactsDir: this.artifactsDir(runId), cwd: ws.cwd, previewUrl: ws.previewUrl, provider, devices })
   }
 
-  private instructions(servers: ResolvedMcpServer[], ws: Workspace, mode: RunMode, devices?: string[]): string {
+  private instructions(servers: ResolvedMcpServer[], ws: Workspace, mode: RunMode, devices: string[] | undefined, extra: string): string {
     const lines = [this.policy.appendSystemPrompt]
     if (mode === 'plan') {
       lines.push(
@@ -486,6 +507,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       'Never open a device window yourself: no `open -a Simulator`, Xcode, Android Studio, or `emulator` without `-no-window`.'
     )
     if (servers.some((s) => s.id === 'health')) lines.push('The health MCP server reports project health (git state, preview reachability).')
+    if (extra) lines.push(extra)
     return lines.join(' ')
   }
 
@@ -594,11 +616,17 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     return out
   }
 
-  /** What a follow-up in this chat continues: the latest turn's provider, and its session if it reported one. */
+  /**
+   * What a follow-up in this chat continues: the latest turn's provider, and its
+   * session if it reported one. Review turns run in their own session, so the
+   * implementer never resumes the reviewer's conversation.
+   */
   private async continuation(projectId: string, chatId: string): Promise<{ provider: ProviderId; sessionId: string | null; taskId: string | null }> {
-    const turns = await this.getChat(projectId, chatId)
-    if (!turns.length) throw new Error('Chat not found')
-    if (turns.some((t) => this.active.has(t.id))) throw new Error('This chat is still working; wait for it to finish or stop it first')
+    const all = await this.getChat(projectId, chatId)
+    if (!all.length) throw new Error('Chat not found')
+    if (all.some((t) => this.active.has(t.id))) throw new Error('This chat is still working; wait for it to finish or stop it first')
+    const working = all.filter((t) => t.protocolStage !== 'review')
+    const turns = working.length ? working : all
     const last = turns[turns.length - 1]
     const resumable = turns.filter((t) => t.provider === last.provider && t.sessionId).at(-1)
     return { provider: last.provider, sessionId: resumable?.sessionId ?? null, taskId: turns[0].taskId }
@@ -787,6 +815,11 @@ export function attachmentNote(attachments: PromptAttachment[]): string {
 function summarize(record: RunRecord): RunSummary {
   const { events: _events, ...rest } = record
   return rest
+}
+
+/** Per-turn Claude overrides; empty strings keep the project's value. */
+function mergeClaude(base: ClaudeRunConfig, over: Partial<ClaudeRunConfig>): ClaudeRunConfig {
+  return { model: over.model || base.model, effort: over.effort || base.effort, tools: over.tools ?? base.tools }
 }
 
 function mergeUsage(prev: UsageObservation | null, next: UsageObservation): UsageObservation {

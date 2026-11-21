@@ -32,6 +32,13 @@ interface Props {
   onStop: (runId: string) => void
   mode: RunMode
   setMode: (mode: RunMode) => void
+  /** The new chat will follow the software protocol (only offered for a new chat). */
+  useProtocol: boolean
+  setUseProtocol: (on: boolean) => void
+  /** The open chat follows the protocol, or the new one will: its stage decides how a message runs. */
+  protocolChat: boolean
+  /** The next message runs read-only (plan mode, or the protocol's plan stage). */
+  planning: boolean
   providers: ProviderStatus[] | null
   choice: ProviderChoice
   setChoice: (choice: ProviderChoice) => void
@@ -120,7 +127,7 @@ export function AgentComposer(p: Props) {
             </button>
           )}
           <button type="submit" className="primary small" disabled={!draft.trim() || p.starting || p.noGit || finished}>
-            {p.starting ? 'Sending…' : commandOf(draft) ? 'Run' : chat?.live ? 'Queue' : p.mode === 'plan' ? 'Plan' : 'Send'}
+            {p.starting ? 'Sending…' : commandOf(draft) ? 'Run' : chat?.live ? 'Queue' : p.planning ? 'Plan' : 'Send'}
           </button>
         </div>
       </div>
@@ -154,13 +161,21 @@ export function AgentComposer(p: Props) {
             </label>
           </>
         )}
-        <label className="inline" title="Plan: the agent only investigates (read-only) and proposes a plan; reply to carry it out">
-          Mode
-          <select value={p.mode} onChange={(e) => p.setMode(e.target.value as RunMode)} aria-label="Mode for the next message" disabled={finished}>
-            <option value="auto">Make changes</option>
-            <option value="plan">Plan only (read-only)</option>
-          </select>
-        </label>
+        {!chat && (
+          <label className="inline" title="Plan, then implement with tests, then an independent review, then ship. Thinkerer runs the checks and the merge itself.">
+            <input type="checkbox" checked={p.useProtocol} onChange={(e) => p.setUseProtocol(e.target.checked)} />
+            Software protocol
+          </label>
+        )}
+        {!p.protocolChat && (
+          <label className="inline" title="Plan: the agent only investigates (read-only) and proposes a plan; reply to carry it out">
+            Mode
+            <select value={p.mode} onChange={(e) => p.setMode(e.target.value as RunMode)} aria-label="Mode for the next message" disabled={finished}>
+              <option value="auto">Make changes</option>
+              <option value="plan">Plan only (read-only)</option>
+            </select>
+          </label>
+        )}
         <button type="button" className="link small" onClick={() => p.onTab('mcp')} title="Tools this provider will receive">
           MCP tools: {p.includedTools.length ? p.includedTools.map((s) => s.id).join(', ') : 'none'}
           {p.excludedTools.length > 0 && ` (${p.excludedTools.length} unavailable)`}

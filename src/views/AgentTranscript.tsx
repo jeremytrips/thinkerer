@@ -27,6 +27,8 @@ interface Props {
   pending: string | null
   isGit: boolean | null
   liveChats: number
+  /** The new chat will follow the software protocol. */
+  useProtocol: boolean
   items: TranscriptItem[]
   /** The newest turn by creation time; only it offers Retry. */
   lastTurnId: string | undefined
@@ -67,6 +69,12 @@ export function AgentTranscript(p: Props) {
           <span className="mono">{p.isGit ? 'its base branch' : 'main'}</span>, then <span className="mono">/cleanup</span> to check nothing
           is left and remove the worktree.
         </p>
+        {p.useProtocol && (
+          <p className="muted">
+            With the software protocol on, your first message is planned read-only. You approve the plan, the agent implements it with
+            tests, Thinkerer runs the checks, a fresh session reviews the diff, and you ship it to the base branch.
+          </p>
+        )}
         {p.liveChats > 0 && (
           <p className="muted">
             {p.liveChats} chat{p.liveChats === 1 ? ' is' : 's are'} working right now.

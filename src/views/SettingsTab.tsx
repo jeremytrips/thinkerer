@@ -38,6 +38,10 @@ export function SettingsTab({ project, onChanged, onRemoved }: { project: Projec
   const [model, setModel] = useState(config.agent.claude.model)
   const [effort, setEffort] = useState<Effort>(config.agent.claude.effort)
   const [claudeTools, setClaudeTools] = useState<ClaudeOptionalTool[]>(config.agent.claude.tools)
+  const [checkCommand, setCheckCommand] = useState(config.protocol.checkCommand)
+  const [reviewRounds, setReviewRounds] = useState(String(config.protocol.maxReviewRounds))
+  const [reviewModel, setReviewModel] = useState(config.protocol.review.model)
+  const [reviewEffort, setReviewEffort] = useState<Effort>(config.protocol.review.effort)
   const [status, setStatus] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
   const [confirmRemove, setConfirmRemove] = useState(false)
   const [providers, setProviders] = useState<ProviderStatus[] | null>(null)
@@ -57,7 +61,8 @@ export function SettingsTab({ project, onChanged, onRemoved }: { project: Projec
         target,
         website: { devCommand, previewUrl },
         agent: { provider, claude: { model, effort, tools: claudeTools } },
-        worktrees: { setupCommand, teardownCommand, ports: Number(ports) }
+        worktrees: { setupCommand, teardownCommand, ports: Number(ports) },
+        protocol: { checkCommand, maxReviewRounds: Number(reviewRounds), review: { model: reviewModel, effort: reviewEffort } }
       })
       await onChanged()
       setStatus({ tone: 'ok', text: 'Saved to .thinkerer/project.json' })
@@ -190,6 +195,35 @@ export function SettingsTab({ project, onChanged, onRemoved }: { project: Projec
               </label>
             ))}
           </div>
+        </fieldset>
+        <fieldset>
+          <legend>Software protocol</legend>
+          <p className="small muted">
+            Protocol chats go plan → implement + tests → review → ship. Thinkerer runs the check command itself after each implementation
+            turn (it asks for approval when the command changes) and sends only failing output back to the agent. Reviews run in a fresh,
+            read-only session that sees just the plan and the diff.
+          </p>
+          <label>
+            Check command
+            <input className="mono" value={checkCommand} onChange={(e) => setCheckCommand(e.target.value)} placeholder="npm run typecheck && npm test" />
+            <span className="small muted">Runs in the chat’s worktree. Leave empty to skip the checks; the agent then runs its own and reports them.</span>
+          </label>
+          <label>
+            Review rounds
+            <input type="number" min={1} max={5} value={reviewRounds} onChange={(e) => setReviewRounds(e.target.value)} />
+            <span className="small muted">How many reviews a chat can have before you ship it or continue by hand (1–5).</span>
+          </label>
+          <label>
+            Review model
+            <input className="mono" list="claude-models" value={reviewModel} onChange={(e) => setReviewModel(e.target.value)} placeholder="Same as above" />
+            <span className="small muted">Claude Code only. A cheaper model such as <span className="mono">sonnet</span> often suffices for reviewing a diff.</span>
+          </label>
+          <label>
+            Review effort
+            <select value={reviewEffort} onChange={(e) => setReviewEffort(e.target.value as Effort)}>
+              {EFFORTS.map((x) => <option key={x.id} value={x.id}>{x.id ? x.label : 'Same as above'}</option>)}
+            </select>
+          </label>
         </fieldset>
         <div className="row">
           <button type="submit" className="primary">Save</button>

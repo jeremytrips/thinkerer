@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, readdir, realpath, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { promisify } from 'node:util'
-import type { ClaudeOptionalTool, ClaudeRunConfig, Component, Effort, Project, ProjectConfig, ProjectConfigPatch, ProviderChoice, Target } from '../shared/types'
+import type { ClaudeOptionalTool, ClaudeRunConfig, Component, Effort, Project, ProjectConfig, ProjectConfigPatch, ProtocolConfig, ProviderChoice, Target } from '../shared/types'
 import { readJson, writeJson } from './store'
 
 const exec = promisify(execFile)
@@ -27,6 +27,27 @@ function normalizeClaude(raw: Partial<ClaudeRunConfig> | undefined): ClaudeRunCo
     effort: EFFORTS.includes(raw?.effort as Effort) ? (raw!.effort as Effort) : DEFAULT_CLAUDE.effort,
     tools: Array.isArray(raw?.tools) ? CLAUDE_OPTIONAL_TOOLS.filter((t) => raw!.tools!.map(canonicalTool).includes(t)) : [...DEFAULT_CLAUDE.tools]
   }
+}
+
+export const MAX_REVIEW_ROUNDS = 5
+export const DEFAULT_REVIEW_ROUNDS = 2
+
+function normalizeProtocol(raw: Partial<ProtocolConfig> | undefined): ProtocolConfig {
+  const rounds = raw?.maxReviewRounds
+  return {
+    checkCommand: typeof raw?.checkCommand === 'string' ? raw.checkCommand : '',
+    maxReviewRounds: Number.isInteger(rounds) ? Math.min(MAX_REVIEW_ROUNDS, Math.max(1, rounds!)) : DEFAULT_REVIEW_ROUNDS,
+    review: {
+      model: typeof raw?.review?.model === 'string' && MODEL.test(raw.review.model) ? raw.review.model : '',
+      effort: EFFORTS.includes(raw?.review?.effort as Effort) ? (raw!.review!.effort as Effort) : ''
+    }
+  }
+}
+
+/** The project's own checks, when package.json has them; Thinkerer runs them after implement turns. */
+function detectCheckCommand(scripts: Record<string, string> | undefined): string {
+  const parts = [scripts?.typecheck && 'npm run typecheck', scripts?.test && 'npm test'].filter(Boolean)
+  return parts.join(' && ')
 }
 
 interface IndexEntry {
@@ -162,6 +183,7 @@ async function detectDefaults(folder: string): Promise<ProjectConfig> {
     },
     agent: { provider: 'auto', enabledMcpServers: [], claude: normalizeClaude(undefined) },
     worktrees: { setupCommand: '', teardownCommand: '', ports: 0 },
+    protocol: { ...normalizeProtocol(undefined), checkCommand: detectCheckCommand(pkg?.scripts) },
     marketing: { enabled: true }
   }
 }
@@ -191,6 +213,7 @@ export function normalizeConfig(raw: Partial<ProjectConfig> | null, fallbackName
       teardownCommand: typeof r.worktrees?.teardownCommand === 'string' ? r.worktrees.teardownCommand : '',
       ports: Number.isInteger(r.worktrees?.ports) ? Math.min(MAX_WORKTREE_PORTS, Math.max(0, r.worktrees!.ports)) : 0
     },
+    protocol: normalizeProtocol(r.protocol),
     marketing: { enabled: r.marketing?.enabled !== false }
   }
 }
@@ -269,6 +292,31 @@ function applyPatch(config: ProjectConfig, patch: ProjectConfigPatch): ProjectCo
     const n = patch.worktrees.ports
     if (!Number.isInteger(n) || n < 0 || n > MAX_WORKTREE_PORTS) throw new Error(`Ports must be a whole number from 0 to ${MAX_WORKTREE_PORTS}`)
     next.worktrees.ports = n
+  }
+  const protocol = patch.protocol
+  if (protocol !== undefined) {
+    if (!protocol || typeof protocol !== 'object') throw new Error('Invalid protocol options')
+    if (protocol.checkCommand !== undefined) {
+      if (typeof protocol.checkCommand !== 'string' || protocol.checkCommand.length > 500) throw new Error('Invalid check command')
+      next.protocol.checkCommand = protocol.checkCommand.trim()
+    }
+    if (protocol.maxReviewRounds !== undefined) {
+      const n = protocol.maxReviewRounds
+      if (!Number.isInteger(n) || n < 1 || n > MAX_REVIEW_ROUNDS) throw new Error(`Review rounds must be a whole number from 1 to ${MAX_REVIEW_ROUNDS}`)
+      next.protocol.maxReviewRounds = n
+    }
+    const review = protocol.review
+    if (review !== undefined) {
+      if (!review || typeof review !== 'object') throw new Error('Invalid review options')
+      if (review.model !== undefined) {
+        if (typeof review.model !== 'string' || (review.model !== '' && !MODEL.test(review.model.trim()))) throw new Error('Review model must be an alias like "sonnet" or a model name')
+        next.protocol.review.model = review.model.trim()
+      }
+      if (review.effort !== undefined) {
+        if (!EFFORTS.includes(review.effort)) throw new Error('Invalid review effort level')
+        next.protocol.review.effort = review.effort
+      }
+    }
   }
   return next
 }

@@ -86,12 +86,12 @@ The result is commit `8438cfd`; typecheck, unit and e2e tests passed when re-run
 | Tab | What it does |
 |---|---|
 | Overview | Component cards, Git state, providers, recent runs |
-| Agent | Chats in their own worktrees, with follow-ups (each message checkpointed and committed on the chat branch), `/merge` `/cleanup` `/done` `/discard`, Auto / Claude / Codex, task link, the project's MCP tools, live progress, changes with diffs, restore, retry, screenshots, a preview of the chat's own dev server |
+| Agent | The software protocol (plan → implement + checks → review → ship), chats in their own worktrees, with follow-ups (each message checkpointed and committed on the chat branch), `/merge` `/cleanup` `/done` `/discard`, Auto / Claude / Codex, task link, the project's MCP tools, live progress, changes with diffs, restore, retry, screenshots, a preview of the chat's own dev server |
 | Website | Approved dev command runner with logs. Sandboxed embedded preview (Electron `WebContentsView`), locked to the preview origin, with other origins only after approval. Preview console. The agent's browser checks |
 | Tasks | To do / In progress / Done board in `.thinkerer/tasks.json`; runs attach to tasks |
 | Files | Read-only tree and preview, uncommitted changes with diffs, checkpoints with restore |
 | MCP | Global server registry (built-in + your own stdio, streamable HTTP and SSE servers, Keychain-encrypted secrets), per-project enable, the tools each provider will actually get, **Check** (connect and list a server's tools), **Import from Claude Code** (`.mcp.json`, `~/.claude.json`) |
-| Settings | Name, components, target, dev command, preview URL, chat worktree hooks and ports, default provider, Claude Code model / effort / optional tools, LLM providers, agent permissions |
+| Settings | Name, components, target, dev command, preview URL, chat worktree hooks and ports, default provider, Claude Code model / effort / optional tools, software protocol (check command, review rounds, review model / effort), LLM providers, agent permissions |
 | Marketing | Placeholder (post-MVP) |
 
 ### Claude Code features
@@ -114,6 +114,28 @@ The result is commit `8438cfd`; typecheck, unit and e2e tests passed when re-run
   Claude Code** reads (never writes) `.mcp.json` and `~/.claude.json`. Secret-looking values go to encrypted storage and
   never reach the UI, and `${VAR}` references become secrets to set. Servers that rely on `claude mcp login` OAuth may not
   authenticate.
+
+### Software protocol
+
+New chats follow the software protocol unless you untick **Software protocol** under the composer.
+The bar at the top of the chat shows the stage and offers the next step:
+
+1. **Plan.** Your first message is the task. It runs read-only, and the agent replies with the goal,
+   steps, tests and acceptance criteria. Reply to change the plan, or click **Approve plan & implement**.
+2. **Implement + tests.** The agent continues the same session, implements the plan and adds its tests.
+   Then Thinkerer runs the project's check command itself in the worktree (shown as a **Checks** note).
+   If the checks fail, **Fix failing checks** sends only the last 50 lines of output back to the agent.
+3. **Review.** A fresh, read-only session (no sub-agents) gets only the plan, the check result and the
+   branch diff (lockfiles and minified files left out; above 60k characters, only the file list). It
+   replies one finding per line. **Fix findings** sends just those findings back to the implementer's
+   session. Review rounds are capped (2 by default).
+4. **Ship.** Thinkerer runs the same steps as `/merge`, then adds a report built only from what was
+   recorded: turns, check result, findings per round and the tokens each stage's provider reported.
+   Cleanup stays manual: type `/cleanup`.
+
+Settings → **Software protocol** sets the check command (detected from `package.json` `typecheck` /
+`test` scripts on import), the review rounds (1–5), and the review model and effort (Claude only, e.g. a
+cheaper model for reviews). They are saved under `protocol` in `.thinkerer/project.json`.
 
 ### Worktrees, ports and Docker
 
@@ -203,7 +225,7 @@ files), so a conflict leaves the folder untouched, and Git refuses a merge that 
 uncommitted changes. Thinkerer never pushes. Worktree branches are deleted only by `/cleanup` (after
 checking they're merged) or by `/discard` (after you confirm in a native dialog).
 
-**Commands you configure.** The dev command and the worktree setup and teardown commands live in
+**Commands you configure.** The dev command, the worktree setup and teardown commands and the protocol's check command live in
 `.thinkerer/project.json`, which an agent could edit (Thinkerer reads it from the project folder, never
 from a worktree), so each runs only after you approve that exact text in a native dialog. Adding an MCP server also
 confirms the command in a native dialog. A compromised renderer cannot fake these dialogs.
@@ -249,7 +271,8 @@ npm test                   # engine integration: projects, files, git, checkpoin
                            # CLI translation, health MCP server, dev server, stream parsers, supervisor
 npm run test:e2e           # real Electron app: import this repo, Files/Agent, restart persistence; Website Studio
                            # with a real dev server + embedded preview, blocked navigation, Tasks, MCP, diffs;
-                           # a chat in its worktree with setup/teardown hooks, /merge and /cleanup
+                           # a chat in its worktree with setup/teardown hooks, /merge and /cleanup;
+                           # a protocol chat through plan, checks, review and ship
 npm run test:live:mobile   # opt-in: the mobile driver against already-booted emulators/simulators
                            # (THINKERER_LIVE_MOBILE=1 also runs tests/e2e/emulator.spec.ts, which copies an AVD, boots it, deletes it)
 npm run test:live:claude   # opt-in: REAL claude CLI on a throwaway folder (uses your quota)

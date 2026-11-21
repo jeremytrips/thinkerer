@@ -85,6 +85,8 @@ const ICON: Record<ChatNote['kind'], string> = {
   setup: 'Setup',
   teardown: 'Teardown',
   info: 'Note',
+  checks: 'Checks',
+  protocol: 'Protocol',
   merge: '/merge',
   cleanup: '/cleanup',
   done: '/done',
@@ -93,7 +95,7 @@ const ICON: Record<ChatNote['kind'], string> = {
 
 /** A system message in the transcript: hook output, or a slash command's checklist. */
 export function ChatNoteView({ note }: { note: ChatNote }) {
-  const hook = note.kind === 'setup' || note.kind === 'teardown'
+  const hook = note.kind === 'setup' || note.kind === 'teardown' || note.kind === 'checks'
   const body = note.lines.length > 0 && <pre className="note-lines mono small">{note.lines.join('\n')}</pre>
   return (
     <article className={note.ok ? 'chat-note' : 'chat-note chat-note-failed'} aria-label={`${ICON[note.kind]}: ${note.title}`}>

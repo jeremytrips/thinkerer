@@ -25,9 +25,10 @@ export function scriptAdapter(script: string): AgentAdapter {
     label: 'Claude Code',
     policySummary: status.policy,
     detect: async () => status,
-    buildInvocation: ({ executable, prompt }) => ({
+    buildInvocation: ({ executable, prompt, mode }) => ({
       command: executable,
-      args: [script, 'ok'],
+      // Plan-mode turns are read-only, as with the real CLIs.
+      args: [script, mode === 'plan' ? 'readonly' : 'ok'],
       stdin: prompt,
       env: { ...childEnv(), ELECTRON_RUN_AS_NODE: '1' }
     }),

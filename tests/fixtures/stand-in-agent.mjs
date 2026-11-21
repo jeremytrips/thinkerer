@@ -17,6 +17,11 @@ process.stdin.on('end', () => {
     setInterval(() => {}, 1000)
     return
   }
+  if (mode === 'readonly') {
+    // A reviewer: reads, writes nothing, and reports one finding in the protocol's format.
+    out({ type: 'result', subtype: 'success', is_error: false, result: '[high] made.txt:1: example finding; fix it', usage: { input_tokens: 7, output_tokens: 2 }, permission_denials: [] })
+    return
+  }
   writeFileSync('made.txt', input)
   // In a chat worktree, record the ports and compose project the agent was given.
   if (process.env.THINKERER_PORT_1) writeFileSync('agent-env.txt', `${process.env.THINKERER_PORT_1} ${process.env.COMPOSE_PROJECT_NAME}`)
