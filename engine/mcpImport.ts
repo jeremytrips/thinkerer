@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import type { McpImportCandidate, McpServerDef, McpTransport } from '../shared/types'
-import { validateDef } from './mcp'
+import { isBuiltinId, validateDef } from './mcp'
 import { readJson } from './store'
 
 // Finds the MCP servers already configured for Claude Code (project .mcp.json,
@@ -53,7 +53,10 @@ export function toServerId(name: string): string {
 const envName = (s: string) => s.toUpperCase().replace(/[^A-Z0-9_]/g, '_').replace(/^([0-9])/, '_$1').slice(0, 64)
 
 function convert(source: McpImportCandidate['source'], sourceLabel: string, name: string, raw: RawServer, existingIds: string[]): FoundServer {
-  const id = toServerId(name)
+  // A name like 'playwright' or 'mobile' would collide with a built-in, which can't be replaced: import it under its own id.
+  const slug = toServerId(name)
+  // Always the same id, so importing it again replaces the earlier import (like any other server).
+  const id = isBuiltinId(slug) ? `${slug.slice(0, 24).replace(/-+$/, '')}-claude` : slug
   const secrets: Record<string, string> = {}
   const missing = new Set<string>()
   const type = typeof raw.type === 'string' ? raw.type : typeof raw.url === 'string' ? 'http' : 'stdio'

@@ -67,15 +67,78 @@ function blocks(text: string): ReactNode[] {
       )
       continue
     }
+    if (isTableStart(lines, i)) {
+      const head = cells(line)
+      const align = cells(lines[i + 1]).map((c) =>
+        c.startsWith(':') && c.endsWith(':') ? 'center' : c.endsWith(':') ? 'right' : c.startsWith(':') ? 'left' : undefined
+      )
+      i += 2
+      const rows: string[][] = []
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) rows.push(cells(lines[i++]))
+      out.push(
+        <div key={out.length} className="md-table-wrap">
+          <table className="md-table">
+            <thead>
+              <tr>{head.map((c, k) => <th key={k} style={{ textAlign: align[k] }}>{inline(c)}</th>)}</tr>
+            </thead>
+            <tbody>
+              {rows.map((r, j) => (
+                <tr key={j}>{head.map((_, k) => <td key={k} style={{ textAlign: align[k] }}>{inline(r[k] ?? '')}</td>)}</tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )
+      continue
+    }
     const para: string[] = []
-    while (i < lines.length && lines[i].trim() && !/^(\s*(`{3,}|~{3,})|#{1,6}\s|\s*>|(\s*)([-*+]|\d+[.)])\s+)/.test(lines[i])) para.push(lines[i++])
+    while (
+      i < lines.length &&
+      lines[i].trim() &&
+      !/^(\s*(`{3,}|~{3,})|#{1,6}\s|\s*>|(\s*)([-*+]|\d+[.)])\s+)/.test(lines[i]) &&
+      !(para.length && isTableStart(lines, i))
+    )
+      para.push(lines[i++])
     if (!para.length) para.push(lines[i++]) // a line no other rule took
     out.push(<p key={out.length}>{para.flatMap((l, k) => (k ? [<br key={`b${k}`} />, ...inline(l)] : inline(l)))}</p>)
   }
   return out
 }
 
-const INLINE = /(`+)([^`]+?)\1|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*\s][^*]*)\*|\[([^\]]+)\]\(([^)\s]+)\)/g
+const TABLE_RULE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/
+
+/** A GFM table: a row with pipes followed by a `|---|:--:|` separator line with as many columns. */
+function isTableStart(lines: string[], i: number): boolean {
+  if (!lines[i].includes('|') || i + 1 >= lines.length || !lines[i + 1].includes('-') || !TABLE_RULE.test(lines[i + 1])) return false
+  return cells(lines[i]).length === cells(lines[i + 1]).length
+}
+
+/** Split a table row on unescaped pipes outside inline code, dropping the outer ones. */
+function cells(row: string): string[] {
+  const out: string[] = []
+  let cur = ''
+  let tick = false
+  const s = row.trim()
+  for (let k = 0; k < s.length; k++) {
+    const ch = s[k]
+    if (ch === '\\' && s[k + 1] === '|') {
+      cur += '|'
+      k++
+    } else if (ch === '`') {
+      tick = !tick
+      cur += ch
+    } else if (ch === '|' && !tick) {
+      out.push(cur)
+      cur = ''
+    } else cur += ch
+  }
+  out.push(cur)
+  if (s.startsWith('|')) out.shift()
+  if (s.endsWith('|') && !s.endsWith('\\|')) out.pop()
+  return out.map((c) => c.trim())
+}
+
+const INLINE =/(`+)([^`]+?)\1|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*\s][^*]*)\*|\[([^\]]+)\]\(([^)\s]+)\)/g
 
 function inline(text: string): ReactNode[] {
   const out: ReactNode[] = []
