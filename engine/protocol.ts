@@ -14,6 +14,7 @@ import {
   fixFindingsPrompt,
   implementInstructions,
   protocolReport,
+  reviewEffort,
   reviewLevel,
   reviewRange,
   reviewPrompt
@@ -126,7 +127,7 @@ export class ProtocolService {
           protocolStage: 'review',
           freshSession: true,
           instructions,
-          claude: { model: review.model, effort: review.effort, tools }
+          claude: { model: review.model, effort: reviewEffort(review.effort, agent.claude.effort), tools }
         })
         break
       }

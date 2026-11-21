@@ -141,6 +141,13 @@ describe('Claude plan mode stays read-only', () => {
     expect(plan).toEqual(['git status*', 'git diff*', 'git log*', 'git show*', 'git merge-base*', 'git rev-parse*', 'git ls-files*'].map((c) => `Bash(${c})`))
   })
 
+  it('denies git output-file flags in plan mode, which the read-only rules would otherwise allow', () => {
+    const args = claudeAdapter.buildInvocation({ ...base, mode: 'plan' }).args
+    const i = args.indexOf('--disallowedTools')
+    expect(args[i + 1]).toBe('Bash(git *--output*)')
+    expect(claudeAdapter.buildInvocation(base).args).not.toContain('--disallowedTools')
+  })
+
   it('keeps the full approved list in auto mode', () => {
     const auto = allowed(claudeAdapter.buildInvocation(base).args)
     expect(auto).toEqual([...DEFAULT_POLICY.allowedCommands.map((c) => `Bash(${c})`), 'mcp__mobile'])

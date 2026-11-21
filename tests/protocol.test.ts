@@ -9,7 +9,7 @@ import type { AgentAdapter, InvocationOptions } from '../engine/agents/types'
 import { Approvals } from '../engine/approvals'
 import { ProjectService } from '../engine/projects'
 import { ProtocolService } from '../engine/protocol'
-import { countFindings, pickPlan, reviewLevel } from '../engine/protocolText'
+import { countFindings, fixFindingsPrompt, pickPlan, reviewEffort, reviewLevel } from '../engine/protocolText'
 import type { ChatRecord, Effort, ProtocolAction, RunSummary } from '../shared/types'
 
 // The software protocol end to end with a stand-in agent, a real temp repo and
@@ -277,6 +277,20 @@ describe('protocol config and findings', () => {
     expect(countFindings('Done.\n```json\n[]\n```')).toBe(0)
     expect(countFindings('[{"severity":"important","file":"a.ts"},{"severity":"nit","file":"b.ts"}]')).toBe(2)
     expect(countFindings('see [the docs]')).toBeNull()
+    // Brackets in the prose before the JSON block don't hide it.
+    expect(countFindings('Checked [engine/protocol.ts] and [a.ts].\n```json\n[{"severity":"nit","tags":["x"]}]\n```')).toBe(1)
+    expect(countFindings('[x] then [broken')).toBeNull()
+  })
+
+  it('forwards the finding lines from a long review, not its cut-off start', () => {
+    const long = `${'prose '.repeat(2000)}\n[{"severity":"important"}]\n- [high] a.ts:1: bug; fix\n- [low] b.ts:2: nit; tidy`
+    const prompt = fixFindingsPrompt(long)
+    expect(prompt).toContain('- [high] a.ts:1: bug; fix\n- [low] b.ts:2: nit; tidy')
+    expect(prompt).not.toContain('prose')
+    // No finding lines: the end of the reply is kept.
+    const tail = fixFindingsPrompt(`${'x'.repeat(9000)}THE END`)
+    expect(tail).toContain('THE END')
+    expect(tail).toContain('start cut')
   })
 
   it('picks the review level: explicit review effort, else the agent effort with max held at xhigh, else medium', () => {
@@ -284,6 +298,10 @@ describe('protocol config and findings', () => {
     expect(reviewLevel('', 'max')).toBe('xhigh')
     expect(reviewLevel('', 'high')).toBe('high')
     expect(reviewLevel('', '')).toBe('medium')
+    // The turn's --effort follows the same cap ('' = the agent's own effort).
+    expect(reviewEffort('', 'max')).toBe('xhigh')
+    expect(reviewEffort('max', 'low')).toBe('max')
+    expect(reviewEffort('', 'high')).toBe('')
   })
 
   it('reviews against the latest real plan, not a later plan-stage reply that is no plan', () => {
@@ -291,6 +309,11 @@ describe('protocol config and findings', () => {
     const turn = (resultText: string) => ({ protocolStage: 'plan' as const, status: 'succeeded' as const, resultText })
     expect(pickPlan([turn(plan), turn('Nothing was implemented. Switch the run mode to Auto.')])).toBe(plan)
     expect(pickPlan([turn('First draft'), turn('Second draft')])).toBe('Second draft')
+    // A refinement with Goal/Steps/Tests but no acceptance criteria is still the newest plan.
+    const revised = '**Goal**: X\n**Steps**\n1. a\n**Tests**\n- t'
+    expect(pickPlan([turn(plan), turn(revised)])).toBe(revised)
+    // A failed partial reply is not preferred over a finished one.
+    expect(pickPlan([turn('Finished reply'), { ...turn('Partial'), status: 'failed' as const }])).toBe('Finished reply')
     expect(pickPlan([])).toBeNull()
   })
 })

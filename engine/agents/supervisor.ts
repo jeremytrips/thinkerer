@@ -626,11 +626,6 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     return out
   }
 
-  /**
-   * What a follow-up in this chat continues: the latest turn's provider, and its
-   * session if it reported one. Review turns run in their own session, so the
-   * implementer never resumes the reviewer's conversation.
-   */
   /** The provider the chat's next turn runs with (the same rule as follow-ups); null for an empty chat. */
   async chatProvider(projectId: string, chatId: string): Promise<ProviderId | null> {
     return workingTurns(await this.getChat(projectId, chatId)).at(-1)?.provider ?? null
@@ -641,6 +636,11 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     return this.adapters[provider]?.reviewCommand ?? null
   }
 
+  /**
+   * What a follow-up in this chat continues: the latest turn's provider, and its
+   * session if it reported one. Review turns run in their own session, so the
+   * implementer never resumes the reviewer's conversation.
+   */
   private async continuation(projectId: string, chatId: string): Promise<{ provider: ProviderId; sessionId: string | null; taskId: string | null }> {
     const all = await this.getChat(projectId, chatId)
     if (!all.length) throw new Error('Chat not found')
@@ -814,13 +814,13 @@ function missingAdapter(id: ProviderId): ProviderStatus {
   return { id, label, installed: false, executable: null, version: null, authenticated: null, adapterAvailable: false, detail: 'No adapter registered', policy: '' }
 }
 
-/** Tells the agent where the user's preview screenshots are and what page they show. */
 /** A chat's turns that later turns continue from: review turns run in their own session and never count. */
 function workingTurns<T extends { protocolStage?: string }>(all: T[]): T[] {
   const working = all.filter((t) => t.protocolStage !== 'review')
   return working.length ? working : all
 }
 
+/** Tells the agent where the user's preview screenshots are and what page they show. */
 export function attachmentNote(attachments: PromptAttachment[]): string {
   if (!attachments.length) return ''
   const items = attachments.map((a, i) => {

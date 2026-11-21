@@ -43,14 +43,17 @@ export const REVIEW_INSTRUCTIONS = [
 const MAX_REVIEW_PLAN_CHARS = 4_000
 
 /**
- * The review level passed to a CLI's review command. An explicit review effort
- * is the user's choice (max included); inherited from the agent effort, max is
- * held at xhigh, since a max review starts many reviewer sub-agents.
+ * The Claude effort for a review turn: an explicit review effort is the user's
+ * choice (max included); an inherited max is held at xhigh, since a max review
+ * starts many reviewer sub-agents. '' = the project's agent effort.
  */
-export function reviewLevel(reviewEffort: Effort, agentEffort: Effort): string {
-  if (reviewEffort) return reviewEffort
-  if (agentEffort === 'max') return 'xhigh'
-  return agentEffort || 'medium'
+export function reviewEffort(reviewEffort: Effort, agentEffort: Effort): Effort {
+  return reviewEffort || (agentEffort === 'max' ? 'xhigh' : '')
+}
+
+/** The level passed to a CLI's review command: the review turn's effort, else medium. */
+export function reviewLevel(reviewEffortSetting: Effort, agentEffort: Effort): string {
+  return reviewEffort(reviewEffortSetting, agentEffort) || agentEffort || 'medium'
 }
 
 /**
@@ -66,17 +69,26 @@ export function commandReviewInstructions(range: string, plan: string | null, ch
     'Find files with the Glob, Grep and Read tools rather than shell commands (only read-only git commands are allowed).',
     `Also report acceptance criteria from this plan that the change does not meet or test. Plan: ${plan ? clip(plan, MAX_REVIEW_PLAN_CHARS) : '(no plan recorded)'}`,
     checks ? `Checks: \`${checks.command}\` ${checkStatus(checks)}.` : '',
-    'Whatever output format the review asks for, end your reply with the findings converted to one line each: `[high|medium|low] path:line: problem; fix` (important = high, nit = low). If there are none, end with exactly: No findings.'
+    'Whatever output format the review asks for, end your reply with the findings converted to one line each: `[high|medium|low] path:line: problem; fix` (important = high, pre_existing = medium, nit = low; keep every finding). If there are none, end with exactly: No findings.'
   ]
     .filter(Boolean)
     .join(' ')
 }
 
-/** The latest plan-stage reply that is a plan (it has the acceptance criteria the plan stage asks for); else the latest one. */
+/** Section headings the plan stage asks for (Goal; Steps; Tests; Acceptance criteria), as headings, bold or list items. */
+const PLAN_HEADING = /^\s*(?:#+\s*|\*\*|\d+[.)]\s*)?(goal|steps|tests|acceptance criteria)\b/gim
+
+/**
+ * The plan to review against: the latest succeeded plan-stage reply that reads
+ * like a plan (two or more of its sections), so a later reply that is no plan
+ * (e.g. "nothing was implemented") is skipped; else the latest succeeded reply.
+ */
 export function pickPlan(turns: Pick<RunRecord, 'protocolStage' | 'status' | 'resultText'>[]): string | null {
   const plans = turns.filter((t) => t.protocolStage === 'plan' && t.resultText?.trim())
-  const real = plans.filter((t) => t.status === 'succeeded' && /acceptance criteria/i.test(t.resultText!))
-  return (real.at(-1) ?? plans.at(-1))?.resultText ?? null
+  const ok = plans.filter((t) => t.status === 'succeeded')
+  const sections = (t: string) => new Set([...t.matchAll(PLAN_HEADING)].map((m) => m[1].toLowerCase())).size
+  const real = ok.filter((t) => sections(t.resultText!) >= 2)
+  return (real.at(-1) ?? ok.at(-1) ?? plans.at(-1))?.resultText ?? null
 }
 
 /** The commits a chat's review covers: from its base branch (or the commit it started at) to HEAD. */
@@ -104,7 +116,7 @@ export function fixFindingsPrompt(findings: string): string {
   return [
     'A reviewer found these problems in your change. Fix the ones you agree with; for any you skip, say why in one line.',
     '',
-    clip(findings, MAX_FINDINGS_CHARS)
+    findingsToForward(findings)
   ].join('\n')
 }
 
@@ -128,20 +140,27 @@ export async function reviewPrompt(wt: ChatWorktree, cwd: string, plan: string |
 export function countFindings(text: string | null): number | null {
   if (!text) return null
   if (/^\s*No findings\.?\s*$/i.test(text.trim().split('\n').at(-1) ?? '') && !/\[(high|medium|low)\]/i.test(text)) return 0
-  const n = text.split('\n').filter((l) => /^\s*(?:[-*\d.]+\s*)?`?\[(high|medium|low)\]/i.test(l)).length
+  const n = text.split('\n').filter((l) => FINDING_LINE.test(l)).length
   return n || jsonFindings(text)
 }
 
+/** A finding line in the protocol's format: `[high|medium|low] path:line: …`, optionally as a list item. */
+const FINDING_LINE = /^\s*(?:[-*\d.]+\s*)?`?\[(high|medium|low)\]/i
+
 /** A review command's own JSON answer (e.g. `[]`, or `[{"severity":"important",…}]`) at the end of the reply. */
 function jsonFindings(text: string): number | null {
-  const m = /(\[[\s\S]*\])\s*(?:```)?\s*$/.exec(text)
-  if (!m) return null
-  try {
-    const v: unknown = JSON.parse(m[1])
-    return Array.isArray(v) && v.every((f) => f && typeof f === 'object' && 'severity' in f) ? v.length : null
-  } catch {
-    return null
+  const body = text.replace(/\s*(?:```)?\s*$/, '')
+  if (!body.endsWith(']')) return null
+  // The array starts at one of the '[' before the final ']'; try them from the nearest back.
+  for (let i = body.lastIndexOf('['); i >= 0; i = body.lastIndexOf('[', i - 1)) {
+    try {
+      const v: unknown = JSON.parse(body.slice(i))
+      return Array.isArray(v) && v.every((f) => f && typeof f === 'object' && 'severity' in f) ? v.length : null
+    } catch {
+      if (i === 0) break
+    }
   }
+  return null
 }
 
 /**
@@ -190,6 +209,13 @@ function tokens(usage: (UsageObservation | null)[]): string {
   const sum = (k: keyof Pick<UsageObservation, 'inputTokens' | 'outputTokens' | 'cacheReadTokens' | 'cacheCreationTokens'>) => known.reduce((n, u) => n + (u[k] ?? 0), 0)
   const missing = usage.length - known.length
   return `${sum('inputTokens')} in, ${sum('outputTokens')} out, ${sum('cacheReadTokens')} cache read, ${sum('cacheCreationTokens')} cache write${missing ? ` (${missing} turn${missing === 1 ? '' : 's'} not reported)` : ''}`
+}
+
+/** Just the finding lines when the reviewer wrote them (they end a long review command's reply); else the reply's end, where the findings are. */
+function findingsToForward(text: string): string {
+  const lines = text.split('\n').filter((l) => FINDING_LINE.test(l))
+  if (lines.length) return clip(lines.join('\n'), MAX_FINDINGS_CHARS)
+  return text.length <= MAX_FINDINGS_CHARS ? text : `(start cut; last ${MAX_FINDINGS_CHARS} characters)\n${text.slice(-MAX_FINDINGS_CHARS)}`
 }
 
 function clip(text: string, max: number): string {

@@ -13,6 +13,9 @@ const TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash']
 // a tool run there, so only commands that cannot change anything stay
 // pre-approved (no npm scripts, no MCP tools: Playwright clicks, mobile installs/taps).
 const READ_ONLY_COMMAND = /^git (status|diff|log|show|merge-base|rev-parse|ls-files)\b/
+// Those git commands can still write a file with --output (diff, log, show) or
+// --output-directory; deny rules beat allow rules, so plan mode denies them.
+export const PLAN_DENIED_COMMANDS = ['git *--output*']
 
 /** MCP servers still connecting when Claude reports its init event; their tools usually arrive moments later. */
 const TRANSIENT_MCP_STATUS = new Set(['connected', 'pending', 'connecting', 'starting'])
@@ -68,6 +71,7 @@ export const claudeAdapter: AgentAdapter = {
         ...(claude?.effort ? ['--effort', claude.effort] : []),
         '--tools', tools.join(','),
         ...(allowed.length ? ['--allowedTools', ...allowed] : []),
+        ...(plan ? ['--disallowedTools', ...PLAN_DENIED_COMMANDS.map((c) => `Bash(${c})`)] : []),
         // Plan mode: read-only investigation; the user's next message carries the plan out.
         '--permission-mode', plan ? 'plan' : 'auto',
         // Nothing can answer a prompt, so anything auto mode would ask about is denied.
