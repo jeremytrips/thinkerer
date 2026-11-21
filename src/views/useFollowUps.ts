@@ -1,18 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import type { PreviewCapture, RunMode, RunSummary } from '../../shared/types'
+import type { RunSummary } from '../../shared/types'
 import type { Chat } from './AgentChats'
-
-/** A message typed while the chat was working; it is sent when the agent finishes. */
-export interface Queued {
-  text: string
-  attachments: PreviewCapture[]
-  mode: RunMode
-}
-
-/** Two follow-ups queued for one chat run as one message. Read-only wins, so nothing asked to be only planned gets edited. */
-export function mergeQueued(a: Queued, b: Queued): Queued {
-  return { text: `${a.text}\n\n${b.text}`, attachments: [...a.attachments, ...b.attachments], mode: a.mode === 'plan' || b.mode === 'plan' ? 'plan' : b.mode }
-}
+import { enqueue, type Queued } from './queue'
 
 interface Options {
   chats: Chat[]
@@ -47,8 +36,12 @@ export function useFollowUps({ chats, runs, send, giveBack }: Options) {
 
   return {
     queued,
-    queue(chatId: string, q: Queued) {
-      setQueued((cur) => ({ ...cur, [chatId]: cur[chatId] ? mergeQueued(cur[chatId], q) : q }))
+    /** Queues a follow-up; returns why it was refused (a different mode than one already queued), else null. */
+    queue(chatId: string, q: Queued): string | null {
+      const next = enqueue(queued[chatId], q)
+      if ('refused' in next) return next.refused
+      setQueued((cur) => ({ ...cur, [chatId]: next.queued }))
+      return null
     },
     /** Removes the chat's queued message and returns it (for editing). */
     take(chatId: string): Queued | undefined {

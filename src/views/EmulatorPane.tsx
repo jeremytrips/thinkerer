@@ -1,26 +1,29 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react'
-import type { MobileDevice, MobileFrame, MobileToolStatus, PreviewCapture, Project } from '../../shared/types'
+import type { ChatDevicesView, MobileDevice, MobileFrame, MobilePlatform, MobileToolStatus, PreviewCapture, Project } from '../../shared/types'
 import { api, errorMessage, loadState, saveState } from '../api'
 
 interface Props {
   project: Project
-  /** Chat whose worktree preview "Open preview" loads; null is the project folder. */
+  /** Chat whose own devices are shown (and whose preview "Open preview" loads); null is the project folder. */
   chatId?: string | null
   onCapture?: (capture: PreviewCapture) => void
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const STATE_TONE: Record<MobileDevice['state'], string> = { booted: 'pill-succeeded', booting: 'pill-running', shutdown: 'pill-cancelled' }
+const PLATFORM_NAME: Record<MobilePlatform, string> = { ios: 'iOS', android: 'Android' }
 
 /**
- * A real Android emulator or iOS simulator, shown live in the panel. Clicks
- * are taps, drags are swipes, the wheel scrolls. It is the same device the
- * agent drives through the `mobile` MCP server.
+ * The chat's own Android emulator / iOS simulator, shown live in the panel.
+ * Clicks are taps, drags are swipes, the wheel scrolls. Each chat has its own
+ * devices (copied from one of the user's), the same ones the agent drives
+ * through the `mobile` MCP server.
  */
 export function EmulatorPane({ project, chatId = null, onCapture }: Props) {
   const [status, setStatus] = useState<MobileToolStatus | null>(null)
-  const [devices, setDevices] = useState<MobileDevice[] | null>(null)
+  const [view, setView] = useState<ChatDevicesView | null>(null)
   const [selected, setSelected] = useState<string>(() => loadState('agent.emulator', ''))
+  const [template, setTemplate] = useState('')
   const [frame, setFrame] = useState<MobileFrame | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -29,13 +32,17 @@ export function EmulatorPane({ project, chatId = null, onCapture }: Props) {
   const press = useRef<{ x: number; y: number; at: number } | null>(null)
   const wheel = useRef<{ dy: number; timer: number | null }>({ dy: 0, timer: null })
 
+  const devices = view?.devices ?? null
   const device = devices?.find((d) => d.id === selected) ?? devices?.[0] ?? null
+  // Platforms this chat has no device for yet, and the user's devices it can copy.
+  const templates = (view?.templates ?? []).filter((t) => !devices?.some((d) => d.platform === t.platform))
+  const chosen = templates.find((t) => t.id === template) ?? templates.find((t) => view?.defaults[t.platform] === t.id) ?? templates[0] ?? null
   const booted = device?.state === 'booted'
   const canInput = booted && device.input
 
   async function refresh() {
     try {
-      setDevices(await api.mobile.list())
+      setView(await api.mobile.chatDevices(project.id, chatId))
     } catch (e) {
       setError(errorMessage(e))
     }
@@ -43,10 +50,11 @@ export function EmulatorPane({ project, chatId = null, onCapture }: Props) {
 
   useEffect(() => {
     api.mobile.status().then(setStatus, () => {})
+    setView(null)
     void refresh()
     const t = window.setInterval(() => void refresh(), 5000)
     return () => window.clearInterval(t)
-  }, [])
+  }, [project.id, chatId])
 
   // Live view: fetch frames back to back while the device is booted.
   useEffect(() => {
@@ -156,7 +164,7 @@ export function EmulatorPane({ project, chatId = null, onCapture }: Props) {
           onChange={(e) => choose(e.target.value)}
           disabled={!devices?.length}
         >
-          {!devices?.length && <option value="">{devices ? 'No emulators found' : 'Looking for emulators…'}</option>}
+          {!devices?.length && <option value="">{devices ? 'No device for this chat yet' : 'Looking for devices…'}</option>}
           {devices?.map((d) => (
             <option key={d.id} value={d.id}>
               {d.platform === 'ios' ? 'iOS' : 'Android'} · {d.name} ({d.detail}){d.state === 'booted' ? ' ●' : ''}
@@ -194,8 +202,44 @@ export function EmulatorPane({ project, chatId = null, onCapture }: Props) {
               {busy === 'boot' ? 'Booting…' : 'Boot'}
             </button>
           )}
+          {device && (
+            <button
+              className="small"
+              disabled={!!busy}
+              title="Delete this chat's device with its apps and data (your own devices are not touched)"
+              onClick={() => act('delete', async () => (await api.mobile.deleteChatDevice(project.id, chatId, device.id), await refresh()))}
+            >
+              {busy === 'delete' ? 'Deleting…' : 'Delete'}
+            </button>
+          )}
         </div>
       </div>
+      {chosen && (
+        <div className="preview-bar emulator-create">
+          <span className="small muted">{devices?.length ? 'Add a device for this chat:' : 'Create this chat’s device from:'}</span>
+          <select className="emulator-select" aria-label="Device to copy" value={chosen.id} onChange={(e) => setTemplate(e.target.value)} disabled={!!busy}>
+            {templates.map((t) => (
+              <option key={t.id} value={t.id}>
+                {PLATFORM_NAME[t.platform]} · {t.name} ({t.detail})
+              </option>
+            ))}
+          </select>
+          <button
+            className="small primary"
+            disabled={!!busy}
+            title="A new device with the same hardware and OS, with its own apps and data, used only by this chat"
+            onClick={() =>
+              act('create', async () => {
+                const made = await api.mobile.createChatDevice(project.id, chatId, chosen.id)
+                choose(made.id)
+                await refresh()
+              })
+            }
+          >
+            {busy === 'create' ? 'Creating…' : 'Create'}
+          </button>
+        </div>
+      )}
       {error && <div className="banner banner-error preview-note">{error}</div>}
       {device?.platform === 'ios' && !device.input && (
         <p className="small muted preview-note">
@@ -226,8 +270,13 @@ export function EmulatorPane({ project, chatId = null, onCapture }: Props) {
               </>
             ) : !devices ? (
               'Looking for emulators…'
+            ) : !device && !view?.templates.length ? (
+              'Create an Android Virtual Device in Android Studio, or an iOS simulator in Xcode. Each chat then gets its own copy.'
             ) : !device ? (
-              'Create an Android Virtual Device in Android Studio, or an iOS simulator in Xcode.'
+              <>
+                <div>This chat has no device yet.</div>
+                <div className="small">Create one above: same hardware and OS as the device you pick, with its own apps and data. The agent creates one on its first turn when the Mobile emulators MCP server is on.</div>
+              </>
             ) : device.state === 'booted' ? (
               'Connecting to the screen…'
             ) : device.state === 'booting' || busy === 'boot' ? (
@@ -235,7 +284,7 @@ export function EmulatorPane({ project, chatId = null, onCapture }: Props) {
             ) : (
               <>
                 <div>{device.name} is off.</div>
-                <div className="small">Boot it to see and use it here. The agent can drive it too, with the Mobile emulators MCP server.</div>
+                <div className="small">Boot it to see and use it here. It belongs to this chat; the agent can drive it too, with the Mobile emulators MCP server.</div>
               </>
             )}
           </div>

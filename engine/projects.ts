@@ -12,11 +12,12 @@ const COMPONENTS: Component[] = ['website', 'mobile', 'hardware']
 const TARGETS: Target[] = ['web', 'electron']
 const PROVIDERS: ProviderChoice[] = ['auto', 'claude', 'codex']
 export const EFFORTS: Effort[] = ['', 'low', 'medium', 'high', 'xhigh', 'max']
-export const CLAUDE_OPTIONAL_TOOLS: ClaudeOptionalTool[] = ['Agent', 'Skill', 'WebSearch', 'NotebookEdit']
-/** Claude Code renamed its subagent tool from Task to Agent; older project files still say Task. */
-const canonicalTool = (t: unknown) => (t === 'Task' ? 'Agent' : t)
+// 'Task' is the subagent tool. Claude Code 2.1.330 accepts both 'Task' and 'Agent' in --tools and
+// reports it as 'Task'; 'Agent' is accepted as an alias and stored as 'Task'.
+export const CLAUDE_OPTIONAL_TOOLS: ClaudeOptionalTool[] = ['Task', 'Skill', 'WebSearch', 'NotebookEdit']
+const canonicalTool = (t: unknown) => (t === 'Agent' ? 'Task' : t)
 /** Subagents and skills stay inside the run's limits, so they're on by default; network tools are opt-in. */
-export const DEFAULT_CLAUDE: ClaudeRunConfig = { model: '', effort: '', tools: ['Agent', 'Skill'] }
+export const DEFAULT_CLAUDE: ClaudeRunConfig = { model: '', effort: '', tools: ['Task', 'Skill'] }
 /** A model alias (opus, sonnet…) or full name, optionally with a context suffix such as [1m]. */
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:\-]{0,99}(\[[0-9a-z]{1,10}\])?$/
 

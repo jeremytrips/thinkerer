@@ -10,6 +10,10 @@ const CLIENT = { name: 'thinkerer-check', version: '0.1.0' }
 const MAX_PAGES = 5
 
 type Rpc = (method: string, params?: unknown) => Promise<unknown>
+type Json = Record<string, unknown>
+
+/** A JSON-RPC message as it arrives off the wire: shape unknown until checked. */
+const asObject = (v: unknown): Json => (v !== null && typeof v === 'object' ? (v as Json) : {})
 type Notify = (method: string) => Promise<void>
 
 export interface CheckOptions {
@@ -40,30 +44,18 @@ export async function checkMcpServer(server: ResolvedMcpServer, secretEnv: Recor
   }
 }
 
-/** JSON-RPC message as received; every field is checked before use. */
-interface RpcMessage {
-  id?: unknown
-  result?: unknown
-  error?: { message?: unknown }
-}
-
-/** Untrusted JSON as an object whose fields can be inspected. */
-const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' ? (v as Record<string, unknown>) : {})
-const asMessage = (v: unknown): RpcMessage => obj(v)
-const rpcError = (e: RpcMessage['error']) => `Server error: ${typeof e?.message === 'string' ? e.message : JSON.stringify(e)}`
-
 async function talk(rpc: Rpc, notify: Notify): Promise<Pick<McpCheckResult, 'serverInfo' | 'tools'>> {
-  const init = obj(await rpc('initialize', { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: CLIENT }))
+  const init = asObject(await rpc('initialize', { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: CLIENT }))
   await notify('notifications/initialized')
-  const info = obj(init.serverInfo)
+  const info = asObject(init.serverInfo)
   const serverInfo = typeof info.name === 'string' && info.name ? `${info.name}${typeof info.version === 'string' && info.version ? ` ${info.version}` : ''}` : null
-  if (!obj(init.capabilities).tools) return { serverInfo, tools: [] }
+  if (!asObject(init.capabilities).tools) return { serverInfo, tools: [] }
   const tools: McpCheckResult['tools'] = []
   let cursor: string | undefined
   for (let page = 0; page < MAX_PAGES; page++) {
-    const res = obj(await rpc('tools/list', cursor ? { cursor } : {}))
-    for (const raw of Array.isArray(res.tools) ? res.tools : []) {
-      const t = obj(raw)
+    const res = asObject(await rpc('tools/list', cursor ? { cursor } : {}))
+    for (const item of Array.isArray(res.tools) ? res.tools : []) {
+      const t = asObject(item)
       if (typeof t.name === 'string') tools.push({ name: t.name, description: typeof t.description === 'string' ? t.description.slice(0, 300) : '' })
     }
     cursor = typeof res.nextCursor === 'string' ? res.nextCursor : undefined
@@ -96,7 +88,7 @@ function requests() {
       return { id, done }
     },
     deliver(raw: unknown) {
-      const msg = asMessage(raw)
+      const msg = asObject(raw)
       if (typeof msg.id !== 'number' || !pending.has(msg.id)) return
       const p = pending.get(msg.id)!
       pending.delete(msg.id)
@@ -183,8 +175,8 @@ function httpSession(url: string, headers: Record<string, string>): Session {
       const id = nextId++
       const res = await post({ id, method, params })
       const type = res.headers.get('content-type') ?? ''
-      const messages = (type.includes('text/event-stream') ? sseMessages(await res.text()) : [(await res.json()) as unknown]).map(asMessage)
-      const reply = messages.find((m) => m.id === id)
+      const messages: unknown[] = type.includes('text/event-stream') ? sseMessages(await res.text()) : [await res.json()]
+      const reply = messages.map(asObject).find((m) => m.id === id)
       if (!reply) throw new Error(`No reply to ${method}`)
       if (reply.error) throw new Error(rpcError(reply.error))
       return reply.result
@@ -197,19 +189,22 @@ function httpSession(url: string, headers: Record<string, string>): Session {
   }
 }
 
-/** Legacy HTTP+SSE: a GET stream announces a POST endpoint; replies arrive on the stream. */
+/**
+ * Legacy HTTP+SSE: a GET stream announces a POST endpoint; replies arrive on the stream.
+ * Every way out before the session is handed back (bad status, no endpoint event,
+ * timeout, stream closed) aborts the GET, so a failed check never leaves a socket open.
+ */
 async function sseSession(url: string, headers: Record<string, string>, timeoutMs: number): Promise<Session> {
   const controller = new AbortController()
-  // One deadline for the whole setup: the GET (a server may never send headers) and the endpoint event.
-  const deadline = Date.now() + timeoutMs
-  const left = () => Math.max(0, deadline - Date.now())
+  const timer = setTimeout(() => controller.abort(new Error(`No answer within ${Math.round(timeoutMs / 1000)}s`)), timeoutMs)
   try {
-    const res = await withTimeout(fetch(url, { headers: { ...headers, accept: 'text/event-stream' }, signal: controller.signal }), left())
+    const res = await fetch(url, { headers: { ...headers, accept: 'text/event-stream' }, signal: controller.signal })
     if (!res.ok || !res.body) throw new Error(httpError(res))
-    const body = res.body
     const reqs = requests()
     let endpointResolve: (u: string) => void = () => {}
-    const endpoint = new Promise<string>((r) => (endpointResolve = r))
+    let endpointReject: (e: Error) => void = () => {}
+    const endpoint = new Promise<string>((resolve, reject) => ((endpointResolve = resolve), (endpointReject = reject)))
+    const body = res.body
     void (async () => {
       const reader = body.pipeThrough(new TextDecoderStream()).getReader()
       let buf = ''
@@ -227,19 +222,24 @@ async function sseSession(url: string, headers: Record<string, string>, timeoutM
             if (event === 'endpoint') endpointResolve(new URL(data, url).toString())
             else if (data) {
               try {
-                reqs.deliver(JSON.parse(data) as unknown)
+                reqs.deliver(JSON.parse(data))
               } catch {
                 // ignore
               }
             }
           }
         }
-        reqs.failAll(new Error('The server closed the event stream'))
+        const closed = new Error('The server closed the event stream')
+        endpointReject(closed)
+        reqs.failAll(closed)
       } catch (err) {
-        reqs.failAll(err as Error)
+        const e = controller.signal.aborted && controller.signal.reason instanceof Error ? controller.signal.reason : (err as Error)
+        endpointReject(e)
+        reqs.failAll(e)
       }
     })()
-    const postUrl = await withTimeout(endpoint, left())
+    const postUrl = await endpoint
+    clearTimeout(timer) // from here checkMcpServer's own timeout and close() take over
     const post = async (msg: object) => {
       const r = await fetch(postUrl, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', ...msg }), signal: controller.signal })
       if (!r.ok && r.status !== 202) throw new Error(httpError(r))
@@ -255,9 +255,10 @@ async function sseSession(url: string, headers: Record<string, string>, timeoutM
       close: () => controller.abort()
     }
   } catch (err) {
-    // No session is returned, so nobody else can close the stream.
+    clearTimeout(timer)
+    const reason: unknown = controller.signal.reason
     controller.abort()
-    throw err
+    throw reason instanceof Error ? reason : err
   }
 }
 
@@ -273,6 +274,11 @@ function sseMessages(text: string): unknown[] {
         return []
       }
     })
+}
+
+function rpcError(error: unknown): string {
+  const e = asObject(error)
+  return `Server error: ${typeof e.message === 'string' ? e.message : JSON.stringify(error)}`
 }
 
 function httpError(res: Response): string {

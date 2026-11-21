@@ -10,7 +10,7 @@ const COMPONENTS: { id: Component; label: string; note?: string }[] = [
 ]
 
 const CLAUDE_TOOLS: { id: ClaudeOptionalTool; label: string; note: string }[] = [
-  { id: 'Agent', label: 'Subagents', note: 'Lets Claude hand work to Explore, Plan and general-purpose subagents. They have the same limits as the run.' },
+  { id: 'Task', label: 'Subagents', note: 'Lets Claude hand work to Explore, Plan and general-purpose subagents. They have the same limits as the run.' },
   { id: 'Skill', label: 'Skills', note: 'Lets Claude use skills (yours and built-in ones) on its own. You can always type /skill-name.' },
   { id: 'WebSearch', label: 'Web search', note: 'Searches the web. Search queries leave your machine.' },
   { id: 'NotebookEdit', label: 'Jupyter notebooks', note: 'Edits .ipynb cells in the project.' }

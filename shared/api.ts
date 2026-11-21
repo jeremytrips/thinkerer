@@ -14,6 +14,7 @@ import type {
   McpImportCandidate,
   McpServerDef,
   McpServerView,
+  ChatDevicesView,
   MobileDevice,
   MobileFrame,
   MobileToolStatus,
@@ -118,8 +119,14 @@ export interface ThinkererApi {
   mobile: {
     status(): Promise<MobileToolStatus>
     list(): Promise<MobileDevice[]>
-    /** Boots and waits until the device is usable; headless unless window is true. */
-    boot(deviceId: string, window?: boolean): Promise<MobileDevice | null>
+    /** The chat's own devices (chatId null: the project folder's) and the templates they can be copied from. */
+    chatDevices(projectId: string, chatId: string | null): Promise<ChatDevicesView>
+    /** Creates the chat's device for the template's platform: same hardware and OS, fresh data. */
+    createChatDevice(projectId: string, chatId: string | null, templateId: string): Promise<MobileDevice>
+    /** Shuts down and deletes one of the chat's devices. */
+    deleteChatDevice(projectId: string, chatId: string | null, deviceId: string): Promise<boolean>
+    /** Boots headless and waits until the device is usable. */
+    boot(deviceId: string): Promise<MobileDevice | null>
     shutdown(deviceId: string): Promise<boolean>
     frame(deviceId: string): Promise<MobileFrame>
     tap(deviceId: string, x: number, y: number, durationMs?: number): Promise<boolean>

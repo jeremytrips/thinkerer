@@ -187,7 +187,7 @@ function SessionInfo({ caps }: { caps: AgentCapabilities }) {
         <span className="muted">none</span>
       )
     ],
-    ['Subagents', caps.tools.some((t) => t === 'Agent' || t === 'Task') ? <span className="mono">{caps.agents.join(', ') || 'none'}</span> : <span className="muted">off (enable in Settings → Claude Code)</span>],
+    ['Subagents', (caps.tools.includes('Task') || caps.tools.includes('Agent')) ? <span className="mono">{caps.agents.join(', ') || 'none'}</span> : <span className="muted">off (enable in Settings → Claude Code)</span>],
     ['Skills', caps.tools.includes('Skill') || caps.skills.length ? <span className="mono">{caps.skills.join(', ') || 'none'}</span> : <span className="muted">none</span>],
     ['Commands', <span className="mono">{caps.commands.map((c) => `/${c}`).join(' ') || 'none'}</span>]
   ]

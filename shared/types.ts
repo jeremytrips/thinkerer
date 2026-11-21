@@ -10,8 +10,8 @@ export type ProviderChoice = 'auto' | ProviderId
 export type RunMode = 'auto' | 'plan'
 export type Effort = '' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 /** Claude Code built-in tools a project can opt into, on top of the file tools and Bash. */
-/** `Agent` is Claude Code's subagent tool (named `Task` before 2.1). */
-export type ClaudeOptionalTool = 'Agent' | 'Skill' | 'WebSearch' | 'NotebookEdit'
+/** `Task` is Claude Code's subagent tool (it also accepts the name `Agent`). */
+export type ClaudeOptionalTool = 'Task' | 'Skill' | 'WebSearch' | 'NotebookEdit'
 
 /** Claude Code options for a project's runs. Empty model/effort = the CLI's own default. */
 export interface ClaudeRunConfig {
@@ -177,6 +177,14 @@ export interface MobileDevice {
   detail: string
   /** Whether taps/typing can be sent (iOS needs idb). */
   input: boolean
+}
+
+/** A chat's own emulators (one per platform) and the user's devices they can be copied from. */
+export interface ChatDevicesView {
+  devices: MobileDevice[]
+  templates: MobileDevice[]
+  /** Last template picked per platform. */
+  defaults: Partial<Record<MobilePlatform, string>>
 }
 
 export interface MobileToolStatus {

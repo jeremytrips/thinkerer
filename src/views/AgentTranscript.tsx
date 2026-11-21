@@ -1,7 +1,7 @@
 import type { AppInfo, ChatNote, Project, RunEvent, RunRecord } from '../../shared/types'
 import { ChatNoteView } from './ChatBits'
 import { ChatTurn } from './ChatTurn'
-import type { Queued } from './useFollowUps'
+import type { Queued } from './queue'
 
 // What the Agent tab's transcript shows: the new-chat explainer, the first
 // message while its worktree is set up, or the open chat's turns and notes

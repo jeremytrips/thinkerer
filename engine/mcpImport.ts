@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import type { McpImportCandidate, McpServerDef, McpTransport } from '../shared/types'
-import { BUILTIN_SERVERS, validateDef } from './mcp'
+import { isBuiltinId, validateDef } from './mcp'
 import { readJson } from './store'
 
 // Finds the MCP servers already configured for Claude Code (project .mcp.json,
@@ -59,13 +59,11 @@ function convert(source: McpImportCandidate['source'], sourceLabel: string, name
   const secrets: Record<string, string> = {}
   const missing = new Set<string>()
   const notes: string[] = []
-  // Built-in ids can't be replaced, so an import with the same name gets its own id.
-  let id = toServerId(name)
-  if (BUILTIN_SERVERS.some((b) => b.id === id)) {
-    const builtin = id
-    id = `${id.slice(0, 22)}-imported`
-    notes.push(`"${builtin}" is a built-in server, so this is imported as "${id}"`)
-  }
+  // A name like 'playwright' or 'mobile' would collide with a built-in, which can't be replaced: import it under its own id.
+  const slug = toServerId(name)
+  // Always the same id, so importing it again replaces the earlier import (like any other server).
+  const id = isBuiltinId(slug) ? `${slug.slice(0, 24).replace(/-+$/, '')}-claude` : slug
+  if (id !== slug) notes.push(`"${slug}" is a built-in server, so this is imported as "${id}"`)
   const type = typeof raw.type === 'string' ? raw.type : typeof raw.url === 'string' ? 'http' : 'stdio'
   let unsupported: string | null = null
   const draft: McpServerDef = { id, label: name.slice(0, 100), description: `Imported from ${sourceLabel}`, builtin: false, command: '', args: [], env: {}, secretEnv: [] }

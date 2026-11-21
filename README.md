@@ -152,6 +152,16 @@ Android emulator or iOS simulator on this machine:
   device disconnected"); the driver then runs `idb kill` and retries once. Physical iPhones are not
   supported yet.
 
+**Each chat has its own devices**, one per platform, so chats never share a screen or app state. A
+chat's device is a copy of one of your own emulators/simulators: same hardware and OS, its own apps and
+data (`xcrun simctl create`; for Android a new AVD that reuses the base's system image and
+`config.ini`). Your own devices are only templates in the panel's **Create** row, never used directly.
+The agent's first turn with the Mobile emulators server on creates any missing copy from the last
+template picked (else the newest iPhone and the first AVD). Copies are named `Thinkerer · …`
+(iOS) / `Thinkerer_…` (AVD), and are shut down and deleted by **Delete** or when the chat's worktree
+is removed (`/cleanup`, `/discard`); deletion refuses any device without that prefix. A chat without
+a worktree uses the project folder's devices.
+
 The screen is live in the panel. Click to tap, drag to swipe, use the wheel to scroll, with Back / Home
 / Recents and a text field for typing. **Open preview** loads the project's preview URL on the device;
 **Send to agent** attaches the device screen to your next message. Booted devices keep running until
@@ -163,6 +173,17 @@ The agent controls the **same devices** through the built-in **Mobile emulators*
 `mobile_describe_ui`, `mobile_tap`/`swipe`/`type`/`press_key`, `mobile_open_url`,
 `mobile_install_app`/`launch_app`/`terminate_app`/`list_apps` and `mobile_logs`. All coordinates are
 logical points (iOS points, Android dp). Both use one dependency-free driver, `mcp/mobile-driver.mjs` (platform code in `mcp/mobile/`).
+
+The server only lists and accepts the chat's own devices (`THINKERER_DEVICES`), and the run's
+instructions name them. Devices a chat starts run **only inside Thinkerer**. `mobile_boot` always boots headless (it has no
+window option), and every run's instructions tell the agent never to open a device window
+(Simulator.app, Xcode, Android Studio, or `emulator` without `-no-window`). Without the MCP server
+enabled, the instructions also give the headless shell commands to use instead.
+
+**Each chat has its own embedded browser**: its own session (cookies and storage; `localhost` cookies
+ignore the port, so worktree ports alone wouldn't separate them), and its page stays loaded when you
+switch chats. Up to six stay open; the least recently shown closes first. A chat's browser is closed
+and its storage cleared when its worktree is removed.
 
 The embedded preview and the agent's Playwright browser are **separate browser sessions** that visit
 the same dev server. They don't share cookies or login state; per the spec, a shared live session is
@@ -230,7 +251,7 @@ npm run test:e2e           # real Electron app: import this repo, Files/Agent, r
                            # with a real dev server + embedded preview, blocked navigation, Tasks, MCP, diffs;
                            # a chat in its worktree with setup/teardown hooks, /merge and /cleanup
 npm run test:live:mobile   # opt-in: the mobile driver against already-booted emulators/simulators
-                           # (tests/e2e/emulator.spec.ts also drives a booted Android emulator; skipped if none)
+                           # (THINKERER_LIVE_MOBILE=1 also runs tests/e2e/emulator.spec.ts, which copies an AVD, boots it, deletes it)
 npm run test:live:claude   # opt-in: REAL claude CLI on a throwaway folder (uses your quota)
 npm run test:live:codex    # opt-in: REAL codex CLI (needs `codex login`)
 ```

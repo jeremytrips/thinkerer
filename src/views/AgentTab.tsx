@@ -22,8 +22,9 @@ import { AgentTranscript, lastAgentPage, transcriptItems } from './AgentTranscri
 import { RestoreDialog } from './Changes'
 import { agentItems, commandOf, matchingCommands, type SlashItem } from './ChatBits'
 import { LIVE } from './ChatTurn'
+import { modeAfterGiveBack, type Queued } from './queue'
 import type { TabId } from './ProjectView'
-import { useFollowUps, type Queued } from './useFollowUps'
+import { useFollowUps } from './useFollowUps'
 
 const NEW = 'new' // draft key for the "New chat" composer
 
@@ -47,8 +48,8 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [records, setRecords] = useState<ChatRecord[]>([])
   const [menuIndex, setMenuIndex] = useState(0)
-  // How the next message runs; plan mode is read-only and goes back to auto once sent.
-  const [mode, setMode] = useState<RunMode>('auto')
+  // How each composer's next message runs (keyed like drafts); plan mode is read-only and goes back to auto once sent.
+  const [modes, setModes] = useState<Record<string, RunMode>>({})
   // The open chat (null: a new one) and its turns with their events.
   const [chatId, setChatId] = useState<string | null>(null)
   const chatRef = useRef<string | null>(null)
@@ -89,6 +90,8 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   const draftKey = chatId ?? NEW
   const draft = drafts[draftKey] ?? ''
   const setDraft = (text: string, key = draftKey) => setDrafts((cur) => ({ ...cur, [key]: text }))
+  const mode = modes[draftKey] ?? 'auto'
+  const setMode = (m: RunMode, key = draftKey) => setModes((cur) => ({ ...cur, [key]: m }))
   const chatProvider = chat ? chat.last.provider : choice === 'auto' ? 'claude' : choice
   // The agent CLI's own commands and skills, as it reported them for this chat (or the project's latest run).
   const capabilities = [...(chat ? chat.turns : runs)].filter((r) => r.capabilities && r.provider === chatProvider).sort(byCreated).at(-1)?.capabilities ?? null
@@ -188,9 +191,10 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
     if (el && stick.current) el.scrollTop = el.scrollHeight
   }, [turns, chatId, pending, queued, record?.notes.length])
 
-  /** Puts an unsent message back into its chat's composer. */
+  /** Puts an unsent message back into its chat's composer, with its mode (plan wins over a draft already there, so nothing read-only turns into edits). */
   function giveBack(id: string, q: Queued) {
     setDrafts((cur) => ({ ...cur, [id]: cur[id]?.trim() ? `${q.text}\n\n${cur[id]}` : q.text }))
+    setModes((cur) => ({ ...cur, [id]: modeAfterGiveBack(q.mode, cur[id]) }))
     if (q.attachments.length) setAttachments((cur) => [...q.attachments, ...cur])
   }
 
@@ -246,10 +250,17 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
     const target = chatId
     const attach = attachments
     const runMode = mode
+    if (target && chat?.live) {
+      const refused = followUps.queue(target, { text, attachments: attach, mode: runMode })
+      if (refused) {
+        setError(null)
+        return setNotice(refused) // the draft stays in the composer
+      }
+    }
     setDraft('')
     setAttachments([])
     setMode('auto')
-    if (target && chat?.live) return followUps.queue(target, { text, attachments: attach, mode: runMode })
+    if (target && chat?.live) return
     setStarting(true)
     if (!target) setPending(text)
     void send(target, text, attach, runMode)
