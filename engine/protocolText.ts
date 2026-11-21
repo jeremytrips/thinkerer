@@ -1,5 +1,8 @@
 import type { ChatRecord, ChatWorktree, Effort, ProtocolChecks, RunRecord, UsageObservation } from '../shared/types'
+import { FINDING_LINE, countFindings } from '../shared/protocol'
 import { git } from './worktrees'
+
+export { countFindings }
 
 // What the software protocol tells the agent at each stage, and the report it
 // leaves when the chat ships. Everything here is kept short on purpose: these
@@ -147,39 +150,12 @@ export async function reviewPrompt(cwd: string, range: string, plan: string | nu
   return lines.join('\n')
 }
 
-/** Counts the reviewer's finding lines; null when it didn't use the format (then the text is all we have). */
-export function countFindings(text: string | null): number | null {
-  if (!text) return null
-  if (/^\s*No findings\.?\s*$/i.test(text.trim().split('\n').at(-1) ?? '') && !/\[(high|medium|low)\]/i.test(text)) return 0
-  const n = text.split('\n').filter((l) => FINDING_LINE.test(l)).length
-  return n || jsonFindings(text)
-}
-
-/** A finding line in the protocol's format: `[high|medium|low] path:line: …`, optionally as a list item. */
-const FINDING_LINE = /^\s*(?:[-*\d.]+\s*)?`?\[(high|medium|low)\]/i
-
-/** A review command's own JSON answer (e.g. `[]`, or `[{"severity":"important",…}]`) at the end of the reply. */
-function jsonFindings(text: string): number | null {
-  const body = text.replace(/\s*(?:```)?\s*$/, '')
-  if (!body.endsWith(']')) return null
-  // The array starts at one of the '[' before the final ']'; try them from the nearest back.
-  for (let i = body.lastIndexOf('['); i >= 0; i = body.lastIndexOf('[', i - 1)) {
-    try {
-      const v: unknown = JSON.parse(body.slice(i))
-      return Array.isArray(v) && v.every((f) => f && typeof f === 'object' && 'severity' in f) ? v.length : null
-    } catch {
-      if (i === 0) break
-    }
-  }
-  return null
-}
-
 /**
  * The note left when a protocol chat ships. Built only from what was recorded:
  * turns, the checks Thinkerer ran, the reviewer's replies, and the token counts
  * the provider CLI reported ("not reported" otherwise).
  */
-export function protocolReport(chat: ChatRecord, turns: RunRecord[]): string[] {
+export function protocolReport(chat: ChatRecord, turns: RunRecord[], checkCommand = ''): string[] {
   const of = (stage: string) => turns.filter((t) => (t.protocolStage ?? 'implement') === stage)
   const reviews = of('review')
   const implement = of('implement')
@@ -192,7 +168,9 @@ export function protocolReport(chat: ChatRecord, turns: RunRecord[]): string[] {
   lines.push(
     checks
       ? `Checks: \`${checks.command}\` ${checks.status === 'passed' ? 'passed' : checks.status === 'failed' ? `failed (exit code ${checks.exitCode})` : 'not run (command not approved)'}`
-      : 'Checks: no check command set for this project'
+      : checkCommand.trim()
+        ? `Checks: \`${checkCommand.trim()}\` not run on the latest changes`
+        : 'Checks: no check command set for this project'
   )
   if (!reviews.length) lines.push('Review: none')
   reviews.forEach((r, i) => {

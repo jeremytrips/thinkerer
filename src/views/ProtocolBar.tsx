@@ -1,3 +1,4 @@
+import { checksPending, countFindings } from '../../shared/protocol'
 import type { ChatProtocol, ProtocolAction, ProtocolStage, RunSummary } from '../../shared/types'
 
 // The software protocol's stepper (Plan · Implement + tests · Review · Ship) and
@@ -18,8 +19,11 @@ interface Props {
   /** A turn is running or starting, or a step is being sent. */
   busy: boolean
   maxRounds: number
+  checkCommand: string
   /** The latest review turn, to tell "no findings" from findings. */
   lastReview: RunSummary | undefined
+  /** The chat's latest turn, to tell when its checks are still owed. */
+  lastTurn: RunSummary | undefined
   onAction: (action: ProtocolAction) => void
 }
 
@@ -29,9 +33,11 @@ interface Step {
   primary?: boolean
 }
 
-export function ProtocolBar({ protocol, base, busy, maxRounds, lastReview, onAction }: Props) {
+export function ProtocolBar({ protocol, base, busy, maxRounds, checkCommand, lastReview, lastTurn, onAction }: Props) {
   const current = STEPS.findIndex((s) => s.stage === protocol.stage)
-  const { steps, hint } = nextSteps(protocol, base, maxRounds, lastReview)
+  const { steps, hint } = checksPending(protocol, lastTurn, checkCommand)
+    ? { steps: [], hint: `Running checks: ${protocol.checks?.status === 'running' ? protocol.checks.command : checkCommand.trim()}` }
+    : nextSteps(protocol, base, maxRounds, checkCommand, lastReview)
   return (
     <section className="protocol-bar" aria-label="Protocol steps">
       <ol className="protocol-steps">
@@ -55,7 +61,7 @@ export function ProtocolBar({ protocol, base, busy, maxRounds, lastReview, onAct
   )
 }
 
-function nextSteps(p: ChatProtocol, base: string | null, maxRounds: number, lastReview: RunSummary | undefined): { steps: Step[]; hint: string } {
+function nextSteps(p: ChatProtocol, base: string | null, maxRounds: number, checkCommand: string, lastReview: RunSummary | undefined): { steps: Step[]; hint: string } {
   const ship: Step = { action: 'ship', label: `Ship to ${base ?? 'base'}` }
   const canReview = p.round < maxRounds
   switch (p.stage) {
@@ -63,7 +69,6 @@ function nextSteps(p: ChatProtocol, base: string | null, maxRounds: number, last
       return { steps: [{ action: 'approve-plan', label: 'Approve plan & implement', primary: true }], hint: 'Or reply to change the plan.' }
     case 'implement': {
       const checks = p.checks
-      if (checks?.status === 'running') return { steps: [], hint: `Running checks: ${checks.command}` }
       const steps: Step[] = []
       if (checks?.status === 'failed') steps.push({ action: 'fix-checks', label: 'Fix failing checks', primary: true })
       if (canReview) steps.push({ action: 'start-review', label: checks?.status === 'failed' ? 'Review anyway' : 'Start review', primary: checks?.status !== 'failed' })
@@ -77,13 +82,17 @@ function nextSteps(p: ChatProtocol, base: string | null, maxRounds: number, last
               ? 'Checks passed.'
               : checks
                 ? ''
-                : 'No check command set for this project.'
+                : checkCommand.trim()
+                  ? 'Checks not run on the latest changes.'
+                  : 'No check command set for this project.'
       return { steps, hint }
     }
     case 'review': {
-      const clean = /^\s*No findings\.?\s*$/i.test(lastReview?.resultText ?? '')
+      // Same rule as the engine and the ship report.
+      const clean = countFindings(lastReview?.resultText) === 0
       if (lastReview && lastReview.status !== 'succeeded') {
-        return { steps: [...(canReview ? [{ action: 'start-review' as const, label: 'Review again', primary: true }] : []), ship], hint: 'The review did not finish.' }
+        // A retry re-runs the same round, so it is offered even at the limit.
+        return { steps: [{ action: 'start-review', label: 'Review again', primary: true }, ship], hint: 'The review did not finish.' }
       }
       return clean
         ? { steps: [{ ...ship, primary: true }], hint: 'The reviewer found nothing to fix.' }

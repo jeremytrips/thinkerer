@@ -22,6 +22,17 @@ process.stdin.on('end', () => {
     out({ type: 'result', subtype: 'success', is_error: false, result: '[high] made.txt:1: example finding; fix it', usage: { input_tokens: 7, output_tokens: 2 }, permission_denials: [] })
     return
   }
+  if (mode === 'review-clean') {
+    // A reviewer that says a sentence before the clean verdict.
+    out({ type: 'result', subtype: 'success', is_error: false, result: 'Checked the diff against the plan.\nNo findings.', permission_denials: [] })
+    return
+  }
+  if (mode === 'fail') {
+    // A turn that ends in an error (a rate limit, say).
+    out({ type: 'result', subtype: 'error_during_execution', is_error: true, result: 'rate limited', permission_denials: [] })
+    process.exitCode = 1
+    return
+  }
   writeFileSync('made.txt', input)
   // In a chat worktree, record the ports and compose project the agent was given.
   if (process.env.THINKERER_PORT_1) writeFileSync('agent-env.txt', `${process.env.THINKERER_PORT_1} ${process.env.COMPOSE_PROJECT_NAME}`)

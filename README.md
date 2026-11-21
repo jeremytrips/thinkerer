@@ -135,7 +135,8 @@ The result is commit `8438cfd`; typecheck, unit and e2e tests passed when re-run
   A message that starts with `/clear` (or its aliases `/reset` and `/new`) is refused: it would start a new Claude session
   and disconnect the chat (and its task) from it. Adapters declare such commands in `blockedCommands`.
 - **Plan mode.** The composer's **Mode** select runs one message read-only (`--permission-mode plan` for Claude, a
-  read-only sandbox for Codex). The agent replies with a plan; your next message (back in **Make changes**) carries it out.
+  read-only sandbox for Codex, which gets no MCP servers for that message because their tools would run pre-approved
+  outside the sandbox). The agent replies with a plan; your next message (back in **Make changes**) carries it out.
 - **Model, effort, optional tools.** Settings → **Claude Code**: a model alias or name (`--model`), an effort level
   (`--effort`), and opt-in built-in tools: subagents (`Task`) and skills (`Skill`), on by default; web search and
   Jupyter notebooks, off by default. Stored in `.thinkerer/project.json` under `agent.claude`.
@@ -146,7 +147,7 @@ The result is commit `8438cfd`; typecheck, unit and e2e tests passed when re-run
   Codex gets the same server when it can express the header (a whole value, or `Authorization: Bearer ${NAME}`); otherwise
   the MCP tab says why it's left out. **Check** runs the MCP handshake and lists tools without calling any. **Import from
   Claude Code** reads (never writes) `.mcp.json` and `~/.claude.json`. Secret-looking values go to encrypted storage and
-  never reach the UI, and `${VAR}` references become secrets to set. Servers that rely on `claude mcp login` OAuth may not
+  never reach the UI, and `${VAR}` references become secrets to set (`${VAR:-default}` starts from its default). Servers that rely on `claude mcp login` OAuth may not
   authenticate.
 
 ### Software protocol
@@ -162,6 +163,8 @@ The bar at the top of the chat shows the stage and offers the next step:
 2. **Implement + tests.** The agent continues the same session, implements the plan and adds its tests.
    Then Thinkerer runs the project's check command itself in the worktree (shown as a **Checks** note).
    If the checks fail, **Fix failing checks** sends only the last 50 lines of output back to the agent.
+   While the checks run, steps and new messages wait (a queued message is sent when they finish), and
+   each new implement turn clears the previous result so it is never reported for code it didn't test.
 3. **Review.** A fresh, read-only session. Both kinds of review cover the same range: the implement
    turns, from HEAD before the first one to the branch head. That still holds if the base branch already
    has the work, and it includes commits the agent made itself. A review with nothing to diff (lockfiles
@@ -171,8 +174,9 @@ The bar at the top of the chat shows the stage and offers the next step:
    minified files, add the plan and the check result, and ask for one finding per line. Codex has no
    review command, so it gets the plan, the check result and the diff in the message (same files left
    out; above 60k characters, only the file list). The plan is the latest plan-stage reply with
-   acceptance criteria. **Fix findings** sends just the findings back to the implementer's session.
-   Review rounds are capped (2 by default).
+   acceptance criteria. A reply ending in `No findings.` counts as clean. **Fix findings** sends just
+   the findings back to the implementer's session. Review rounds are capped (2 by default); **Review
+   again** after a review that didn't finish re-runs the same round, even at the cap.
 4. **Ship.** Thinkerer runs the same steps as `/merge`, then adds a report built only from what was
    recorded: turns, check result, findings per round and the tokens each stage's provider reported.
    Cleanup stays manual: type `/cleanup`. Until a protocol chat has shipped, `/merge` refuses and

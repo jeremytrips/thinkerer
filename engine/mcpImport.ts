@@ -106,9 +106,14 @@ function convert(source: McpImportCandidate['source'], sourceLabel: string, name
     for (const [header, value] of Object.entries((raw.headers as Record<string, unknown>) ?? {})) {
       const v = String(value)
       if (v.includes('${')) {
-        draft.headers[header] = v.replace(ENV_REF, (_m, ref: string) => {
+        draft.headers[header] = v.replace(ENV_REF, (_m, ref: string, fallback: string | undefined) => {
           const n = envName(ref)
-          missing.add(n)
+          if (fallback !== undefined && !(n in secrets)) {
+            // "${VAR:-default}": Claude falls back to the default, so start from it (as for env values).
+            secrets[n] = fallback.slice(2)
+            missing.delete(n)
+            notes.push(`${n} starts as its default "${fallback.slice(2)}"; change it in the MCP tab if your shell sets ${ref}`)
+          } else if (!(n in secrets)) missing.add(n)
           if (!draft.secretEnv.includes(n)) draft.secretEnv.push(n)
           return '${' + n + '}'
         })

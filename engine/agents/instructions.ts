@@ -32,22 +32,28 @@ export async function loadProjectInstructions(root: string): Promise<ProjectInst
     return rel && !rel.startsWith('..') && !isAbsolute(rel) ? real : null
   }
 
-  const include = async (path: string, depth: number): Promise<void> => {
+  /** False when the path isn't a readable file in the project; the caller keeps such a line as text. */
+  const include = async (path: string, depth: number): Promise<boolean> => {
     const real = await inside(path)
-    if (!real) return
+    if (!real) return false
     const rel = relative(base, real)
-    if (files.includes(rel)) return
+    if (files.includes(rel)) return true
     const content = await readFile(real, 'utf8').catch(() => null)
-    if (content === null) return
+    if (content === null) return false
     files.push(rel)
     const own: string[] = []
+    let fenced = false
     for (const line of content.split('\n')) {
-      const m = IMPORT.exec(line.trim())
-      if (m && depth < MAX_IMPORT_DEPTH) await include(resolve(dirname(real), m[1]), depth + 1)
-      else own.push(line)
+      const trimmed = line.trim()
+      if (/^(```|~~~)/.test(trimmed)) fenced = !fenced
+      // Inside a code fence, or not a file (`@types/node`), the line is just text.
+      const m = fenced ? null : IMPORT.exec(trimmed)
+      if (m && depth < MAX_IMPORT_DEPTH && (await include(resolve(dirname(real), m[1]), depth + 1))) continue
+      own.push(line)
     }
     const body = own.join('\n').trim()
     if (body) sections.push(`--- ${rel} ---\n${body}`)
+    return true
   }
 
   for (const name of INSTRUCTION_FILES) await include(join(base, name), 0)
