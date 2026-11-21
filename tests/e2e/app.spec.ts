@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { _electron as electron, expect, test } from '@playwright/test'
@@ -71,5 +71,48 @@ test('import this repository, browse read-only files, see providers, persist acr
     await app.close()
   } finally {
     rmSync(appData, { recursive: true, force: true })
+  }
+})
+
+test('settings: save tracks unsaved changes, trims values and rejects empty numbers', async () => {
+  const appData = mkdtempSync(join(tmpdir(), 'thinkerer-e2e-'))
+  const folder = mkdtempSync(join(tmpdir(), 'thinkerer-settings-'))
+  const configFile = join(folder, '.thinkerer', 'project.json')
+  try {
+    const { app, page } = await launch(appData)
+    await app.evaluate(({ dialog }, dir) => {
+      dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [dir] })) as typeof dialog.showOpenDialog
+    }, folder)
+    await page.getByRole('button', { name: 'Import folder…' }).click()
+    await page.getByRole('tab', { name: 'Settings' }).click()
+
+    const settings = page.locator('.settings')
+    const save = settings.getByRole('button', { name: 'Save' })
+    await expect(save).toBeDisabled() // nothing changed yet
+
+    const name = settings.getByLabel('Display name')
+    await name.fill('  Renamed project  ')
+    await expect(settings.getByText('Unsaved changes')).toBeVisible()
+    await save.click()
+    await expect(settings.getByText('Saved to .thinkerer/project.json')).toBeVisible()
+    await expect(name).toHaveValue('Renamed project') // resynced with what the server stored
+    await expect(page.locator('.topbar-name')).toHaveText('Renamed project')
+    await expect(save).toBeDisabled()
+    expect(JSON.parse(readFileSync(configFile, 'utf8')).name).toBe('Renamed project')
+
+    // Editing again replaces the "Saved" message.
+    const ports = settings.getByLabel('Ports per worktree')
+    await ports.fill('')
+    await expect(settings.getByText('Saved to .thinkerer/project.json')).toBeHidden()
+    await expect(settings.getByText('Unsaved changes')).toBeVisible()
+    const before = readFileSync(configFile, 'utf8')
+    await save.click()
+    await expect(settings.getByRole('alert')).toContainText('Ports per worktree must be a whole number from 0 to 10')
+    expect(readFileSync(configFile, 'utf8')).toBe(before) // nothing saved
+    await page.screenshot({ path: join(shots, 'settings-validation.png') })
+    await app.close()
+  } finally {
+    rmSync(appData, { recursive: true, force: true })
+    rmSync(folder, { recursive: true, force: true })
   }
 })
