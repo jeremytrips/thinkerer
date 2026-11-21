@@ -116,8 +116,8 @@ http.createServer((q, s) => { s.setHeader('content-type', 'text/html'); s.end(pa
     await page.getByRole('button', { name: 'Remove screenshot' }).click({ timeout: 10_000 })
     await expect(page.locator('.attachment-chip')).toHaveCount(0)
     await expect.poll(() => pngs().length).toBe(0)
-    // The mobile simulator shows the same page in a phone-sized screen, and the native view follows it.
-    await page.getByRole('tab', { name: 'Mobile simulator' }).click()
+    // The phone viewport shows the same page in a phone-sized screen, and the native view follows it.
+    await page.getByRole('tab', { name: 'Phone viewport' }).click()
     const screen = page.locator('.agent-preview .preview-screen')
     await expect.poll(async () => {
       const box = (await screen.boundingBox())!

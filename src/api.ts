@@ -38,6 +38,19 @@ const previewApi: ThinkererApi = {
     approve: unavailable,
     onEvent: noop
   },
+  mobile: {
+    status: async () => ({ android: { available: false, detail: 'Not available in the browser preview' }, ios: { available: false, input: false, detail: 'Not available in the browser preview' } }),
+    list: async () => [],
+    boot: unavailable,
+    shutdown: unavailable,
+    frame: unavailable,
+    tap: unavailable,
+    swipe: unavailable,
+    type: unavailable,
+    key: unavailable,
+    openPreview: unavailable,
+    capture: unavailable
+  },
   agents: { providers: async () => [] },
   runs: { start: unavailable, cancel: unavailable, active: async () => [], list: async () => [], get: async () => null, chat: async () => [], artifact: unavailable, attachment: unavailable, onEvent: noop, onUpdate: noop },
   chats: { list: async () => [], get: unavailable, command: unavailable, reveal: unavailable, onUpdate: noop }

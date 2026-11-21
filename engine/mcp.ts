@@ -68,6 +68,17 @@ export const BUILTIN_SERVERS: McpServerDef[] = [
     args: ['{appRoot}/mcp/thinkerer-health.mjs'],
     env: { THINKERER_PROJECT_ROOT: '{project}', THINKERER_PREVIEW_URL: '{previewUrl}' },
     secretEnv: []
+  },
+  {
+    id: 'mobile',
+    label: 'Mobile emulators',
+    description:
+      'Real Android emulators (Android SDK) and iOS simulators (Xcode) on this machine: boot, screenshot, tap, swipe, type, read the UI tree, install and launch apps, open URLs. iOS input needs idb. Screenshots are saved with the run.',
+    builtin: true,
+    command: '{node}',
+    args: ['{appRoot}/mcp/thinkerer-mobile.mjs'],
+    env: { THINKERER_ARTIFACTS: '{artifacts}', THINKERER_PROJECT_ROOT: '{project}', THINKERER_PREVIEW_URL: '{previewUrl}' },
+    secretEnv: []
   }
 ]
 
