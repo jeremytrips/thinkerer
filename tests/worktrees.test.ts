@@ -254,7 +254,12 @@ describe('/merge, /cleanup, /done, /discard', () => {
     expect(chat.worktreeRemoved).toBe(false)
 
     git(repo, 'branch', '-D', 'side-experiment')
+    // Another chat started meanwhile, with unmerged work on its own branch: that is its branch, not this chat's.
+    const other = await chatTurn('Other work')
+    const otherWt = (await sup.chats.get(other.id))!.worktree!
+    git(otherWt.path, 'commit', '--allow-empty', '-qm', 'other chat work')
     chat = await command('cleanup', run.id)
+    expect(lastNote(chat).lines.join('\n')).not.toContain(otherWt.branch)
     expect(chat.worktreeRemoved).toBe(true)
   })
 
