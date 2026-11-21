@@ -4,6 +4,7 @@ import type { ChatStore } from './chats'
 import { gitStatus } from './git'
 import {
   branchExists,
+  branchesInOtherWorktrees,
   commitAll,
   commitsAhead,
   currentBranch,
@@ -120,7 +121,8 @@ async function cleanup(ctx: CommandContext): Promise<Outcome> {
   }
   lines.push(`✅ Everything on ${wt.branch} is in ${wt.base}`)
 
-  const start = new Set([...wt.branchesAtStart, wt.branch])
+  // Branches checked out in another worktree belong to that chat (or the project folder), not this one.
+  const start = new Set([...wt.branchesAtStart, wt.branch, ...(await branchesInOtherWorktrees(project.path, wt.path))])
   const others: string[] = []
   for (const b of await localBranches(project.path)) {
     if (!start.has(b) && !(await isMerged(project.path, b, wt.base))) others.push(b)

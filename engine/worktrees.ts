@@ -1,7 +1,7 @@
 import { execFile, spawn } from 'node:child_process'
 import { createServer } from 'node:net'
 import { mkdir } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import type { ChatRecord, ChatWorktree, Project } from '../shared/types'
 import { childEnv } from './agents/detect'
@@ -66,6 +66,19 @@ export async function headCommit(cwd: string): Promise<string | null> {
 
 export async function localBranches(cwd: string): Promise<string[]> {
   return (await git(cwd, ['for-each-ref', '--format=%(refname:short)', 'refs/heads'])).split('\n').filter(Boolean)
+}
+
+/** Branches checked out in a worktree other than `ownPath` (other chats' branches, the project folder's). */
+export async function branchesInOtherWorktrees(projectPath: string, ownPath: string): Promise<string[]> {
+  const r = await tryGit(projectPath, ['worktree', 'list', '--porcelain'])
+  if (!r.ok) return []
+  const out: string[] = []
+  for (const block of r.out.split(/\n\s*\n/)) {
+    const path = block.match(/^worktree (.+)$/m)?.[1]
+    const branch = block.match(/^branch refs\/heads\/(.+)$/m)?.[1]
+    if (path && branch && resolve(path) !== resolve(ownPath)) out.push(branch)
+  }
+  return out
 }
 
 /**
