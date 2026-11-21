@@ -101,7 +101,8 @@ The result is commit `8438cfd`; typecheck, unit and e2e tests passed when re-run
   `/init`, `/code-review`, `/security-review`, your skills…). Those are sent to the agent as the message. Commands that only
   work in Claude's interactive terminal, or that Thinkerer handles itself (`/model`, `/effort`, `/mcp`, `/clear`), are left out.
 - **Plan mode.** The composer's **Mode** select runs one message read-only (`--permission-mode plan` for Claude, a
-  read-only sandbox for Codex). The agent replies with a plan; your next message (back in **Make changes**) carries it out.
+  read-only sandbox for Codex, which gets no MCP servers for that message because their tools would run pre-approved
+  outside the sandbox). The agent replies with a plan; your next message (back in **Make changes**) carries it out.
 - **Model, effort, optional tools.** Settings → **Claude Code**: a model alias or name (`--model`), an effort level
   (`--effort`), and opt-in built-in tools: subagents (`Task`) and skills (`Skill`), on by default; web search and
   Jupyter notebooks, off by default. Stored in `.thinkerer/project.json` under `agent.claude`.
@@ -112,7 +113,7 @@ The result is commit `8438cfd`; typecheck, unit and e2e tests passed when re-run
   Codex gets the same server when it can express the header (a whole value, or `Authorization: Bearer ${NAME}`); otherwise
   the MCP tab says why it's left out. **Check** runs the MCP handshake and lists tools without calling any. **Import from
   Claude Code** reads (never writes) `.mcp.json` and `~/.claude.json`. Secret-looking values go to encrypted storage and
-  never reach the UI, and `${VAR}` references become secrets to set. Servers that rely on `claude mcp login` OAuth may not
+  never reach the UI, and `${VAR}` references become secrets to set (`${VAR:-default}` starts from its default). Servers that rely on `claude mcp login` OAuth may not
   authenticate.
 
 ### Software protocol
@@ -125,10 +126,13 @@ The bar at the top of the chat shows the stage and offers the next step:
 2. **Implement + tests.** The agent continues the same session, implements the plan and adds its tests.
    Then Thinkerer runs the project's check command itself in the worktree (shown as a **Checks** note).
    If the checks fail, **Fix failing checks** sends only the last 50 lines of output back to the agent.
+   While the checks run, steps and new messages wait (a queued message is sent when they finish), and
+   each new implement turn clears the previous result so it is never reported for code it didn't test.
 3. **Review.** A fresh, read-only session (no sub-agents) gets only the plan, the check result and the
    branch diff (lockfiles and minified files left out; above 60k characters, only the file list). It
    replies one finding per line. **Fix findings** sends just those findings back to the implementer's
-   session. Review rounds are capped (2 by default).
+   session. A reply ending in `No findings.` counts as clean. Review rounds are capped (2 by default);
+   **Review again** after a review that didn't finish re-runs the same round, even at the cap.
 4. **Ship.** Thinkerer runs the same steps as `/merge`, then adds a report built only from what was
    recorded: turns, check result, findings per round and the tokens each stage's provider reported.
    Cleanup stays manual: type `/cleanup`.

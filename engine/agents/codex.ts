@@ -48,7 +48,9 @@ export const codexAdapter: AgentAdapter = {
         '-c', 'web_search="disabled"',
         '-c', `developer_instructions=${JSON.stringify(policy.appendSystemPrompt)}`,
         ...DISABLED_FEATURES.flatMap((f) => ['--disable', f]),
-        ...codexMcpArgs(mcp),
+        // MCP servers run outside Codex's sandbox and exec mode can only pre-approve their tools,
+        // so a read-only (plan or review) turn gets none: an install or a tap would not be read-only.
+        ...codexMcpArgs(mode === 'plan' ? [] : mcp),
         // Never inherit the user's MCP servers, profiles, or exec-policy rules.
         '--ignore-user-config',
         '--ignore-rules',

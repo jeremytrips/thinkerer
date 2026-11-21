@@ -59,6 +59,12 @@ describe('Claude run options', () => {
     expect(codexAdapter.buildInvocation(base).args).toContain('workspace-write')
   })
 
+  it('gives Codex no MCP servers in plan mode, since their tools would run pre-approved outside the sandbox', () => {
+    const mcp: ResolvedMcpServer[] = [{ id: 'mobile', transport: 'stdio', command: 'node', args: ['m.mjs'], env: {}, url: '', headers: {}, secretEnv: [] }]
+    expect(codexAdapter.buildInvocation({ ...base, mcp }).args.join(' ')).toContain('mcp_servers.mobile.default_tools_approval_mode="approve"')
+    expect(codexAdapter.buildInvocation({ ...base, mcp, mode: 'plan' }).args.join(' ')).not.toContain('mcp_servers.')
+  })
+
   it('stores Claude options in the project config and rejects invalid ones', async () => {
     const repo = join(tmp, 'repo')
     mkdirSync(repo)
@@ -337,6 +343,22 @@ describe('Importing Claude Code MCP servers', () => {
     // And it is accepted by the registry as is.
     const reg = new McpRegistry(join(tmp, 'appdata'), new MemorySecrets())
     await expect(reg.upsert(by['Linear Docs'].candidate.def)).resolves.toMatchObject({ id: 'linear-docs' })
+  })
+
+  it('starts a header secret from its ${VAR:-default}, as Claude would send it', async () => {
+    const repo = join(tmp, 'repo')
+    const home = join(tmp, 'home')
+    mkdirSync(repo)
+    mkdirSync(home)
+    writeFileSync(
+      join(repo, '.mcp.json'),
+      JSON.stringify({ mcpServers: { geo: { type: 'http', url: 'https://geo.example/mcp', headers: { 'X-Region': '${REGION:-eu}', 'X-Key': '${GEO_KEY}' } } } })
+    )
+    const [geo] = await findClaudeMcpServers(repo, home, [])
+    expect(geo.candidate.def).toMatchObject({ headers: { 'X-Region': '${REGION}', 'X-Key': '${GEO_KEY}' } })
+    expect(geo.secrets).toEqual({ REGION: 'eu' })
+    expect(geo.candidate.secretsMissing).toEqual(['GEO_KEY'])
+    expect(geo.candidate.notes.join(' ')).toContain('REGION starts as its default "eu"')
   })
 
   it('turns any name into a valid server id', () => {

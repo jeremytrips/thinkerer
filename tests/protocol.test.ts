@@ -10,7 +10,8 @@ import { Approvals } from '../engine/approvals'
 import { ProjectService } from '../engine/projects'
 import { ProtocolService } from '../engine/protocol'
 import { countFindings } from '../engine/protocolText'
-import type { ChatRecord, ProtocolAction, RunSummary } from '../shared/types'
+import { checksPending } from '../shared/protocol'
+import type { ChatProtocol, ChatRecord, ProtocolAction, RunSummary } from '../shared/types'
 
 // The software protocol end to end with a stand-in agent, a real temp repo and
 // real git: plan → implement (+ checks Thinkerer runs) → fresh-session review →
@@ -18,6 +19,10 @@ import type { ChatRecord, ProtocolAction, RunSummary } from '../shared/types'
 
 const FIXTURE = join(__dirname, 'fixtures', 'stand-in-agent.mjs')
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+
+/** How the stand-in answers review and implement turns (fixture modes). */
+let reviewMode = 'readonly'
+let implementMode = 'ok'
 
 /** Records what each turn was started with; read-only turns write nothing (like a real plan or review). */
 function recordingStandIn(calls: InvocationOptions[]): AgentAdapter {
@@ -28,7 +33,8 @@ function recordingStandIn(calls: InvocationOptions[]): AgentAdapter {
     detect: async () => ({ id: 'claude', label: 'Stand-in', installed: true, executable: process.execPath, version: 'test', authenticated: true, adapterAvailable: true, detail: '', policy: 'test' }),
     buildInvocation: (opts) => {
       calls.push(opts)
-      return { command: opts.executable, args: [FIXTURE, opts.mode === 'plan' ? 'readonly' : 'ok'], stdin: opts.prompt, env: process.env }
+      const review = opts.policy.appendSystemPrompt.includes('stage 3 of 4')
+      return { command: opts.executable, args: [FIXTURE, review ? reviewMode : opts.mode === 'plan' ? 'readonly' : implementMode], stdin: opts.prompt, env: process.env }
     },
     createParser: () => ({ parseLine: parseClaudeLine })
   }
@@ -64,7 +70,9 @@ beforeEach(async () => {
   projectId = (await projects.importFolder(repo)).id
   approvals = new Approvals(appData)
   calls = []
-  sup = new AgentSupervisor(appData, projects, { adapters: [recordingStandIn(calls)], approvals })
+  reviewMode = 'readonly'
+  implementMode = 'ok'
+  sup =new AgentSupervisor(appData, projects, { adapters: [recordingStandIn(calls)], approvals })
   protocol = new ProtocolService({ supervisor: sup, projects, approvals })
 })
 afterEach(() => rmSync(tmp, { recursive: true, force: true }))
@@ -232,6 +240,70 @@ describe('software protocol', () => {
   })
 })
 
+describe('protocol guards', () => {
+  async function planned(): Promise<string> {
+    const ended = turnEnded()
+    const plan = await protocol.begin(projectId, 'Task', 'claude')
+    await ended
+    return plan.id
+  }
+
+  it('holds replies and steps until the checks have run, and clears them when new work starts', async () => {
+    await setup({ checkCommand: 'sleep 1 && echo checks-ok' })
+    const chatId = await planned()
+    const impl = await step(chatId, 'approve-plan')
+    // The turn is over but its checks aren't: nothing may start editing the files under test.
+    await expect(protocol.reply((await sup.chats.get(chatId))!, 'More')).rejects.toThrow('checks are still running')
+    await expect(protocol.advance(projectId, chatId, 'start-review')).rejects.toThrow('checks are still running')
+    const chat = await chatWhen(chatId, checksDone)
+    expect(chat.protocol!.checks).toMatchObject({ status: 'passed', runId: impl.id })
+
+    const ended = turnEnded()
+    await protocol.reply(chat, 'Rename it')
+    expect((await sup.chats.get(chatId))!.protocol!.checks?.runId).not.toBe(impl.id)
+    const next = await ended
+    const after = await chatWhen(chatId, (c) => c.protocol?.checks?.runId === next.id && checksDone(c))
+    expect(after.protocol!.checks!.status).toBe('passed')
+  })
+
+  it('never reports earlier checks for work that came after them', async () => {
+    await setup({ checkCommand: 'echo checks-ok' })
+    const chatId = await planned()
+    await step(chatId, 'approve-plan')
+    await chatWhen(chatId, checksDone)
+    await step(chatId, 'start-review')
+    implementMode = 'fail'
+    expect((await step(chatId, 'fix-findings')).status).toBe('failed')
+    expect((await sup.chats.get(chatId))!.protocol!.checks).toBeNull()
+    const shipped = await protocol.advance(projectId, chatId, 'ship')
+    const report = shipped.notes.at(-1)!.lines
+    expect(report).toContain('Checks: `echo checks-ok` not run on the latest changes')
+    expect(report.join('\n')).not.toContain('passed')
+  })
+
+  it('retries a review that did not finish in the same round, even at the limit', async () => {
+    await setup({ maxReviewRounds: 1 })
+    const chatId = await planned()
+    await step(chatId, 'approve-plan')
+    reviewMode = 'fail'
+    expect((await step(chatId, 'start-review')).status).toBe('failed')
+    expect((await sup.chats.get(chatId))!.protocol).toMatchObject({ stage: 'review', round: 1 })
+    reviewMode = 'readonly'
+    expect((await step(chatId, 'start-review')).status).toBe('succeeded')
+    expect((await sup.chats.get(chatId))!.protocol).toMatchObject({ stage: 'review', round: 1 })
+    await expect(protocol.advance(projectId, chatId, 'start-review')).rejects.toThrow('nothing new to review')
+  })
+
+  it('treats "No findings." on the last line as a clean review', async () => {
+    await setup()
+    const chatId = await planned()
+    await step(chatId, 'approve-plan')
+    reviewMode = 'review-clean'
+    await step(chatId, 'start-review')
+    await expect(protocol.advance(projectId, chatId, 'fix-findings')).rejects.toThrow('nothing to fix')
+  })
+})
+
 describe('protocol config and findings', () => {
   it('detects the check command from package.json and validates patches', async () => {
     const other = join(tmp, 'other')
@@ -245,8 +317,22 @@ describe('protocol config and findings', () => {
 
   it('counts findings only in the expected format', () => {
     expect(countFindings('No findings.')).toBe(0)
+    expect(countFindings('Checked the diff.\nNo findings.')).toBe(0)
     expect(countFindings('- [high] a.ts:1: x; y\n- [low] b.ts:2: z; w')).toBe(2)
     expect(countFindings('Looks fine to me')).toBeNull()
     expect(countFindings(null)).toBeNull()
+  })
+
+  it('knows when a chat still owes its checks (what holds back the UI and queued messages)', () => {
+    const turn = { id: 'r2', status: 'succeeded', protocolStage: 'implement' } as RunSummary
+    const at = (checks: ChatProtocol['checks'], stage: ChatProtocol['stage'] = 'implement'): ChatProtocol => ({ id: 'software', stage, round: 0, checks })
+    const checks = (runId: string, status: 'running' | 'passed'): ChatProtocol['checks'] => ({ runId, command: 'npm test', status, exitCode: null, tail: [], at: '' })
+    expect(checksPending(at(null), turn, 'npm test')).toBe(true)
+    expect(checksPending(at(checks('r1', 'passed')), turn, 'npm test')).toBe(true)
+    expect(checksPending(at(checks('r2', 'running')), turn, 'npm test')).toBe(true)
+    expect(checksPending(at(checks('r2', 'passed')), turn, 'npm test')).toBe(false)
+    expect(checksPending(at(null), turn, '')).toBe(false)
+    expect(checksPending(at(null), { ...turn, status: 'failed' }, 'npm test')).toBe(false)
+    expect(checksPending(at(null, 'review'), turn, 'npm test')).toBe(false)
   })
 })

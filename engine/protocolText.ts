@@ -1,5 +1,8 @@
 import type { ChatRecord, ChatWorktree, ProtocolChecks, RunRecord, UsageObservation } from '../shared/types'
+import { countFindings } from '../shared/protocol'
 import { branchExists, git } from './worktrees'
+
+export { countFindings }
 
 // What the software protocol tells the agent at each stage, and the report it
 // leaves when the chat ships. Everything here is kept short on purpose: these
@@ -75,20 +78,12 @@ export async function reviewPrompt(wt: ChatWorktree, cwd: string, plan: string |
   return lines.join('\n')
 }
 
-/** Counts the reviewer's finding lines; null when it didn't use the format (then the text is all we have). */
-export function countFindings(text: string | null): number | null {
-  if (!text) return null
-  if (/^\s*No findings\.?\s*$/i.test(text.trim().split('\n').at(-1) ?? '') && !/\[(high|medium|low)\]/i.test(text)) return 0
-  const n = text.split('\n').filter((l) => /^\s*(?:[-*\d.]+\s*)?`?\[(high|medium|low)\]/i.test(l)).length
-  return n || null
-}
-
 /**
  * The note left when a protocol chat ships. Built only from what was recorded:
  * turns, the checks Thinkerer ran, the reviewer's replies, and the token counts
  * the provider CLI reported ("not reported" otherwise).
  */
-export function protocolReport(chat: ChatRecord, turns: RunRecord[]): string[] {
+export function protocolReport(chat: ChatRecord, turns: RunRecord[], checkCommand = ''): string[] {
   const of = (stage: string) => turns.filter((t) => (t.protocolStage ?? 'implement') === stage)
   const reviews = of('review')
   const implement = of('implement')
@@ -101,7 +96,9 @@ export function protocolReport(chat: ChatRecord, turns: RunRecord[]): string[] {
   lines.push(
     checks
       ? `Checks: \`${checks.command}\` ${checks.status === 'passed' ? 'passed' : checks.status === 'failed' ? `failed (exit code ${checks.exitCode})` : 'not run (command not approved)'}`
-      : 'Checks: no check command set for this project'
+      : checkCommand.trim()
+        ? `Checks: \`${checkCommand.trim()}\` not run on the latest changes`
+        : 'Checks: no check command set for this project'
   )
   if (!reviews.length) lines.push('Review: none')
   reviews.forEach((r, i) => {

@@ -38,6 +38,17 @@ describe('loadProjectInstructions', () => {
     expect(r.text).not.toContain('@AGENTS.md')
   })
 
+  it('keeps @lines that are not imports: package names and code fences', async () => {
+    writeFileSync(join(root, 'extra.md'), 'Extra rule.')
+    writeFileSync(join(root, 'AGENTS.md'), 'Types:\n@types/node\n```\n@extra.md\n```\n@extra.md\n')
+    const r = await loadProjectInstructions(root)
+    expect(r.files).toEqual(['AGENTS.md', 'extra.md'])
+    expect(r.text).toContain('@types/node')
+    // Inside the fence it stays literal; outside it is imported.
+    expect(r.text).toContain('```\n@extra.md\n```')
+    expect(r.text.match(/Extra rule\./g)).toHaveLength(1)
+  })
+
   it('never reads outside the project, by path or through a symlink', async () => {
     writeFileSync(join(tmp, 'secret.md'), 'SECRET')
     writeFileSync(join(root, 'CLAUDE.md'), '@../secret.md\n@/etc/hosts\nok')

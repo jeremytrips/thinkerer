@@ -6,6 +6,8 @@ import { enqueue, type Queued } from './queue'
 interface Options {
   chats: Chat[]
   runs: RunSummary[]
+  /** The chat isn't live but isn't ready for a new turn yet either. */
+  waiting?: (chat: Chat) => boolean
   /** Starts the follow-up; false if it could not be sent. */
   send: (chatId: string, q: Queued) => Promise<boolean>
   /** Puts an unsent message back into its chat's composer. */
@@ -13,14 +15,14 @@ interface Options {
 }
 
 /** Follow-ups queued per chat, sent once their chat finishes. A stopped chat gives the message back instead. */
-export function useFollowUps({ chats, runs, send, giveBack }: Options) {
+export function useFollowUps({ chats, runs, waiting, send, giveBack }: Options) {
   const [queued, setQueued] = useState<Record<string, Queued>>({})
   const sending = useRef(new Set<string>())
 
   useEffect(() => {
     for (const [id, q] of Object.entries(queued)) {
       const c = chats.find((x) => x.id === id)
-      if (!c || c.live || sending.current.has(id)) continue
+      if (!c || c.live || sending.current.has(id) || waiting?.(c)) continue
       sending.current.add(id)
       setQueued(({ [id]: _sent, ...rest }) => rest)
       if (c.last.status === 'cancelled') {
@@ -32,7 +34,8 @@ export function useFollowUps({ chats, runs, send, giveBack }: Options) {
         .then((ok) => ok || giveBack(id, q))
         .finally(() => sending.current.delete(id))
     }
-  }, [runs, queued])
+    // chats too: a chat record update (checks finished) can be what releases a waiting follow-up.
+  }, [runs, queued, chats])
 
   return {
     queued,

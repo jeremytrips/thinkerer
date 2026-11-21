@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { checksPending } from '../../shared/protocol'
 import type {
   AppInfo,
   ChatCommand,
@@ -103,7 +104,15 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   const menu = finished ? [] : matchingCommands(draft, agentCommands, !!chatId)
   /** Live runs working in a folder: only they can conflict with restoring a checkpoint there. */
   const liveIn = (folder: string) => runs.some((r) => LIVE.includes(r.status) && (r.cwd ?? r.projectPath) === folder)
-  const followUps = useFollowUps({ chats, runs, send: (id, q) => send(id, q.text, q.attachments, q.mode), giveBack })
+  const checkCommand = project.config?.protocol.checkCommand ?? ''
+  const followUps = useFollowUps({
+    chats,
+    runs,
+    // Held back while Thinkerer runs a protocol chat's checks: a new turn would edit the files under test.
+    waiting: (c) => !!c.record?.protocol && checksPending(c.record.protocol, c.last, checkCommand),
+    send: (id, q) => send(id, q.text, q.attachments, q.mode),
+    giveBack
+  })
   const queued = followUps.queued
 
   function openChat(id: string | null) {
@@ -367,7 +376,9 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
             base={worktree?.base ?? null}
             busy={!!chat?.live || starting}
             maxRounds={project.config!.protocol.maxReviewRounds}
+            checkCommand={checkCommand}
             lastReview={chat?.turns.filter((t) => t.protocolStage === 'review').at(-1)}
+            lastTurn={chat?.last}
             onAction={(a) => void advance(a)}
           />
         )}
