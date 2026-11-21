@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises'
+import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Project, ProviderChoice, ProviderId, ProviderStatus, RunEvent, RunMode, RunRecord, RunSummary } from '../../shared/types'
 import { Approvals } from '../approvals'
@@ -10,7 +10,6 @@ import { ChatStore, chatTitle, newChat } from '../chats'
 import { createCheckpoint, diffSummary, recordAfter } from '../checkpoints'
 import { responds } from '../devserver'
 import { gitStatus } from '../git'
-import type { ResolvedMcpServer } from '../mcp'
 import type { ProjectService } from '../projects'
 import { commitAll, currentBranch, headCommit } from '../worktrees'
 import { claudeAdapter } from './claude'
@@ -19,11 +18,11 @@ import { loadProjectInstructions } from './instructions'
 import { DEFAULT_POLICY, DEFAULT_PREFERENCE, MAX_PARALLEL_RUNS } from './policy'
 import { killTree, wireChild } from './process'
 import { attachmentNote, buildInstructions, mergeClaude } from './prompt'
-import { missingAdapter, rateLimitUntil, selectProvider, type ProviderSelection } from './providerSelect'
-import { newRunRecord, summarize, workingTurns, type ActiveRun, type StartOptions, type SupervisorEvents, type SupervisorOptions, type Workspace } from './runState'
+import { missingAdapter, rateLimitUntil, selectProvider } from './providerSelect'
+import { newRunRecord, summarize, workingTurns, type ActiveRun, type StartOptions, type SupervisorEvents, type SupervisorOptions } from './runState'
 import { RUN_ID, RunStore } from './runStore'
 import { blockedCommand, type AgentAdapter, type RunPolicy } from './types'
-import { chatDevices, prepareWorkspace, previewReady } from './workspace'
+import { chatDevices, prepareWorkspace, previewReady, resolveMcp, stageAttachments } from './workspace'
 
 // Public surface of this module; the pieces live in the files above.
 export { DEFAULT_POLICY, DEFAULT_PREFERENCE, MAX_PARALLEL_RUNS } from './policy'
@@ -105,7 +104,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       const chat = chatId ? await this.continuation(projectId, chatId) : null
       // A worktree needs a branch with a commit to start from.
       const wantsWorktree = chatId ? !!stored?.worktree || stored?.state === 'setting-up' : !!(await currentBranch(project.path)) && !!(await headCommit(project.path))
-      const selected = await this.selectProvider(chat ? chat.provider : requested)
+      const selected = selectProvider(await this.providers(), chat ? chat.provider : requested, this.cooldownUntil)
       const { provider, status } = selected
       const blocked = blockedCommand(this.adapters[provider]!, prompt)
       if (blocked) throw new Error(`/${blocked} isn't available in Thinkerer chats; it would disconnect this chat from its session. Start a new chat instead.`)
@@ -148,7 +147,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
           meta: chat.sessionId ? undefined : { notice: true }
         })
       }
-      await this.persist(record)
+      await this.store.persist(record)
       this.emitUpdate(record)
       void this.launch(run, project, status)
     } finally {
@@ -169,17 +168,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       if (run.cancelRequested) return void (await this.finish(run, 'cancelled', null, null))
       record.cwd = ws.cwd
       if (ws.cwd !== project.path) record.gitBefore = await gitStatus(ws.cwd)
-      for (const a of record.attachments ?? []) {
-        // Keep a copy with the run, so the chat can still show it after the project copy is removed.
-        await mkdir(this.store.inputsDir(record.id), { recursive: true })
-        await copyFile(attachmentPath(project.path, a.id), join(this.store.inputsDir(record.id), `${a.id}.png`))
-        // The agent reads it at the same relative path inside its worktree (an ignored folder, so it isn't committed).
-        if (ws.cwd !== project.path) {
-          await mkdir(join(ws.cwd, '.thinkerer', 'attachments'), { recursive: true })
-          await writeFile(join(ws.cwd, '.thinkerer', 'attachments', '.gitignore'), '*\n')
-          await copyFile(attachmentPath(project.path, a.id), attachmentPath(ws.cwd, a.id))
-        }
-      }
+      await stageAttachments(record, this.store.inputsDir(record.id), ws.cwd)
       // Recovery point first: nothing the agent does can be unrecoverable.
       record.checkpoint = await createCheckpoint(ws.cwd, record.id, `Thinkerer: before run — ${record.prompt.slice(0, 72)}`)
       const dirty = record.gitBefore?.entries.length ?? 0
@@ -192,7 +181,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       // Devices are only handed to the mobile MCP server, so without MCP there is nothing to scope.
       const devices = await chatDevices(this.opts.mcp ? this.opts.devices : undefined, project, ws)
       for (const problem of devices?.problems ?? []) this.addEvent(run, { kind: 'status', text: problem })
-      const { servers, secretEnv } = await this.resolveMcp(project, record.id, ws, devices?.ids)
+      const { servers, secretEnv } = await resolveMcp(this.opts.mcp, project, run, ws, this.artifactsDir(record.id), devices?.ids)
       record.mcpServers = servers.map((s) => s.id)
       this.addEvent(run, { kind: 'status', text: `MCP tools: ${record.mcpServers.join(', ') || 'none'}` })
       // Read-only turns (plan, review) do no browser check worth starting a server and waiting 30 s for.
@@ -249,22 +238,6 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     return { chats: this.chats, approvals: this.approvals, worktreesDir: this.worktreesDir, addEvent: this.addEvent.bind(this), emitUpdate: this.emitUpdate.bind(this) }
   }
 
-  private async resolveMcp(project: Project, runId: string, ws: Workspace, devices?: string[]): Promise<{ servers: ResolvedMcpServer[]; secretEnv: Record<string, string> }> {
-    if (!this.opts.mcp) return { servers: [], secretEnv: {} }
-    const ctx = await this.opts.mcp.context()
-    const record = this.active.get(runId)?.record
-    return this.opts.mcp.registry.resolveForRun(project, {
-      ...ctx,
-      artifactsDir: this.artifactsDir(runId),
-      cwd: ws.cwd,
-      previewUrl: ws.previewUrl,
-      provider: record?.provider,
-      devices,
-      chatId: record?.chatId ?? runId,
-      taskId: record?.taskId ?? null
-    })
-  }
-
   artifactsDir(runId: string): string {
     return this.store.artifactsDir(runId)
   }
@@ -308,21 +281,16 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     return this.store.read(runId)
   }
 
-  /** Live runs come from memory (their files lag behind); the rest from disk. */
-  private readRuns(projectId: string): Promise<RunRecord[]> {
-    return this.store.readAll(projectId, (id) => this.active.get(id)?.record)
-  }
-
   /** Most recent first. Runs interrupted by an app exit are reported as failed. */
   async listRuns(projectId: string, limit = 300): Promise<RunSummary[]> {
-    const records = await this.readRuns(projectId)
+    const records = await this.store.readAll(projectId, (id) => this.active.get(id)?.record)
     return records.map(summarize).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit)
   }
 
   /** Every turn of a chat with its events, oldest first. */
   async getChat(projectId: string, chatId: string): Promise<RunRecord[]> {
     if (!RUN_ID.test(chatId)) throw new Error('Invalid chat')
-    const turns = (await this.readRuns(projectId)).filter((r) => (r.chatId ?? r.id) === chatId)
+    const turns = (await this.store.readAll(projectId, (id) => this.active.get(id)?.record)).filter((r) => (r.chatId ?? r.id) === chatId)
     return turns.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
   }
 
@@ -349,10 +317,6 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     const last = turns[turns.length - 1]
     const resumable = turns.filter((t) => t.provider === last.provider && t.sessionId).at(-1)
     return { provider: last.provider, sessionId: resumable?.sessionId ?? null, taskId: turns[0].taskId }
-  }
-
-  private async selectProvider(requested: ProviderChoice): Promise<ProviderSelection> {
-    return selectProvider(await this.providers(), requested, this.cooldownUntil)
   }
 
   private async refreshArtifacts(run: ActiveRun): Promise<void> {
@@ -389,7 +353,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     run.record.artifacts = await this.store.scanArtifacts(run.record.id)
     this.addEvent(run, { kind: status === 'failed' ? 'error' : 'status', text: error ?? `Run ${status}` })
     this.active.delete(run.record.id)
-    await this.persist(run.record).catch(() => {})
+    await this.store.persist(run.record).catch(() => {})
     this.emitUpdate(run.record)
   }
 
@@ -417,9 +381,5 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
 
   private emitUpdate(record: RunRecord): void {
     this.emit('update', summarize(record))
-  }
-
-  private persist(record: RunRecord): Promise<void> {
-    return this.store.persist(record)
   }
 }

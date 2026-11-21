@@ -1,11 +1,14 @@
+import { copyFile, mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { ChatRecord, Project } from '../../shared/types'
+import type { ChatRecord, Project, RunRecord } from '../../shared/types'
 import type { Approvals } from '../approvals'
+import { attachmentPath } from '../attachments'
 import type { ChatStore } from '../chats'
 import { deviceScope, type ChatDevices } from '../chatDevices'
 import { responds, type DevServerManager } from '../devserver'
+import type { ResolvedMcpServer } from '../mcp'
 import { allocatePorts, composeProjectName, createWorktree, resolvePreviewUrl, runHook, worktreeEnv } from '../worktrees'
-import type { ActiveRun, RunReporter, Workspace } from './runState'
+import type { ActiveRun, RunReporter, SupervisorOptions, Workspace } from './runState'
 
 export interface WorkspaceContext extends RunReporter {
   chats: ChatStore
@@ -140,4 +143,43 @@ export async function previewReady(
     meta: ok ? undefined : { notice: true }
   })
   return ok
+}
+
+/** Copies the user's screenshots where the run keeps them and where the agent reads them. */
+export async function stageAttachments(record: RunRecord, inputsDir: string, cwd: string): Promise<void> {
+  for (const a of record.attachments ?? []) {
+    // Keep a copy with the run, so the chat can still show it after the project copy is removed.
+    await mkdir(inputsDir, { recursive: true })
+    await copyFile(attachmentPath(record.projectPath, a.id), join(inputsDir, `${a.id}.png`))
+    // The agent reads it at the same relative path inside its worktree (an ignored folder, so it isn't committed).
+    if (cwd !== record.projectPath) {
+      await mkdir(join(cwd, '.thinkerer', 'attachments'), { recursive: true })
+      await writeFile(join(cwd, '.thinkerer', 'attachments', '.gitignore'), '*\n')
+      await copyFile(attachmentPath(record.projectPath, a.id), attachmentPath(cwd, a.id))
+    }
+  }
+}
+
+/** The MCP servers this turn gets, scoped to its workspace, chat, task and devices; none without a registry. */
+export async function resolveMcp(
+  mcp: SupervisorOptions['mcp'],
+  project: Project,
+  run: ActiveRun,
+  ws: Workspace,
+  artifactsDir: string,
+  devices?: string[]
+): Promise<{ servers: ResolvedMcpServer[]; secretEnv: Record<string, string> }> {
+  if (!mcp) return { servers: [], secretEnv: {} }
+  const ctx = await mcp.context()
+  const record = run.record
+  return mcp.registry.resolveForRun(project, {
+    ...ctx,
+    artifactsDir,
+    cwd: ws.cwd,
+    previewUrl: ws.previewUrl,
+    provider: record.provider,
+    devices,
+    chatId: record.chatId ?? record.id,
+    taskId: record.taskId ?? null
+  })
 }
