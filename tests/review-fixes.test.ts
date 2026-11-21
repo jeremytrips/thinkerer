@@ -137,7 +137,8 @@ describe('Claude plan mode stays read-only', () => {
 
   it('pre-approves only read-only git commands and no MCP tools in plan mode', () => {
     const plan = allowed(claudeAdapter.buildInvocation({ ...base, mode: 'plan' }).args)
-    expect(plan).toEqual(['Bash(git status*)', 'Bash(git diff*)', 'Bash(git log*)'])
+    // Read-only git a review (e.g. /code-review) needs to find the change; nothing that writes.
+    expect(plan).toEqual(['git status*', 'git diff*', 'git log*', 'git show*', 'git merge-base*', 'git rev-parse*', 'git ls-files*'].map((c) => `Bash(${c})`))
   })
 
   it('keeps the full approved list in auto mode', () => {

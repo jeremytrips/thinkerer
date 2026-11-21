@@ -65,7 +65,11 @@ export const DEFAULT_POLICY: RunPolicy = {
     'npx playwright test*',
     'git status*',
     'git diff*',
-    'git log*'
+    'git log*',
+    'git show*',
+    'git merge-base*',
+    'git rev-parse*',
+    'git ls-files*'
   ],
   appendSystemPrompt: [
     'You are running inside Thinkerer, a desktop app that supervises coding agents.',
@@ -627,12 +631,21 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
    * session if it reported one. Review turns run in their own session, so the
    * implementer never resumes the reviewer's conversation.
    */
+  /** The provider the chat's next turn runs with (the same rule as follow-ups); null for an empty chat. */
+  async chatProvider(projectId: string, chatId: string): Promise<ProviderId | null> {
+    return workingTurns(await this.getChat(projectId, chatId)).at(-1)?.provider ?? null
+  }
+
+  /** The provider CLI's own code-review command, if its adapter has one. */
+  reviewCommand(provider: ProviderId): string | null {
+    return this.adapters[provider]?.reviewCommand ?? null
+  }
+
   private async continuation(projectId: string, chatId: string): Promise<{ provider: ProviderId; sessionId: string | null; taskId: string | null }> {
     const all = await this.getChat(projectId, chatId)
     if (!all.length) throw new Error('Chat not found')
     if (all.some((t) => this.active.has(t.id))) throw new Error('This chat is still working; wait for it to finish or stop it first')
-    const working = all.filter((t) => t.protocolStage !== 'review')
-    const turns = working.length ? working : all
+    const turns = workingTurns(all)
     const last = turns[turns.length - 1]
     const resumable = turns.filter((t) => t.provider === last.provider && t.sessionId).at(-1)
     return { provider: last.provider, sessionId: resumable?.sessionId ?? null, taskId: turns[0].taskId }
@@ -802,6 +815,12 @@ function missingAdapter(id: ProviderId): ProviderStatus {
 }
 
 /** Tells the agent where the user's preview screenshots are and what page they show. */
+/** A chat's turns that later turns continue from: review turns run in their own session and never count. */
+function workingTurns<T extends { protocolStage?: string }>(all: T[]): T[] {
+  const working = all.filter((t) => t.protocolStage !== 'review')
+  return working.length ? working : all
+}
+
 export function attachmentNote(attachments: PromptAttachment[]): string {
   if (!attachments.length) return ''
   const items = attachments.map((a, i) => {

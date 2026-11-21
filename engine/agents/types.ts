@@ -57,4 +57,10 @@ export interface AgentAdapter {
   detect(): Promise<ProviderStatus>
   buildInvocation(opts: InvocationOptions): Invocation
   createParser(): StreamParser
+  /**
+   * The CLI's own code-review command, sent as `<command> <level> <branch>` for
+   * protocol reviews (e.g. Claude Code's /code-review skill). Without one, the
+   * review gets Thinkerer's built-in prompt with the plan and the diff.
+   */
+  reviewCommand?: string
 }

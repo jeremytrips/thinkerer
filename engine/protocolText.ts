@@ -1,4 +1,4 @@
-import type { ChatRecord, ChatWorktree, ProtocolChecks, RunRecord, UsageObservation } from '../shared/types'
+import type { ChatRecord, ChatWorktree, Effort, ProtocolChecks, RunRecord, UsageObservation } from '../shared/types'
 import { branchExists, git } from './worktrees'
 
 // What the software protocol tells the agent at each stage, and the report it
@@ -39,15 +39,53 @@ export const REVIEW_INSTRUCTIONS = [
   'If there are none, reply exactly: No findings.'
 ].join(' ')
 
-/** With /code-review the skill does the reviewing; this only fixes the shape of its answer so findings can be counted and forwarded. */
-export const CODE_REVIEW_INSTRUCTIONS = [
-  'Thinkerer software protocol, stage 3 of 4 (code review). You are read-only: do not use --fix or --comment.',
-  'End your reply with the findings, one line each: `[high|medium|low] path:line: problem; fix`. If there are none, end with exactly: No findings.'
-].join(' ')
+/** Above this, the plan is cut in the review instructions (they are a system prompt). */
+const MAX_REVIEW_PLAN_CHARS = 4_000
 
-/** The review turn's prompt in a Claude chat: Claude Code's own /code-review skill on the chat's branch. */
-export function codeReviewPrompt(level: string, branch: string): string {
-  return `/code-review ${level || 'medium'} ${branch}`
+/**
+ * The review level passed to a CLI's review command. An explicit review effort
+ * is the user's choice (max included); inherited from the agent effort, max is
+ * held at xhigh, since a max review starts many reviewer sub-agents.
+ */
+export function reviewLevel(reviewEffort: Effort, agentEffort: Effort): string {
+  if (reviewEffort) return reviewEffort
+  if (agentEffort === 'max') return 'xhigh'
+  return agentEffort || 'medium'
+}
+
+/**
+ * Instructions for a review run by the CLI's own review command (e.g. Claude
+ * Code's /code-review). They pin what is reviewed (the chat's own range, not
+ * the repo's default branch), add the plan and check result the command can't
+ * know, and override its output format so findings can be counted and forwarded.
+ */
+export function commandReviewInstructions(range: string, plan: string | null, checks: ProtocolChecks | null): string {
+  return [
+    'Thinkerer software protocol, stage 3 of 4 (code review). You are reviewing a change someone else made in this worktree; you are read-only: do not use --fix or --comment.',
+    `Review exactly the change \`git diff ${range}\` (the chat's own base, not origin/HEAD or the default branch), and skip generated files: ${NOISE.join(', ')}.`,
+    'Find files with the Glob, Grep and Read tools rather than shell commands (only read-only git commands are allowed).',
+    `Also report acceptance criteria from this plan that the change does not meet or test. Plan: ${plan ? clip(plan, MAX_REVIEW_PLAN_CHARS) : '(no plan recorded)'}`,
+    checks ? `Checks: \`${checks.command}\` ${checkStatus(checks)}.` : '',
+    'Whatever output format the review asks for, end your reply with the findings converted to one line each: `[high|medium|low] path:line: problem; fix` (important = high, nit = low). If there are none, end with exactly: No findings.'
+  ]
+    .filter(Boolean)
+    .join(' ')
+}
+
+/** The latest plan-stage reply that is a plan (it has the acceptance criteria the plan stage asks for); else the latest one. */
+export function pickPlan(turns: Pick<RunRecord, 'protocolStage' | 'status' | 'resultText'>[]): string | null {
+  const plans = turns.filter((t) => t.protocolStage === 'plan' && t.resultText?.trim())
+  const real = plans.filter((t) => t.status === 'succeeded' && /acceptance criteria/i.test(t.resultText!))
+  return (real.at(-1) ?? plans.at(-1))?.resultText ?? null
+}
+
+/** The commits a chat's review covers: from its base branch (or the commit it started at) to HEAD. */
+export async function reviewRange(wt: ChatWorktree, cwd: string): Promise<string> {
+  return (await branchExists(cwd, wt.base)) ? `${wt.base}...HEAD` : `${wt.baseCommit}..HEAD`
+}
+
+function checkStatus(checks: ProtocolChecks): string {
+  return checks.status === 'passed' ? 'passed' : checks.status === 'failed' ? `failed (exit code ${checks.exitCode})` : 'not run'
 }
 
 export const IMPLEMENT_PROMPT = 'The plan is approved. Implement it now, with the tests it lists.'
@@ -72,11 +110,11 @@ export function fixFindingsPrompt(findings: string): string {
 
 /** The reviewer's whole input: acceptance criteria, check result and the branch diff, nothing from the implementer's conversation. */
 export async function reviewPrompt(wt: ChatWorktree, cwd: string, plan: string | null, checks: ProtocolChecks | null): Promise<string> {
-  const base = (await branchExists(cwd, wt.base)) ? `${wt.base}...HEAD` : `${wt.baseCommit}..HEAD`
+  const base = await reviewRange(wt, cwd)
   const stat = (await git(cwd, ['diff', '--stat=120', base, '--', '.', ...NOISE_SPECS]).catch(() => '')).trim()
   const diff = await git(cwd, ['diff', '--no-color', '-U3', base, '--', '.', ...NOISE_SPECS]).catch(() => '')
   const lines = ['Review the change on this branch against the plan below.', '', '## Plan', plan ? clip(plan, MAX_PLAN_CHARS) : '(no plan recorded)', '']
-  if (checks) lines.push('## Checks', `\`${checks.command}\`: ${checks.status === 'passed' ? 'passed' : checks.status === 'failed' ? `failed (exit code ${checks.exitCode})` : 'not run'}`, '')
+  if (checks) lines.push('## Checks', `\`${checks.command}\`: ${checkStatus(checks)}`, '')
   lines.push('## Files changed', stat || '(no changes)', '')
   if (diff.length <= MAX_REVIEW_DIFF_CHARS) {
     lines.push('## Diff', '```diff', diff.trimEnd(), '```')
@@ -91,7 +129,19 @@ export function countFindings(text: string | null): number | null {
   if (!text) return null
   if (/^\s*No findings\.?\s*$/i.test(text.trim().split('\n').at(-1) ?? '') && !/\[(high|medium|low)\]/i.test(text)) return 0
   const n = text.split('\n').filter((l) => /^\s*(?:[-*\d.]+\s*)?`?\[(high|medium|low)\]/i.test(l)).length
-  return n || null
+  return n || jsonFindings(text)
+}
+
+/** A review command's own JSON answer (e.g. `[]`, or `[{"severity":"important",…}]`) at the end of the reply. */
+function jsonFindings(text: string): number | null {
+  const m = /(\[[\s\S]*\])\s*(?:```)?\s*$/.exec(text)
+  if (!m) return null
+  try {
+    const v: unknown = JSON.parse(m[1])
+    return Array.isArray(v) && v.every((f) => f && typeof f === 'object' && 'severity' in f) ? v.length : null
+  } catch {
+    return null
+  }
 }
 
 /**

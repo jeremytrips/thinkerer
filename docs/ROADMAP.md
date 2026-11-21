@@ -36,7 +36,7 @@ Progress: `AgentTab.tsx` split into `Agent{Chats,Composer,Preview,Transcript}.ts
 Why: a repeatable process for software chats that costs fewer tokens: plan, implement + tests, review, ship.
 - [x] Stages plan → implement → review → ship on a chat; the user approves each step.
 - [x] Thinkerer runs the checks and the merge itself; only failing output goes back to the agent.
-- [x] Review in a fresh read-only session with only the plan and the diff; fixes resume the implementer.
+- [x] Review in a fresh read-only session (Claude: `/code-review` on the chat's range, with the plan; Codex: the plan and the diff); fixes resume the implementer.
 - [x] Report on ship from recorded data, including reported tokens per stage; cleanup stays manual.
 - [x] Settings → Software protocol: check command, review rounds, review model and effort.
 

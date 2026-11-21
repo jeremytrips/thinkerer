@@ -24,6 +24,7 @@ export function scriptAdapter(script: string): AgentAdapter {
     id: 'claude',
     label: 'Claude Code',
     policySummary: status.policy,
+    reviewCommand: '/code-review',
     detect: async () => status,
     buildInvocation: ({ executable, prompt, mode }) => ({
       command: executable,

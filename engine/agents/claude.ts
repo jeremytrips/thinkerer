@@ -12,7 +12,7 @@ const TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash']
 // Plan mode promises a read-only run, and pre-approved allow rules can still let
 // a tool run there, so only commands that cannot change anything stay
 // pre-approved (no npm scripts, no MCP tools: Playwright clicks, mobile installs/taps).
-const READ_ONLY_COMMAND = /^git (status|diff|log)\b/
+const READ_ONLY_COMMAND = /^git (status|diff|log|show|merge-base|rev-parse|ls-files)\b/
 
 /** MCP servers still connecting when Claude reports its init event; their tools usually arrive moments later. */
 const TRANSIENT_MCP_STATUS = new Set(['connected', 'pending', 'connecting', 'starting'])
@@ -27,6 +27,7 @@ export const claudeAdapter: AgentAdapter = {
   id: 'claude',
   label: 'Claude Code',
   policySummary: CLAUDE_POLICY_SUMMARY,
+  reviewCommand: '/code-review',
 
   async detect(): Promise<ProviderStatus> {
     const base = { id: 'claude' as const, label: 'Claude Code', adapterAvailable: true, policy: CLAUDE_POLICY_SUMMARY }

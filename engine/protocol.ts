@@ -5,15 +5,17 @@ import { runChatCommand } from './chatCommands'
 import type { ProjectService } from './projects'
 import {
   CHECK_TAIL_LINES,
-  CODE_REVIEW_INSTRUCTIONS,
+  commandReviewInstructions,
   IMPLEMENT_PROMPT,
   PLAN_INSTRUCTIONS,
   REVIEW_INSTRUCTIONS,
-  codeReviewPrompt,
+  pickPlan,
   fixChecksPrompt,
   fixFindingsPrompt,
   implementInstructions,
   protocolReport,
+  reviewLevel,
+  reviewRange,
   reviewPrompt
 } from './protocolText'
 import { runHook, worktreeEnv } from './worktrees'
@@ -111,21 +113,21 @@ export class ProtocolService {
         if (p.round >= max) throw new Error(`This chat already had ${max} review round${max === 1 ? '' : 's'} (the project's limit). Ship it, or keep working by sending messages.`)
         if (!chat.worktree) throw new Error('Reviews need the chat to have its own worktree and branch')
         const { protocol: { review }, agent } = project.config!
-        const provider = (await this.deps.supervisor.getChat(projectId, chatId)).at(-1)?.provider
-        const base = { mode: 'plan' as const, protocolStage: 'review' as const, freshSession: true }
-        if (provider === 'claude') {
-          // Claude Code's own /code-review skill; it may use sub-agents, and needs the Skill tool.
-          const tools = [...new Set([...agent.claude.tools, 'Skill' as const])]
-          await this.startStage(chat, { stage: 'review', round: p.round + 1 }, codeReviewPrompt(review.effort || agent.claude.effort, chat.worktree.branch), {
-            ...base,
-            instructions: CODE_REVIEW_INSTRUCTIONS,
-            claude: { model: review.model, effort: review.effort, tools }
-          })
-        } else {
-          const plan = (await latest('plan'))?.resultText ?? null
-          const prompt = await reviewPrompt(chat.worktree, chat.worktree.path, plan, p.checks)
-          await this.startStage(chat, { stage: 'review', round: p.round + 1 }, prompt, { ...base, instructions: REVIEW_INSTRUCTIONS })
-        }
+        const provider = await this.deps.supervisor.chatProvider(projectId, chatId)
+        const command = provider && this.deps.supervisor.reviewCommand(provider)
+        const plan = pickPlan(await this.deps.supervisor.getChat(projectId, chatId))
+        const wt = chat.worktree
+        const prompt = command ? `${command} ${reviewLevel(review.effort, agent.claude.effort)} ${wt.branch}` : await reviewPrompt(wt, wt.path, plan, p.checks)
+        const instructions = command ? commandReviewInstructions(await reviewRange(wt, wt.path), plan, p.checks) : REVIEW_INSTRUCTIONS
+        // Sub-agents only as the project allows them; a review command may be a skill, so Skill is added for it.
+        const tools = command ? [...new Set([...agent.claude.tools, 'Skill' as const])] : agent.claude.tools.filter((t) => t !== 'Task')
+        await this.startStage(chat, { stage: 'review', round: p.round + 1 }, prompt, {
+          mode: 'plan',
+          protocolStage: 'review',
+          freshSession: true,
+          instructions,
+          claude: { model: review.model, effort: review.effort, tools }
+        })
         break
       }
       case 'fix-findings': {

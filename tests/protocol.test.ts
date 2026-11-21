@@ -9,7 +9,7 @@ import type { AgentAdapter, InvocationOptions } from '../engine/agents/types'
 import { Approvals } from '../engine/approvals'
 import { ProjectService } from '../engine/projects'
 import { ProtocolService } from '../engine/protocol'
-import { countFindings } from '../engine/protocolText'
+import { countFindings, pickPlan, reviewLevel } from '../engine/protocolText'
 import type { ChatRecord, Effort, ProtocolAction, RunSummary } from '../shared/types'
 
 // The software protocol end to end with a stand-in agent, a real temp repo and
@@ -30,7 +30,8 @@ function recordingStandIn(calls: InvocationOptions[], id: 'claude' | 'codex' = '
       calls.push(opts)
       return { command: opts.executable, args: [FIXTURE, opts.mode === 'plan' ? 'readonly' : 'ok'], stdin: opts.prompt, env: process.env }
     },
-    createParser: () => ({ parseLine: parseClaudeLine })
+    createParser: () => ({ parseLine: parseClaudeLine }),
+    ...(id === 'claude' ? { reviewCommand: '/code-review' } : {})
   }
 }
 
@@ -136,9 +137,17 @@ describe('software protocol', () => {
     expect(review.prompt).toBe(`/code-review medium ${branch}`)
     expect(calls[2].prompt).not.toContain('## Plan')
     expect(calls[2].claude).toMatchObject({ model: 'sonnet', effort: 'medium' })
-    expect(calls[2].claude!.tools).toContain('Skill')
-    expect(calls[2].policy.appendSystemPrompt).toContain('stage 3 of 4 (code review)')
-    expect(calls[2].policy.appendSystemPrompt).toContain('[high|medium|low] path:line')
+    // The project's own tools (sub-agents only if it enables them), plus Skill for the review command.
+    const projectTools = (await projects.get(projectId)).config!.agent.claude.tools
+    expect(calls[2].claude!.tools).toEqual([...new Set([...projectTools, 'Skill'])])
+    const sys = calls[2].policy.appendSystemPrompt
+    expect(sys).toContain('stage 3 of 4 (code review)')
+    expect(sys).toContain('`git diff main...HEAD`') // the chat's own base, not origin/HEAD
+    expect(sys).toContain('package-lock.json')
+    expect(sys).toContain(`Checks: \`${check}\` passed`)
+    expect(sys).toMatch(/Plan: \S/)
+    expect(sys).not.toContain('(no plan recorded)')
+    expect(sys).toContain('[high|medium|low] path:line')
     chat = (await sup.chats.get(chatId))!
     expect(chat.protocol).toMatchObject({ stage: 'review', round: 1 })
 
@@ -264,5 +273,24 @@ describe('protocol config and findings', () => {
     expect(countFindings('- [high] a.ts:1: x; y\n- [low] b.ts:2: z; w')).toBe(2)
     expect(countFindings('Looks fine to me')).toBeNull()
     expect(countFindings(null)).toBeNull()
+    // A review command's own JSON answer.
+    expect(countFindings('Done.\n```json\n[]\n```')).toBe(0)
+    expect(countFindings('[{"severity":"important","file":"a.ts"},{"severity":"nit","file":"b.ts"}]')).toBe(2)
+    expect(countFindings('see [the docs]')).toBeNull()
+  })
+
+  it('picks the review level: explicit review effort, else the agent effort with max held at xhigh, else medium', () => {
+    expect(reviewLevel('max', 'low')).toBe('max')
+    expect(reviewLevel('', 'max')).toBe('xhigh')
+    expect(reviewLevel('', 'high')).toBe('high')
+    expect(reviewLevel('', '')).toBe('medium')
+  })
+
+  it('reviews against the latest real plan, not a later plan-stage reply that is no plan', () => {
+    const plan = '## Goal\nX\n## Acceptance criteria\n- works'
+    const turn = (resultText: string) => ({ protocolStage: 'plan' as const, status: 'succeeded' as const, resultText })
+    expect(pickPlan([turn(plan), turn('Nothing was implemented. Switch the run mode to Auto.')])).toBe(plan)
+    expect(pickPlan([turn('First draft'), turn('Second draft')])).toBe('Second draft')
+    expect(pickPlan([])).toBeNull()
   })
 })
