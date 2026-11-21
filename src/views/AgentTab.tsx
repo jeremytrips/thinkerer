@@ -2,12 +2,13 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { checksPending } from '../../shared/protocol'
 import type { AppInfo, ChatCommand, PreviewCapture, Project, ProtocolAction, ProviderChoice, RunMode, RunRecord } from '../../shared/types'
 import { api, errorMessage, loadState, saveState } from '../api'
+import { usePaletteSource } from '../palette'
 import { AgentComposer } from './AgentComposer'
 import { ChatHeader, ChatList, byCreated, chatOf, groupChats, upsertRecord } from './AgentChats'
 import { AgentPreviewSide, usePreviewLayout } from './AgentPreview'
 import { AgentTranscript, lastAgentPage, transcriptItems } from './AgentTranscript'
 import { RestoreDialog } from './Changes'
-import { agentItems, commandOf, matchingCommands, type SlashItem } from './ChatBits'
+import { agentItems, chatPaletteItems, commandOf, matchingCommands, type SlashItem } from './ChatBits'
 import { LIVE } from './ChatTurn'
 import { ProtocolBar } from './ProtocolBar'
 import { composerMode } from './composerMode'
@@ -98,8 +99,12 @@ export function AgentTab({ project, info, isSelf, onTab, prefill, onPrefillUsed 
     onPrefillUsed?.()
     if (prefill.chatId) return openChat(prefill.chatId)
     openChat(null)
-    setDraft(prefill.prompt, NEW)
-    setTaskId(prefill.taskId)
+    // An empty prefill (the palette's "New chat") keeps a draft already typed there.
+    if (prefill.prompt) {
+      setDraft(prefill.prompt, NEW)
+      setTaskId(prefill.taskId)
+    }
+    composerRef.current?.focus()
   }, [prefill?.nonce])
 
   useLayoutEffect(() => {
@@ -260,6 +265,9 @@ export function AgentTab({ project, info, isSelf, onTab, prefill, onPrefillUsed 
   // In a protocol chat the stage decides how a message runs, not the mode picker.
   const protocolChat = chat ? !!record?.protocol : useProtocol
   const { approving, planning } = composerMode({ hasChat: !!chat, protocolChat, stage: record?.protocol?.stage, mode, draft })
+
+  const complete = (name: string) => (setDraft(`/${name} `), composerRef.current?.focus())
+  usePaletteSource('agent', () => chatPaletteItems({ chatTitle: chat?.title ?? null, closed: finished || isGit === false, agentCommands, run: (n) => void runCommand(n), complete }))
 
   const items = transcriptItems(turns, record?.notes ?? [])
   const lastTurnId = turns.at(-1)?.id

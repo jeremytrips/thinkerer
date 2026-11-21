@@ -23,7 +23,7 @@ loads it itself.
 ### R-02 · Raycast-style UI foundation · `todo`
 Why: every later studio reuses it.
 - [x] Design tokens in `src/styles.css` match `docs/DESIGN.md` (dark-first).
-- [ ] Global command palette (⌘K): switch project/tab, new chat, slash commands.
+- [x] Global command palette (⌘K): switch project/tab, new chat, slash commands (`src/views/CommandPalette.tsx`).
 - [ ] Keyboard navigation for lists (↑/↓/↵/esc); e2e test covers the palette.
 
 ### R-03 · Split oversized views · `done` (2026-11-21)
