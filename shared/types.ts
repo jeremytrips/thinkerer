@@ -365,6 +365,8 @@ export interface RunRecord {
   /** Exact changes made during the run (checkpoint → end state); null if unavailable. */
   changes: FileChange[] | null
   mcpServers: string[]
+  /** Project instruction files Thinkerer gave the agent (AGENTS.md, CLAUDE.md…). Absent on older runs. */
+  instructionFiles?: string[]
   artifacts: RunArtifact[]
   /** Preview screenshots the user sent with the prompt. Absent on older runs. */
   attachments?: PromptAttachment[]

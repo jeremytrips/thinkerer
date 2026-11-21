@@ -234,6 +234,12 @@ confirms the command in a native dialog. A compromised renderer cannot fake thes
 deploy, publish or purchase. Each CLI enforces limits its own way, and the app shows each policy under
 **Providers → What runs may do**.
 
+**Project instructions.** Thinkerer reads the chat worktree's `AGENTS.md` and `CLAUDE.md` itself
+(following `@file` imports, each file once, never outside the worktree, capped at 32k characters)
+and adds them to every run's instructions, because `claude --restricted` appears to skip Claude’s own
+`CLAUDE.md` discovery. Each turn's footer shows which files the run received
+(`engine/agents/instructions.ts`).
+
 | | Claude Code (`claude -p --restricted …`) | Codex (`codex exec --sandbox workspace-write …`) |
 |---|---|---|
 | File writes | project folder only | project folder + temp dirs (OS sandbox) |
