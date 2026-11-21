@@ -13,8 +13,7 @@
     "provider": "auto",
     "enabledMcpServers": [
       "playwright",
-      "health",
-      "mobile"
+      "health"
     ]
   },
   "marketing": {
