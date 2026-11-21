@@ -8,6 +8,7 @@ import { Placeholder } from './Placeholder'
 import { RestartButton } from './RestartButton'
 import { SettingsTab } from './SettingsTab'
 import { TasksTab } from './TasksTab'
+import { taskPrompt } from './boardModel'
 import { WebsiteTab } from './WebsiteTab'
 
 export type TabId = 'overview' | 'agent' | 'website' | 'tasks' | 'files' | 'mcp' | 'marketing' | 'settings'
@@ -66,7 +67,7 @@ export function ProjectView({ project, info, tab, onTab, onBack, onChanged }: Pr
         ) : tab === 'overview' ? (
           <Overview project={project} isSelf={isSelf} onTab={onTab} />
         ) : tab === 'agent' ? (
-          <AgentTab project={project} info={info} isSelf={isSelf} onTab={onTab} prefill={prefill} />
+          <AgentTab project={project} info={info} isSelf={isSelf} onTab={onTab} prefill={prefill} onPrefillUsed={() => setPrefill(null)} />
         ) : tab === 'files' ? (
           <FilesTab project={project} />
         ) : tab === 'website' ? (
@@ -74,8 +75,12 @@ export function ProjectView({ project, info, tab, onTab, onBack, onChanged }: Pr
         ) : tab === 'tasks' ? (
           <TasksTab
             project={project}
-            onRunAgent={(task) => {
-              setPrefill({ prompt: task.notes ? `${task.title}\n\n${task.notes}` : task.title, taskId: task.id, nonce: Date.now() })
+            onStartChat={(task) => {
+              setPrefill({ prompt: taskPrompt(task), taskId: task.id, nonce: Date.now() })
+              onTab('agent')
+            }}
+            onOpenChat={(chatId) => {
+              setPrefill({ prompt: '', taskId: '', chatId, nonce: Date.now() })
               onTab('agent')
             }}
           />

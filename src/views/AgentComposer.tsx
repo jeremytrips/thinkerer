@@ -154,8 +154,8 @@ export function AgentComposer(p: Props) {
               Task
               <select value={p.taskId} onChange={(e) => p.setTaskId(e.target.value)}>
                 <option value="">None</option>
-                {p.tasks.filter((t) => t.status !== 'done').map((t) => (
-                  <option key={t.id} value={t.id}>{t.title}</option>
+                {p.tasks.filter((t) => t.status !== 'done' && !t.archivedAt).map((t) => (
+                  <option key={t.id} value={t.id}>{t.key} · {t.title}</option>
                 ))}
               </select>
             </label>

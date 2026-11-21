@@ -33,6 +33,12 @@ export interface McpRunContext {
   appRoot: string
   /** Command used to run Node scripts. */
   node: { command: string; env: Record<string, string> }
+  /**
+   * Thinkerer's own Node (Electron run as Node), for `{appNode}` servers. The board server
+   * needs `node:sqlite`, which the user's `node` may lack (Node 20, or < 22.13 without a flag),
+   * and should use the same SQLite as the app. Falls back to `node` when not given.
+   */
+  appNode?: { command: string; env: Record<string, string> }
   artifactsDir: string
   /** Where the agent works (a chat's worktree); defaults to the project folder. */
   cwd?: string
@@ -42,6 +48,9 @@ export interface McpRunContext {
   provider?: ProviderId
   /** The chat's own emulator ids; the mobile server accepts only these. Undefined: not limited. */
   devices?: string[]
+  /** The chat and its task, for the board server (which records the chat as the source of changes). */
+  chatId?: string
+  taskId?: string | null
 }
 
 const ID = /^[a-z][a-z0-9-]{0,30}$/
@@ -90,6 +99,19 @@ export const BUILTIN_SERVERS: McpServerDef[] = [
     command: '{node}',
     args: ['{appRoot}/mcp/thinkerer-mobile.mjs'],
     env: { THINKERER_ARTIFACTS: '{artifacts}', THINKERER_PROJECT_ROOT: '{project}', THINKERER_PREVIEW_URL: '{previewUrl}' },
+    secretEnv: []
+  },
+  {
+    id: 'board',
+    label: 'Project board',
+    description:
+      'The project’s milestones, epics and tasks (the Tasks tab): read the board and the chat’s task, add and update items, tick criteria, archive. Writes go to the main project folder, never the chat’s worktree. No deleting.',
+    builtin: true,
+    // Thinkerer's own Node: it has node:sqlite (see McpRunContext.appNode).
+    command: '{appNode}',
+    // {projectRoot} is the main project folder; {project} would be the chat's worktree.
+    args: ['--no-warnings', '{appRoot}/mcp/thinkerer-board.mjs'],
+    env: { THINKERER_BOARD_ROOT: '{projectRoot}', THINKERER_CHAT_ID: '{chatId}', THINKERER_TASK_ID: '{taskId}' },
     secretEnv: []
   }
 ]
@@ -182,26 +204,29 @@ export class McpRegistry {
       appRoot: ctx.appRoot,
       artifacts: ctx.artifactsDir,
       project: ctx.cwd ?? project.path,
+      projectRoot: project.path,
+      chatId: ctx.chatId ?? '',
+      taskId: ctx.taskId ?? '',
       previewUrl: preview,
       previewOrigin: originOf(preview)
     }
-    const fill = (s: string) => s.replace(/\{(appRoot|artifacts|project|previewUrl|previewOrigin)\}/g, (_m, k: string) => vars[k])
+    const fill = (s: string) => s.replace(/\{(appRoot|artifacts|projectRoot|project|chatId|taskId|previewUrl|previewOrigin)\}/g, (_m, k: string) => vars[k])
     const transport = def.transport ?? 'stdio'
-    const usesNode = def.command === '{node}'
+    const runtime = def.command === '{appNode}' ? (ctx.appNode ?? ctx.node) : def.command === '{node}' ? ctx.node : null
     const secretEnv: Record<string, string> = {}
     for (const name of def.secretEnv) {
       const value = await this.secrets.get(def.id, name)
       if (value === null) return null
       secretEnv[name] = value
     }
-    const env = transport === 'stdio' ? { ...(usesNode ? ctx.node.env : {}), ...Object.fromEntries(Object.entries(def.env).map(([k, v]) => [k, fill(v)])) } : {}
+    const env = transport === 'stdio' ? { ...(runtime?.env ?? {}), ...Object.fromEntries(Object.entries(def.env).map(([k, v]) => [k, fill(v)])) } : {}
     // The chat's own emulators: the server refuses every other device.
     if (def.id === 'mobile' && def.builtin && ctx.devices) env.THINKERER_DEVICES = ctx.devices.join(',')
     return {
       server: {
         id: def.id,
         transport,
-        command: transport === 'stdio' ? (usesNode ? ctx.node.command : def.command) : '',
+        command: transport === 'stdio' ? (runtime ? runtime.command : def.command) : '',
         args: transport === 'stdio' ? def.args.map(fill) : [],
         env,
         url: transport === 'stdio' ? '' : (def.url ?? ''),

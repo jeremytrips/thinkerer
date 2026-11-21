@@ -54,7 +54,18 @@ export interface AgentAdapter {
   label: string
   /** Plain-language description of what this provider's runs may do, shown in the UI. */
   policySummary: string
+  /**
+   * Slash commands (without the slash) Thinkerer refuses to send, because they would break
+   * what Thinkerer tracks: Claude's /clear (and its aliases) drops the chat's session, and with it the task link.
+   */
+  blockedCommands?: string[]
   detect(): Promise<ProviderStatus>
   buildInvocation(opts: InvocationOptions): Invocation
   createParser(): StreamParser
+}
+
+/** The blocked slash command a message starts with (`/clear`, `/clear now`…), or null. */
+export function blockedCommand(adapter: Pick<AgentAdapter, 'blockedCommands'>, prompt: string): string | null {
+  const name = /^\s*\/([\w:-]+)(?:\s|$)/.exec(prompt)?.[1].toLowerCase()
+  return name && adapter.blockedCommands?.includes(name) ? name : null
 }

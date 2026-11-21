@@ -30,8 +30,12 @@ import type {
   RunMode,
   RunRecord,
   RunSummary,
-  Task,
-  TaskStatus
+  Board,
+  BoardCreate,
+  BoardHistoryEntry,
+  BoardItem,
+  BoardKind,
+  BoardPatch
 } from './types'
 
 export interface Bounds {
@@ -72,11 +76,21 @@ export interface ThinkererApi {
     preview(projectId: string, checkpointId: string): Promise<RestorePreview>
     restore(projectId: string, checkpointId: string): Promise<{ safetyCheckpoint: Checkpoint; changes: FileChange[] }>
   }
-  tasks: {
-    list(projectId: string): Promise<Task[]>
-    create(projectId: string, title: string, notes?: string): Promise<Task>
-    update(projectId: string, taskId: string, patch: { title?: string; notes?: string; status?: TaskStatus }): Promise<Task>
-    remove(projectId: string, taskId: string): Promise<boolean>
+  /** The project board: milestones → epics → tasks. Items are addressed by id or key (T-12). */
+  board: {
+    get(projectId: string): Promise<Board>
+    history(projectId: string, item: string): Promise<BoardHistoryEntry[]>
+    create(projectId: string, input: BoardCreate): Promise<BoardItem>
+    update(projectId: string, item: string, patch: BoardPatch): Promise<BoardItem>
+    archive(projectId: string, item: string): Promise<BoardItem>
+    unarchive(projectId: string, item: string): Promise<BoardItem>
+    /** Only archived items can be deleted. */
+    remove(projectId: string, item: string): Promise<boolean>
+    reorder(projectId: string, kind: BoardKind, ids: string[]): Promise<boolean>
+    /** Update an item and set the new order of its kind, saved together (a drag). */
+    move(projectId: string, item: string, patch: BoardPatch, ids: string[]): Promise<BoardItem>
+    /** The board of the project at this path changed (here, or by an agent through MCP). */
+    onChange(cb: (projectPath: string) => void): () => void
   }
   mcp: {
     list(): Promise<McpServerView[]>

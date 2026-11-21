@@ -213,17 +213,115 @@ export interface MobileFrame {
   height: number
 }
 
-export type TaskStatus = 'todo' | 'doing' | 'done'
+// The project board (milestones → epics → tasks), stored in <project>/.thinkerer/local/board.sqlite
+// by mcp/board/store.mjs, shared by the app and the thinkerer-board MCP server.
 
-export interface Task {
+export type WorkType = 'software' | 'firmware' | 'electronics' | 'mechanical' | 'marketing' | 'research' | 'other'
+export type TaskStatus = 'backlog' | 'todo' | 'doing' | 'review' | 'done'
+export type EpicStatus = 'todo' | 'doing' | 'done'
+export type MilestoneStatus = 'planned' | 'active' | 'done'
+export type TaskPriority = 'none' | 'low' | 'medium' | 'high' | 'urgent'
+export type BoardKind = 'milestone' | 'epic' | 'task'
+
+export interface Criterion {
+  text: string
+  done: boolean
+}
+
+interface BoardItemBase {
   id: string
+  /** Short, stable, human-readable: M-1, E-3, T-12. */
+  key: string
   title: string
-  notes: string
-  status: TaskStatus
-  runIds: string[]
+  position: number
+  archivedAt: string | null
   createdAt: string
   updatedAt: string
 }
+
+export interface Milestone extends BoardItemBase {
+  kind: 'milestone'
+  description: string
+  /** YYYY-MM-DD, or null. */
+  targetDate: string | null
+  status: MilestoneStatus
+}
+
+export interface Epic extends BoardItemBase {
+  kind: 'epic'
+  description: string
+  type: WorkType
+  milestoneId: string | null
+  status: EpicStatus
+  criteria: Criterion[]
+}
+
+export interface Task extends BoardItemBase {
+  kind: 'task'
+  notes: string
+  type: WorkType
+  epicId: string | null
+  status: TaskStatus
+  priority: TaskPriority
+  labels: string[]
+  criteria: Criterion[]
+  /** Ids of tasks that must be done first. */
+  blockedBy: string[]
+  /** Chats that worked on this task, oldest first. */
+  chatIds: string[]
+  runIds: string[]
+  doneAt: string | null
+}
+
+export type BoardItem = Milestone | Epic | Task
+
+export interface Board {
+  milestones: Milestone[]
+  epics: Epic[]
+  tasks: Task[]
+}
+
+/** Who changed something: the user in the UI, Thinkerer following a chat, or an agent via MCP. */
+export type BoardSource = 'user' | 'auto' | `agent:${string}`
+
+export interface BoardHistoryEntry {
+  at: string
+  source: BoardSource
+  change: string
+}
+
+export interface MilestoneInput {
+  title: string
+  description?: string
+  targetDate?: string | null
+  status?: MilestoneStatus
+}
+
+export interface EpicInput {
+  title: string
+  description?: string
+  type?: WorkType
+  milestoneId?: string | null
+  status?: EpicStatus
+  criteria?: Criterion[]
+}
+
+export interface TaskInput {
+  title: string
+  notes?: string
+  /** Defaults to the epic's type, else 'software'. */
+  type?: WorkType
+  epicId?: string | null
+  status?: TaskStatus
+  priority?: TaskPriority
+  labels?: string[]
+  criteria?: Criterion[]
+  blockedBy?: string[]
+}
+
+export type BoardCreate = ({ kind: 'milestone' } & MilestoneInput) | ({ kind: 'epic' } & EpicInput) | ({ kind: 'task' } & TaskInput)
+/** Fields to change; `kind` and `id` can't change. Parents and blockers take ids or keys. */
+export type BoardPatch = Partial<Omit<MilestoneInput & EpicInput & TaskInput, 'status'>> & { status?: TaskStatus | EpicStatus | MilestoneStatus }
 
 export type McpTransport = 'stdio' | 'http' | 'sse'
 

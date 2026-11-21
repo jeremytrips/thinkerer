@@ -44,7 +44,7 @@ Support/Thinkerer` on macOS). Set `THINKERER_APP_DATA=/some/dir` to use a differ
 1. `npm run dev`
 2. **Projects → Import folder…**, then choose this repository. The committed `.thinkerer/project.json`
    says this is a `website` component with an `electron` target. Its dev command is `npm run dev:web`,
-   a renderer-only Vite server on http://localhost:5174. Playwright and health MCP servers are enabled.
+   a renderer-only Vite server on http://localhost:5174. Playwright, health, mobile and board MCP servers are enabled.
 3. **Website → Start dev server.** The first time, a native dialog asks you to approve the command. The
    preview then shows Thinkerer's UI in "browser preview" mode, without desktop features.
 4. **Agent**: type “Add a visible About Thinkerer dialog, and test that it opens.” and press Enter
@@ -88,11 +88,43 @@ The result is commit `8438cfd`; typecheck, unit and e2e tests passed when re-run
 | Overview | Component cards, Git state, providers, recent runs |
 | Agent | The software protocol (plan → implement + checks → review → ship), chats in their own worktrees, with follow-ups (each message checkpointed and committed on the chat branch), `/merge` `/cleanup` `/done` `/discard`, Auto / Claude / Codex, task link, the project's MCP tools, live progress, changes with diffs, restore, retry, screenshots, a preview of the chat's own dev server |
 | Website | Approved dev command runner with logs. Sandboxed embedded preview (Electron `WebContentsView`), locked to the preview origin, with other origins only after approval. Preview console. The agent's browser checks |
-| Tasks | To do / In progress / Done board in `.thinkerer/tasks.json`; runs attach to tasks |
+| Tasks | Project board: milestones → epics → tasks, as a **Plan** tree, a **Board** (Backlog / To do / In progress / In review / Done) and an **Archived** view; a detail pane per item; status follows the task's chats; agents use it through the board MCP server (see below) |
 | Files | Read-only tree and preview, uncommitted changes with diffs, checkpoints with restore |
 | MCP | Global server registry (built-in + your own stdio, streamable HTTP and SSE servers, Keychain-encrypted secrets), per-project enable, the tools each provider will actually get, **Check** (connect and list a server's tools), **Import from Claude Code** (`.mcp.json`, `~/.claude.json`) |
 | Settings | Name, components, target, dev command, preview URL, chat worktree hooks and ports, default provider, Claude Code model / effort / optional tools, software protocol (check command, review rounds, review model / effort), LLM providers, agent permissions |
 | Marketing | Placeholder (post-MVP) |
+
+### Tasks (project board)
+
+- **Items.** Milestones (target date, Planned / Active / Done) → epics → tasks. Every item has a short key (`M-1`,
+  `E-3`, `T-12`) that is never reused. Epics and tasks have a type: Software, Firmware, Electronics, Mechanical / 3D,
+  Marketing, Research or Other; a new task takes its epic's type unless you pick one. Tasks also have a priority,
+  labels, a "Done when" checklist, and "Waits for" (blockers; loops are refused). Epic and milestone progress is
+  counted from their tasks.
+- **Views.** **Plan**: the tree, with collapse, ↑/↓ between rows, and drag a task onto an epic. **Board**: drag cards
+  between columns, or Shift+←/→ on a focused card. **Archived**: restore, or delete for good (asks first). Filters by
+  text, type, label and (in Plan) status. Click an item for its detail pane: every field, the linked chats, **Start a chat on T-n**
+  (fills the composer with the key, title, notes and checklist, linked to the task), **Open chat**, the history of who
+  changed what (you, Thinkerer, or an agent), Archive.
+- **Archive.** Archiving takes the item's children along; restoring brings back what was archived with it, and its
+  archived parents. Only archived items can be deleted. Nothing new can be put under an archived epic or milestone
+  (restore it first), by you or by an agent.
+- **Status follows chats.** A turn on a task moves it from Backlog / To do to In progress; a protocol review moves it
+  to In review; `/merge` or a protocol ship moves it to Done (a `/cleanup` of a chat that never merged does not);
+  `/discard` moves it back to To do unless another open chat works on it. Each chat applies each of these once, so a
+  status you set by hand afterwards sticks.
+- **Storage.** `<project>/.thinkerer/local/board.sqlite` (Node's built-in `node:sqlite`, no dependency). Thinkerer
+  writes `.thinkerer/local/.gitignore` (`*`), so the board is never committed, checkpointed or merged. The database is
+  created on the first change (yours or an agent's), not when a project is only opened. It is always the
+  main project folder's board, also for chats in worktrees. A project's old `.thinkerer/tasks.json` is imported once
+  (ids and run links kept) and left in place; you can delete it afterwards.
+- **Agents: the board MCP server** (built-in, `board`; off for new projects, enable it per project in the MCP tab). Tools:
+  `board_overview`, `board_list`, `board_get`, `board_current_task`, `board_create`, `board_update`, `board_check` (tick
+  one criterion), `board_archive`, `board_unarchive`. No delete. Agent changes are recorded as that chat's and appear in
+  the Tasks tab within about a second (the app polls SQLite's `data_version`). It runs on Thinkerer's own Node (Electron
+  as Node), not the `node` on your PATH, because it needs `node:sqlite`.
+- **Verified** 2026-11-21 by `npm test` and `tests/e2e/tasks.spec.ts`, and by hand in the running app after a restart:
+  an agent chat moved `docs/ROADMAP.md` into the board through the board MCP server.
 
 ### Claude Code features
 
@@ -100,6 +132,8 @@ The result is commit `8438cfd`; typecheck, unit and e2e tests passed when re-run
   `/discard`) come first, then the commands and skills Claude Code reported for this chat (`/compact`, `/context`,
   `/init`, `/code-review`, `/security-review`, your skills…). Those are sent to the agent as the message. Commands that only
   work in Claude's interactive terminal, or that Thinkerer handles itself (`/model`, `/effort`, `/mcp`, `/clear`), are left out.
+  A message that starts with `/clear` (or its aliases `/reset` and `/new`) is refused: it would start a new Claude session
+  and disconnect the chat (and its task) from it. Adapters declare such commands in `blockedCommands`.
 - **Plan mode.** The composer's **Mode** select runs one message read-only (`--permission-mode plan` for Claude, a
   read-only sandbox for Codex). The agent replies with a plan; your next message (back in **Make changes**) carries it out.
 - **Model, effort, optional tools.** Settings → **Claude Code**: a model alias or name (`--model`), an effort level
@@ -273,12 +307,15 @@ provider that's unavailable is refused, never silently swapped. A failed run tha
 
 ```sh
 npm run typecheck
-npm test                   # engine integration: projects, files, git, checkpoints/restore, tasks, MCP registry +
-                           # CLI translation, health MCP server, dev server, stream parsers, supervisor
+npm test                   # engine integration: projects, files, git, checkpoints/restore, the board (SQLite,
+                           # two processes writing at once, tasks following chats), MCP registry + CLI translation,
+                           # health and board MCP servers, dev server, stream parsers, supervisor
 npm run test:e2e           # real Electron app: import this repo, Files/Agent, restart persistence; Website Studio
                            # with a real dev server + embedded preview, blocked navigation, Tasks, MCP, diffs;
                            # a chat in its worktree with setup/teardown hooks, /merge and /cleanup;
-                           # a protocol chat through plan, checks, review and ship
+                           # a protocol chat through plan, checks, review and ship; the Tasks tab (plan, board,
+                           # archive, an MCP write showing up live, a task going to Done when its chat is merged,
+                           # drag and drop, collapse, ↑/↓, filter, agent history)
 npm run test:live:mobile   # opt-in: the mobile driver against already-booted emulators/simulators
                            # (THINKERER_LIVE_MOBILE=1 also runs tests/e2e/emulator.spec.ts, which copies an AVD, boots it, deletes it)
 npm run test:live:claude   # opt-in: REAL claude CLI on a throwaway folder (uses your quota)
@@ -300,7 +337,7 @@ engine/              Privileged services, Electron-free (unit-testable)
   projects.ts          project registry + .thinkerer/project.json
   files.ts, paths.ts   read-only listing/preview with path + symlink escape checks
   git.ts, checkpoints.ts  status; checkpoints, run diffs, restore
-  tasks.ts             task board store
+  board.ts             project boards for the app: live updates, tasks following chats (store: mcp/board/)
   mcp.ts               MCP registry, per-project grants, run-time resolution
   mobile.ts            Emulator panel backend (wraps mcp/mobile-driver.mjs)
   devserver.ts         approved dev command runner (project folder, and one per chat worktree)
@@ -309,7 +346,8 @@ engine/              Privileged services, Electron-free (unit-testable)
   worktrees.ts         worktrees, ports, hooks, commits and merges
   chatCommands.ts      /merge, /cleanup, /done, /discard
   agents/              adapter interface, Claude + Codex adapters, supervisor
-mcp/                 bundled MCP: thinkerer-health (demo), Playwright launcher, thinkerer-mobile + mobile-driver (emulators)
+mcp/                 bundled MCP: thinkerer-health (demo), Playwright launcher, thinkerer-mobile + mobile-driver (emulators),
+                     thinkerer-board + board/ (the SQLite board store, shared with the engine)
 shared/              Types shared by engine and renderer
 scripts/dev.mjs      dev launcher with restart loop
 vite.web.config.mts  renderer-only dev server (:5174) for self-preview
