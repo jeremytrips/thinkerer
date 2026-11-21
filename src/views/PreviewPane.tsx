@@ -11,6 +11,15 @@ const STATE_LABEL: Record<DevServerState['status'], string> = {
   external: 'Served externally'
 }
 
+/** The URL's origin, or the raw string when it doesn't parse (e.g. a preview URL without a scheme). */
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin
+  } catch {
+    return url
+  }
+}
+
 export interface PreviewDevice {
   id: string
   label: string
@@ -116,7 +125,7 @@ export function PreviewPane({ project, chatId = null, onCapture, suspended = fal
           : 'Start the dev server to preview the site here.'}
       {!previewing && (
         <div className="small">
-          {state?.url ? `The preview is sandboxed and limited to ${new URL(state.url).origin}.` : config.website.previewUrl ? 'This preview URL uses worktree ports; it opens from a chat.' : 'Set a preview URL in Settings.'}
+          {state?.url ? `The preview is sandboxed and limited to ${originOf(state.url)}.` : config.website.previewUrl ? 'This preview URL uses worktree ports; it opens from a chat.' : 'Set a preview URL in Settings.'}
         </div>
       )}
     </div>
