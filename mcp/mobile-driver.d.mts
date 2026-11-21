@@ -2,6 +2,8 @@
 import type { MobileDevice, MobileToolStatus } from '../shared/types'
 
 export declare const IOS_INPUT_HELP: string
+/** idb errors that mean its companion went stale; the driver restarts it and retries once. */
+export declare const STALE_IDB: RegExp
 export declare const KEYS: string[]
 export interface MobileScreenshot {
   data: Buffer

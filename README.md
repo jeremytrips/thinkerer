@@ -148,7 +148,9 @@ Android emulator or iOS simulator on this machine:
 - **iOS** needs Xcode. Simulators boot headless with `xcrun simctl`, which also handles screenshots,
   URLs, installing/launching apps and logs. simctl can't send touches, so taps and typing need
   [idb](https://fbidb.io): `brew install facebook/fb/idb-companion && pipx install fb-idb`. Without
-  it, the iOS screen is view-only.
+  it, the iOS screen is view-only. idb's companion process goes stale over time ("Mach port invalid,
+  device disconnected"); the driver then runs `idb kill` and retries once. Physical iPhones are not
+  supported yet.
 
 The screen is live in the panel. Click to tap, drag to swipe, use the wheel to scroll, with Back / Home
 / Recents and a text field for typing. **Open preview** loads the project's preview URL on the device;

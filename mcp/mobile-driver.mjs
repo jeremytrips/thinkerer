@@ -276,9 +276,20 @@ async function bootedSim(udid) {
   return d
 }
 
-function idb(udid, args, opts) {
+// idb keeps a companion process per simulator; after a simulator restart (or
+// just over time) it goes stale and every call fails with one of these.
+export const STALE_IDB = /Mach port invalid|device disconnected|did not answer a frontmost request|Connection refused|companion.*(not|isn't) running/i
+
+async function idb(udid, args, opts) {
   if (!tools().idb) throw new Error(IOS_INPUT_HELP)
-  return run(tools().idb, [...args, '--udid', udid], opts)
+  try {
+    return await run(tools().idb, [...args, '--udid', udid], opts)
+  } catch (err) {
+    if (!STALE_IDB.test(err.message)) throw err
+    // Restart the companion and retry once.
+    await run(tools().idb, ['kill'], { timeout: 15_000 }).catch(() => {})
+    return run(tools().idb, [...args, '--udid', udid], opts)
+  }
 }
 
 const IOS_BUTTONS = { home: 'HOME', lock: 'LOCK', power: 'LOCK', siri: 'SIRI', side: 'SIDE_BUTTON' }
