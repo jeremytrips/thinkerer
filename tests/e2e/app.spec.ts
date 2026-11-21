@@ -123,6 +123,9 @@ test('dark is the default theme and light still applies', async () => {
     const { app, page } = await launch(appData)
     await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible()
     const bg = () => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--bg').trim())
+    // No preference must fall back to dark (the default), not light.
+    await page.emulateMedia({ colorScheme: 'no-preference' })
+    expect(await bg()).toBe('#14161a')
     await page.emulateMedia({ colorScheme: 'dark' })
     expect(await bg()).toBe('#14161a')
     await page.screenshot({ path: join(shots, 'theme-dark.png') })

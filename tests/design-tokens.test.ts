@@ -83,7 +83,9 @@ describe('design tokens', () => {
     const offenders: string[] = []
     for (const file of tsxFiles(join(root, 'src'))) {
       readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
-        const styled = /\b(?:color|background\w*|border\w*Color|fill|stroke)\s*[:=]\s*(['"`{])(?!\s*['"`]?var\(--)/.test(line)
+        // Any colour property counts unless its value is a literal `var(--…)` string: a bare
+        // identifier (`color: tone`) could hold anything, so it is flagged too.
+        const styled = /\b(?:color|background\w*|border\w*Color|fill|stroke)\s*[:=]\s*(?!\{?\s*['"`]var\(--)[^\s,;}]/.test(line)
         if (COLOUR.test(line) || styled) offenders.push(`${file}:${i + 1}: ${line.trim()}`)
       })
     }
