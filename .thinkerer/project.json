@@ -6,8 +6,8 @@
   ],
   "target": "electron",
   "website": {
-    "devCommand": "npm run dev:web",
-    "previewUrl": "http://localhost:5174"
+    "devCommand": "npm run dev:web -- --port ${THINKERER_PORT_1:-5174} --strictPort",
+    "previewUrl": "http://localhost:{port1:5174}"
   },
   "agent": {
     "provider": "auto",
@@ -18,5 +18,10 @@
   },
   "marketing": {
     "enabled": true
+  },
+  "worktrees": {
+    "setupCommand": "npm ci",
+    "teardownCommand": "",
+    "ports": 1
   }
 }

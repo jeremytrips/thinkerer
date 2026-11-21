@@ -5,6 +5,7 @@ import { basename, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { ClaudeOptionalTool, ClaudeRunConfig, Component, Effort, Project, ProjectConfig, ProjectConfigPatch, ProtocolConfig, ProviderChoice, Target } from '../shared/types'
 import { readJson, writeJson } from './store'
+import { PORT_PLACEHOLDER } from './worktrees'
 
 const exec = promisify(execFile)
 
@@ -166,12 +167,13 @@ async function detectDefaults(folder: string): Promise<ProjectConfig> {
     devDependencies?: Record<string, string>
   }>(join(folder, 'package.json')).catch(() => null)
   const deps = { ...pkg?.dependencies, ...pkg?.devDependencies }
-  let hasFiles = false
+  let names: string[] = []
   try {
-    hasFiles = (await readdir(folder)).some((n) => n !== '.git' && n !== '.thinkerer')
+    names = await readdir(folder)
   } catch {
     // ignore
   }
+  const hasFiles = names.some((n) => n !== '.git' && n !== '.thinkerer')
   return {
     schemaVersion: 1,
     name: basename(folder),
@@ -182,10 +184,22 @@ async function detectDefaults(folder: string): Promise<ProjectConfig> {
       previewUrl: 'http://localhost:5173'
     },
     agent: { provider: 'auto', enabledMcpServers: [], claude: normalizeClaude(undefined) },
-    worktrees: { setupCommand: '', teardownCommand: '', ports: 0 },
+    worktrees: { setupCommand: pkg ? detectSetupCommand(names) : '', teardownCommand: '', ports: 0 },
     protocol: { ...normalizeProtocol(undefined), checkCommand: detectCheckCommand(pkg?.scripts) },
     marketing: { enabled: true }
   }
+}
+
+/**
+ * A new worktree has no node_modules, so every chat's first tests fail
+ * confusingly; installing from the lockfile fixes that. Only a suggestion:
+ * like every hook it runs after the user approves it.
+ */
+export function detectSetupCommand(files: string[]): string {
+  if (files.includes('package-lock.json')) return 'npm ci'
+  if (files.includes('pnpm-lock.yaml')) return 'pnpm install --frozen-lockfile'
+  if (files.includes('yarn.lock')) return 'yarn install --frozen-lockfile'
+  return ''
 }
 
 export const MAX_WORKTREE_PORTS = 10
@@ -244,7 +258,7 @@ function applyPatch(config: ProjectConfig, patch: ProjectConfigPatch): ProjectCo
       let parsed: URL
       try {
         // {portN} placeholders are filled per chat worktree; check the rest of the URL.
-        parsed = new URL(url.replace(/\{port([1-9]|10)\}/g, '1'))
+        parsed = new URL(url.replace(PORT_PLACEHOLDER, '1'))
       } catch {
         throw new Error('Preview URL must be a valid URL')
       }

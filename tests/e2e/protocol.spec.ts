@@ -13,7 +13,7 @@ const shots = process.env.THINKERER_SCREENSHOTS ?? join(root, 'test-results')
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', ['-c', 'user.email=e2e@example.com', '-c', 'user.name=E2E', ...args], { cwd, encoding: 'utf8' }).trim()
 
-test('a protocol chat goes plan → implement + checks → review → ship', async () => {
+test('a protocol chat goes plan → implement (approved by reply) + checks → review → ship', async () => {
   const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'thinkerer-protocol-')))
   const project = join(tmp, 'demo')
   mkdirSync(join(project, '.thinkerer'), { recursive: true })
@@ -62,12 +62,24 @@ test('a protocol chat goes plan → implement + checks → review → ship', asy
     // 1. Plan (read-only: nothing written in the worktree yet).
     const bar = page.getByRole('region', { name: 'Protocol steps' })
     await expect(bar.locator('[aria-current="step"]')).toHaveText('Plan')
-    await bar.getByRole('button', { name: 'Approve plan & implement' }).click()
+    await expect(bar.getByRole('button', { name: 'Approve plan & implement' })).toBeVisible()
+    // A reply that asks for changes keeps planning; one that plainly approves says it will implement.
+    await composer.fill('ok, but drop step 3')
+    await expect(page.getByRole('button', { name: 'Plan', exact: true })).toBeVisible()
+    await composer.fill('ok implement')
+    await expect(page.getByRole('button', { name: 'Approve & implement' })).toBeVisible()
+    await expect(page.getByText('This approves the plan: the agent starts implementing (not read-only).')).toBeVisible()
+    await page.screenshot({ path: join(shots, 'protocol-approve-reply.png') })
+    await composer.press('Enter')
 
     // 2. Implement; then Thinkerer runs the approved checks itself.
     await expect(page.getByRole('article', { name: 'Checks: Checks passed' })).toBeVisible()
     await expect(bar.locator('[aria-current="step"]')).toHaveText('Implement + tests')
     await expect(bar).toContainText('Checks passed.')
+    // No merge before the review: Ship does it.
+    await composer.fill('/merge')
+    await composer.press('Enter')
+    await expect(page.getByRole('article', { name: '/merge: Not merged: this chat follows the software protocol (stage: implement)' })).toBeVisible()
     await bar.getByRole('button', { name: 'Start review' }).click()
 
     // 3. Review in a fresh session; the stand-in reports one finding.

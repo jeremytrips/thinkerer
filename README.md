@@ -122,16 +122,22 @@ The bar at the top of the chat shows the stage and offers the next step:
 
 1. **Plan.** Your first message is the task. It runs read-only, and the agent replies with the goal,
    steps, tests and acceptance criteria. Reply to change the plan, or click **Approve plan & implement**.
+   A short reply that plainly approves ("ok implement", "lgtm", "go ahead") counts as approval: the send
+   button turns into **Approve & implement** before you send it. A reply with "but", "instead", a
+   question mark and the like still refines the plan.
 2. **Implement + tests.** The agent continues the same session, implements the plan and adds its tests.
    Then Thinkerer runs the project's check command itself in the worktree (shown as a **Checks** note).
    If the checks fail, **Fix failing checks** sends only the last 50 lines of output back to the agent.
 3. **Review.** A fresh, read-only session (no sub-agents) gets only the plan, the check result and the
-   branch diff (lockfiles and minified files left out; above 60k characters, only the file list). It
+   diff of the implement turns (from just before their first commit to the branch head, so it holds even
+   if the base branch already has the work). A review with nothing to diff is refused, and no turn runs.
+   The diff leaves lockfiles and minified files left out; above 60k characters, only the file list). It
    replies one finding per line. **Fix findings** sends just those findings back to the implementer's
    session. Review rounds are capped (2 by default).
 4. **Ship.** Thinkerer runs the same steps as `/merge`, then adds a report built only from what was
    recorded: turns, check result, findings per round and the tokens each stage's provider reported.
-   Cleanup stays manual: type `/cleanup`.
+   Cleanup stays manual: type `/cleanup`. Until a protocol chat has shipped, `/merge` refuses and
+   points to Ship, so unreviewed work never lands in the base branch.
 
 Settings → **Software protocol** sets the check command (detected from `package.json` `typecheck` /
 `test` scripts on import), the review rounds (1–5), and the review model and effort (Claude only, e.g. a
@@ -142,7 +148,9 @@ cheaper model for reviews). They are saved under `protocol` in `.thinkerer/proje
 Settings → **Chat worktrees** has a setup command, a teardown command and a number of ports. Each new
 chat gets that many free ports, kept until its worktree is removed. The setup command runs in the new
 worktree before the first message (a failure is shown in the chat, and the next message retries it);
-the teardown command runs when `/cleanup` or `/discard` removes it. Both, the dev command and the agent
+the teardown command runs when `/cleanup` or `/discard` removes it. On import, a project with a
+lockfile gets a suggested setup command (`npm ci`, `pnpm install --frozen-lockfile` or `yarn install
+--frozen-lockfile`), so new worktrees have their dependencies; like every hook it runs only once approved. Both, the dev command and the agent
 get:
 
 | Variable | Value |
@@ -156,7 +164,13 @@ For example: setup `cp "$THINKERER_PROJECT_ROOT/.env" . && npm ci && docker comp
 `docker compose down -v`, compose ports like `"${THINKERER_PORT_1:-5432}:5432"`. The preview URL may use
 `{port1}`…: with `http://localhost:{port1}` and a dev command such as `npm run dev -- --port
 $THINKERER_PORT_1`, the preview beside each chat runs and shows that chat's worktree. The Website tab
-runs the project folder, which has no worktree ports.
+runs the project folder, which has no worktree ports: `{port1:5174}` gives it port 5174 instead (this
+repository uses `http://localhost:{port1:5174}` with `npm run dev:web -- --port ${THINKERER_PORT_1:-5174}`).
+
+Before a turn whose agent has the Playwright tools, Thinkerer checks that the preview answers. If it
+doesn't and the dev command is approved, it starts the chat's dev server and waits up to 30 s. If the
+preview is still down, the agent is told to skip the browser check and say so, instead of being asked
+to check a page nothing serves.
 
 ### Mobile emulators
 

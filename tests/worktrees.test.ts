@@ -298,6 +298,9 @@ describe('worktree helpers', () => {
     expect(resolvePreviewUrl('http://localhost:{port2}', [4100, 4200])).toBe('http://localhost:4200')
     expect(resolvePreviewUrl('http://localhost:{port1}', [])).toBeNull()
     expect(resolvePreviewUrl('http://localhost:5173', [])).toBe('http://localhost:5173')
+    // {portN:fallback}: a chat's own port, the fallback in the project folder.
+    expect(resolvePreviewUrl('http://localhost:{port1:5174}', [4100])).toBe('http://localhost:4100')
+    expect(resolvePreviewUrl('http://localhost:{port1:5174}', [])).toBe('http://localhost:5174')
   })
 
   it('allocates distinct free ports, avoiding taken ones', async () => {

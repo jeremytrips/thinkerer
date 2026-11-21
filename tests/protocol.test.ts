@@ -9,7 +9,9 @@ import type { AgentAdapter, InvocationOptions } from '../engine/agents/types'
 import { Approvals } from '../engine/approvals'
 import { ProjectService } from '../engine/projects'
 import { ProtocolService } from '../engine/protocol'
-import { countFindings } from '../engine/protocolText'
+import { runChatCommand } from '../engine/chatCommands'
+import { IMPLEMENT_PROMPT, countFindings } from '../engine/protocolText'
+import { looksLikeApproval } from '../shared/protocol'
 import type { ChatRecord, ProtocolAction, RunSummary } from '../shared/types'
 
 // The software protocol end to end with a stand-in agent, a real temp repo and
@@ -18,6 +20,9 @@ import type { ChatRecord, ProtocolAction, RunSummary } from '../shared/types'
 
 const FIXTURE = join(__dirname, 'fixtures', 'stand-in-agent.mjs')
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+
+/** False: implement turns write nothing either (an implementation that changed no file). */
+let implementWrites = true
 
 /** Records what each turn was started with; read-only turns write nothing (like a real plan or review). */
 function recordingStandIn(calls: InvocationOptions[]): AgentAdapter {
@@ -28,7 +33,7 @@ function recordingStandIn(calls: InvocationOptions[]): AgentAdapter {
     detect: async () => ({ id: 'claude', label: 'Stand-in', installed: true, executable: process.execPath, version: 'test', authenticated: true, adapterAvailable: true, detail: '', policy: 'test' }),
     buildInvocation: (opts) => {
       calls.push(opts)
-      return { command: opts.executable, args: [FIXTURE, opts.mode === 'plan' ? 'readonly' : 'ok'], stdin: opts.prompt, env: process.env }
+      return { command: opts.executable, args: [FIXTURE, opts.mode === 'plan' || !implementWrites ? 'readonly' : 'ok'], stdin: opts.prompt, env: process.env }
     },
     createParser: () => ({ parseLine: parseClaudeLine })
   }
@@ -64,6 +69,7 @@ beforeEach(async () => {
   projectId = (await projects.importFolder(repo)).id
   approvals = new Approvals(appData)
   calls = []
+  implementWrites = true
   sup = new AgentSupervisor(appData, projects, { adapters: [recordingStandIn(calls)], approvals })
   protocol = new ProtocolService({ supervisor: sup, projects, approvals })
 })
@@ -230,9 +236,83 @@ describe('software protocol', () => {
     expect((await ended).protocolStage).toBe('implement')
     expect(calls.at(-1)!.mode).toBe('auto')
   })
+
+  it('implements when a plan reply plainly approves it, and keeps planning when it asks for changes', async () => {
+    await setup()
+    let ended = turnEnded()
+    const plan = await protocol.begin(projectId, 'Task', 'claude')
+    await ended
+    ended = turnEnded()
+    await protocol.reply((await sup.chats.get(plan.id))!, 'ok, but drop step 3')
+    expect((await ended).protocolStage).toBe('plan')
+    expect(calls.at(-1)!.mode).toBe('plan')
+
+    ended = turnEnded()
+    await protocol.reply((await sup.chats.get(plan.id))!, 'ok implement')
+    const impl = await ended
+    expect(impl.protocolStage).toBe('implement')
+    expect(calls.at(-1)!.mode).toBe('auto')
+    expect(calls.at(-1)!.prompt).toContain(IMPLEMENT_PROMPT)
+    expect(calls.at(-1)!.prompt).toContain('ok implement')
+    expect((await sup.chats.get(plan.id))!.protocol!.stage).toBe('implement')
+  })
+
+  it('reviews the implement commits even after the base branch already merged the chat branch', async () => {
+    await setup()
+    const ended = turnEnded()
+    const plan = await protocol.begin(projectId, 'Add a file', 'claude')
+    await ended
+    await step(plan.id, 'approve-plan')
+    const chat = (await sup.chats.get(plan.id))!
+    // What an early merge leaves: main has everything, so main...HEAD is empty.
+    git(repo, 'merge', '--no-ff', '-qm', 'early merge', chat.worktree!.branch)
+    expect(git(chat.worktree!.path, 'diff', '--name-only', 'main...HEAD')).toBe('')
+
+    await step(plan.id, 'start-review')
+    expect(calls.at(-1)!.prompt).toMatch(/## Diff[\s\S]*\+\+\+ b\/made\.txt/)
+    expect(calls.at(-1)!.prompt).not.toContain('(no changes)')
+  })
+
+  it('refuses a review when the implement turns changed nothing, without starting a turn', async () => {
+    await setup()
+    implementWrites = false
+    const ended = turnEnded()
+    const plan = await protocol.begin(projectId, 'Task', 'claude')
+    await ended
+    await step(plan.id, 'approve-plan')
+    const before = calls.length
+    await expect(protocol.advance(projectId, plan.id, 'start-review')).rejects.toThrow('Nothing to review')
+    expect(calls).toHaveLength(before)
+    expect((await sup.chats.get(plan.id))!.protocol).toMatchObject({ stage: 'implement', round: 0 })
+  })
+
+  it('refuses /merge before the protocol ships, while Ship still merges', async () => {
+    await setup()
+    const ended = turnEnded()
+    const plan = await protocol.begin(projectId, 'Add a file', 'claude')
+    await ended
+    await step(plan.id, 'approve-plan')
+    const project = await projects.get(projectId)
+    const ctx = { project, chats: sup.chats, approvals, live: false, stopDevServer: () => {} }
+    const refused = await runChatCommand('merge', { ...ctx, chat: (await sup.chats.get(plan.id))! })
+    expect(refused.state).not.toBe('merged')
+    expect(refused.notes.at(-1)).toMatchObject({ kind: 'merge', ok: false, title: 'Not merged: this chat follows the software protocol (stage: implement)' })
+    expect(() => readFileSync(join(repo, 'made.txt'))).toThrow()
+
+    await step(plan.id, 'start-review')
+    const shipped = await protocol.advance(projectId, plan.id, 'ship')
+    expect(shipped.state).toBe('merged')
+    expect(readFileSync(join(repo, 'made.txt'), 'utf8')).toContain(IMPLEMENT_PROMPT)
+  })
 })
 
 describe('protocol config and findings', () => {
+  it('reads only short, unconditional replies as plan approval', () => {
+    for (const yes of ['ok implement', 'OK', 'yes', 'go ahead', 'lgtm', 'Approved.', 'do it', 'looks good, implement it']) expect(looksLikeApproval(yes), yes).toBe(true)
+    for (const no of ['ok, but drop step 3', 'yes?', 'go ahead without tests', 'Change step 2', 'implement only step 1', '/merge', '', `ok ${'x'.repeat(100)}`, 'What about errors']) {
+      expect(looksLikeApproval(no), no).toBe(false)
+    }
+  })
   it('detects the check command from package.json and validates patches', async () => {
     const other = join(tmp, 'other')
     execFileSync('git', ['init', '-q', '-b', 'main', other])

@@ -220,6 +220,47 @@ describe('AgentSupervisor', () => {
     expect((await tasks.list(repo))[0]).toMatchObject({ status: 'doing', runIds: [final.id] })
   })
 
+  it('tells the agent to skip the browser check when the preview is down, and starts it when it can', async () => {
+    const { createServer } = await import('node:http')
+    const server = createServer((_q, r) => r.end('ok'))
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
+    const up = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+    // A port nothing listens on: bind one, read it, release it.
+    const probe = createServer()
+    await new Promise<void>((r) => probe.listen(0, '127.0.0.1', () => r()))
+    const down = `http://127.0.0.1:${(probe.address() as { port: number }).port}`
+    await new Promise((r) => probe.close(r))
+    await projects.updateConfig(projectId, { agent: { enabledMcpServers: ['playwright'] } })
+    const registry = new McpRegistry(join(tmp, 'appdata'), { get: async () => null, set: async () => {}, names: async () => [] })
+    const mcp = { registry, context: async () => ({ appRoot: '/app', node: { command: 'node', env: {} } }) }
+    const prompt = async (url: string, devServers?: { ensureRunning: () => Promise<boolean> }) => {
+      await projects.updateConfig(projectId, { website: { previewUrl: url } })
+      const seen: InvocationOptions[] = []
+      const sup = new AgentSupervisor(join(tmp, 'appdata'), projects, { adapters: [standIn('ok', '', seen)], mcp, devServers })
+      const finished = waitFor(sup, done)
+      await sup.start(projectId, 'go', 'claude')
+      await finished
+      expect(seen[0].mcp.map((s) => s.id)).toContain('playwright')
+      return seen[0].policy.appendSystemPrompt
+    }
+    try {
+      const skipped = await prompt(down)
+      expect(skipped).toContain(`The preview at ${down} is not running, so skip the browser check`)
+      expect(skipped).not.toContain('use the playwright MCP tools')
+
+      let asked = 0
+      const started = await prompt(down, { ensureRunning: async () => (asked++, true) })
+      expect(asked).toBe(1)
+      expect(started).toContain(`use the playwright MCP tools against ${down}`)
+
+      const running = await prompt(up, { ensureRunning: async () => (asked++, false) })
+      expect(asked).toBe(1) // already up: nothing started
+      expect(running).toContain(`use the playwright MCP tools against ${up}`)
+    } finally {
+      await new Promise((r) => server.close(r))
+    }
+  })
+
   it('hands the project’s AGENTS.md and CLAUDE.md to both providers and records which it gave', async () => {
     writeFileSync(join(repo, 'AGENTS.md'), 'Rule from AGENTS: always write tests.')
     writeFileSync(join(repo, 'CLAUDE.md'), '@AGENTS.md\n')

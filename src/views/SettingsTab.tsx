@@ -146,7 +146,7 @@ export function SettingsTab({ project, onChanged, onRemoved }: { project: Projec
           Preview URL
           <input className="mono" value={form.previewUrl} onChange={(e) => set('previewUrl', e.target.value)} placeholder="http://localhost:5173" />
           <span className="small muted">
-            Use <span className="mono">{'{port1}'}</span> for a worktree’s own port, e.g. <span className="mono">{'http://localhost:{port1}'}</span>.
+            Use <span className="mono">{'{port1}'}</span> for a worktree’s own port, e.g. <span className="mono">{'http://localhost:{port1}'}</span>; <span className="mono">{'{port1:5174}'}</span> also gives the project folder port 5174.
           </span>
         </label>
         <fieldset>

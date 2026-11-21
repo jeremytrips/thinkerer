@@ -39,6 +39,8 @@ interface Props {
   protocolChat: boolean
   /** The next message runs read-only (plan mode, or the protocol's plan stage). */
   planning: boolean
+  /** The draft approves the protocol's plan, so sending it starts the implementation. */
+  approving: boolean
   providers: ProviderStatus[] | null
   choice: ProviderChoice
   setChoice: (choice: ProviderChoice) => void
@@ -127,11 +129,12 @@ export function AgentComposer(p: Props) {
             </button>
           )}
           <button type="submit" className="primary small" disabled={!draft.trim() || p.starting || p.noGit || finished}>
-            {p.starting ? 'Sending…' : commandOf(draft) ? 'Run' : chat?.live ? 'Queue' : p.planning ? 'Plan' : 'Send'}
+            {p.starting ? 'Sending…' : commandOf(draft) ? 'Run' : chat?.live ? 'Queue' : p.approving ? 'Approve & implement' : p.planning ? 'Plan' : 'Send'}
           </button>
         </div>
       </div>
       <div className="row small composer-foot">
+        {p.approving && <span className="muted">This approves the plan: the agent starts implementing (not read-only).</span>}
         {chat ? (
           <span className="muted">
             {chat.provider === 'claude' ? 'Claude Code' : 'Codex'}

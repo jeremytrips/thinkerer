@@ -215,14 +215,15 @@ export function worktreeEnv(project: Project, chat: ChatRecord): Record<string, 
   return env
 }
 
-const PORT_PLACEHOLDER = /\{port([1-9]|10)\}/g
+/** {portN}, or {portN:5174} with the port to use where there is no reserved one (the project folder). */
+export const PORT_PLACEHOLDER = /\{port([1-9]|10)(?::(\d{2,5}))?\}/g
 
-/** Fills {portN} with the chat's ports; null if it uses a port the chat doesn't have (e.g. the project folder). */
+/** Fills {portN} with the chat's ports; null if it uses a port the chat doesn't have and gives no fallback. */
 export function resolvePreviewUrl(url: string, ports: number[]): string | null {
   if (!url) return null
   let missing = false
-  const filled = url.replace(PORT_PLACEHOLDER, (_m, n: string) => {
-    const p = ports[Number(n) - 1]
+  const filled = url.replace(PORT_PLACEHOLDER, (_m, n: string, fallback: string | undefined) => {
+    const p = ports[Number(n) - 1] ?? (fallback ? Number(fallback) : undefined)
     if (p === undefined) missing = true
     return String(p ?? '')
   })

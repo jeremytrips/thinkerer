@@ -1,3 +1,4 @@
+import { looksLikeApproval } from '../shared/protocol'
 import type { ChatProtocol, ChatRecord, ProtocolAction, ProtocolChecks, ProviderChoice, RunSummary } from '../shared/types'
 import type { AgentSupervisor, StartOptions } from './agents/supervisor'
 import type { Approvals } from './approvals'
@@ -12,7 +13,8 @@ import {
   fixFindingsPrompt,
   implementInstructions,
   protocolReport,
-  reviewPrompt
+  reviewPrompt,
+  reviewRange
 } from './protocolText'
 import { runHook, worktreeEnv } from './worktrees'
 
@@ -70,10 +72,15 @@ export class ProtocolService {
 
   /**
    * A message the user typed in a protocol chat. While planning it refines the
-   * plan (still read-only); afterwards it is more work for the implementer.
+   * plan (still read-only), unless it plainly approves it ("ok implement"):
+   * that is the user's go-ahead, so it must not run read-only once more.
+   * Afterwards it is more work for the implementer.
    */
   async reply(chat: ChatRecord, prompt: string, opts: BaseStart = {}): Promise<RunSummary> {
     const p = chat.protocol!
+    if (p.stage === 'plan' && looksLikeApproval(prompt)) {
+      return this.implement(chat, `${IMPLEMENT_PROMPT}\n\nThe user replied: ${prompt.trim()}`, opts)
+    }
     if (p.stage === 'plan') {
       return this.deps.supervisor.start(chat.projectId, prompt, 'auto', { ...opts, chatId: chat.id, mode: 'plan', protocolStage: 'plan', instructions: PLAN_INSTRUCTIONS })
     }
@@ -108,8 +115,13 @@ export class ProtocolService {
         if (p.stage !== 'implement' && !retry) throw new Error(p.stage === 'plan' ? 'Approve the plan first' : 'There is nothing new to review')
         if (p.round >= max) throw new Error(`This chat already had ${max} review round${max === 1 ? '' : 's'} (the project's limit). Ship it, or keep working by sending messages.`)
         if (!chat.worktree) throw new Error('Reviews need the chat to have its own worktree and branch')
-        const plan = (await latest('plan'))?.resultText ?? null
-        const prompt = await reviewPrompt(chat.worktree, chat.worktree.path, plan, p.checks)
+        const turns = await this.deps.supervisor.getChat(projectId, chatId)
+        // Diff what the implement turns committed, not the branch against its base: the base may already
+        // have this branch merged (e.g. an early /merge), which leaves a branch diff with nothing in it.
+        const range = await reviewRange(chat.worktree, chat.worktree.path, turns)
+        if (!range) throw new Error('Nothing to review: the implement turns made no changes on this branch. Send a message to keep working, or check the plan.')
+        const plan = turns.filter((t) => t.protocolStage === 'plan').at(-1)?.resultText ?? null
+        const prompt = await reviewPrompt(chat.worktree.path, range, plan, p.checks)
         const { protocol: { review }, agent } = project.config!
         await this.startStage(chat, { stage: 'review', round: p.round + 1 }, prompt, {
           mode: 'plan',
@@ -167,6 +179,7 @@ export class ProtocolService {
       chat,
       chats: this.chats,
       approvals: this.deps.approvals,
+      fromProtocol: true,
       live: this.deps.supervisor.isChatLive(chat.id),
       stopDevServer: () => this.deps.stopDevServer?.(projectId, chat.id)
     })

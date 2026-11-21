@@ -25,6 +25,8 @@ import { ATTACHMENT_ID, attachmentPath, attachmentRelPath, removeAttachment } fr
 import { ChatStore, chatTitle, newChat } from '../chats'
 import { deviceScope, type ChatDevices } from '../chatDevices'
 import { createCheckpoint, diffSummary, recordAfter } from '../checkpoints'
+import type { DevServerManager } from '../devserver'
+import { responds } from '../devserver'
 import { gitStatus } from '../git'
 import type { McpRegistry, McpRunContext, ResolvedMcpServer } from '../mcp'
 import type { ProjectService } from '../projects'
@@ -109,6 +111,8 @@ export interface SupervisorOptions {
   approvals?: Approvals
   /** Each chat's own emulators; without it, the mobile server is not limited to a chat. */
   devices?: ChatDevices
+  /** Starts a turn's preview when it is down; without it, a down preview only changes the instructions. */
+  devServers?: Pick<DevServerManager, 'ensureRunning'>
 }
 
 export interface StartOptions {
@@ -319,6 +323,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       const { servers, secretEnv } = await this.resolveMcp(project, record.id, ws, devices?.ids)
       record.mcpServers = servers.map((s) => s.id)
       this.addEvent(run, { kind: 'status', text: `MCP tools: ${record.mcpServers.join(', ') || 'none'}` })
+      const previewUp = servers.some((s) => s.id === 'playwright') && ws.previewUrl ? await this.previewReady(run, project, ws, ws.previewUrl) : true
       if (record.mode === 'plan') this.addEvent(run, { kind: 'status', text: 'Plan mode: this message runs read-only; reply to carry the plan out' })
       const instr = await loadProjectInstructions(ws.cwd)
       record.instructionFiles = instr.files
@@ -329,7 +334,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
         cwd: ws.cwd,
         prompt: record.prompt + attachmentNote(record.attachments ?? []),
         resumeSessionId: run.resumeSessionId,
-        policy: { ...this.policy, appendSystemPrompt: this.instructions(servers, ws, record.mode ?? 'auto', devices?.ids, run.instructions, instr.text) },
+        policy: { ...this.policy, appendSystemPrompt: this.instructions(servers, ws, record.mode ?? 'auto', devices?.ids, run.instructions, instr.text, previewUp) },
         mcp: servers,
         secretEnv,
         mode: record.mode ?? 'auto',
@@ -470,7 +475,27 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     return this.opts.mcp.registry.resolveForRun(project, { ...ctx, artifactsDir: this.artifactsDir(runId), cwd: ws.cwd, previewUrl: ws.previewUrl, provider, devices })
   }
 
-  private instructions(servers: ResolvedMcpServer[], ws: Workspace, mode: RunMode, devices: string[] | undefined, extra: string, project = ''): string {
+  /**
+   * Whether the turn's preview answers, starting its dev server first when
+   * the user has approved the command. A browser check against nothing only
+   * burns tokens on confusing failures, so the instructions follow this.
+   */
+  private async previewReady(run: ActiveRun, project: Project, ws: Workspace, url: string): Promise<boolean> {
+    if (await responds(url)) return true
+    if (!this.opts.devServers) return false
+    run.record.currentAction = `Starting the preview at ${url}…`
+    this.emitUpdate(run.record)
+    const target = { chatId: ws.chat?.worktree && !ws.chat.worktreeRemoved ? ws.chat.id : null, cwd: ws.cwd, env: ws.env, url }
+    const ok = await this.opts.devServers.ensureRunning(project, target).catch(() => false)
+    this.addEvent(run, {
+      kind: 'status',
+      text: ok ? `Preview started at ${url}` : `The preview at ${url} is not running and could not be started (no approved dev command, or it was not ready in time); the browser check is skipped`,
+      meta: ok ? undefined : { notice: true }
+    })
+    return ok
+  }
+
+  private instructions(servers: ResolvedMcpServer[], ws: Workspace, mode: RunMode, devices: string[] | undefined, extra: string, project = '', previewUp = true): string {
     const lines = [this.policy.appendSystemPrompt]
     if (mode === 'plan') {
       lines.push(
@@ -491,9 +516,11 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       }
     }
     const preview = ws.previewUrl
-    if (servers.some((s) => s.id === 'playwright') && preview) {
+    if (servers.some((s) => s.id === 'playwright') && preview && !previewUp) {
+      lines.push(`The preview at ${preview} is not running, so skip the browser check and say in your summary that it was not run.`)
+    } else if (servers.some((s) => s.id === 'playwright') && preview) {
       lines.push(
-        `To check UI changes in a real browser, use the playwright MCP tools against ${preview} (served by the project's dev command, which the user starts from Thinkerer's preview; if it is not reachable, say so).`,
+        `To check UI changes in a real browser, use the playwright MCP tools against ${preview} (served by the project's dev command; if it stops responding, say so).`,
         'Navigation is limited to that origin. Take a screenshot (browser_take_screenshot) of the verified state; screenshots are saved with the run, not in the project.',
         'State clearly whether the browser check PASSED or FAILED.'
       )

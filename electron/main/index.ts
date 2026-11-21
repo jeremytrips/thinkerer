@@ -45,7 +45,9 @@ const supervisor = new AgentSupervisor(appData, projects, {
   tasks,
   approvals,
   mcp: { registry: mcp, context: mcpContext },
-  devices: chatDevices
+  devices: chatDevices,
+  // A turn whose preview is down gets it started (approved dev command only) before the agent is told to check it.
+  devServers
 })
 const protocol = new ProtocolService({ supervisor, projects, approvals, stopDevServer: (projectId, chatId) => devServers.stop(projectId, chatId) })
 let mainWindow: BrowserWindow | null = null

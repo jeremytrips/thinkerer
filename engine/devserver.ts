@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events'
 import type { DevLogLine, DevServerState, Project } from '../shared/types'
 import { childEnv } from './agents/detect'
 import { Approvals } from './approvals'
+import { resolvePreviewUrl } from './worktrees'
 
 const MAX_LOG_LINES = 2000
 const KILL_GRACE_MS = 3000
@@ -33,9 +34,8 @@ export interface DevTarget {
 }
 
 export function projectTarget(project: Project): DevTarget {
-  const url = project.config?.website.previewUrl || null
-  // A URL with {portN} placeholders belongs to chat worktrees; the project folder has no such ports.
-  return { chatId: null, cwd: project.path, env: {}, url: url && !/\{port\d+\}/.test(url) ? url : null }
+  // The project folder has no reserved ports: {portN} needs a fallback ({port1:5174}) to give it a URL.
+  return { chatId: null, cwd: project.path, env: {}, url: resolvePreviewUrl(project.config?.website.previewUrl ?? '', []) }
 }
 
 const scopeKey = (projectId: string, chatId: string | null) => (chatId ? `${projectId}:${chatId}` : projectId)
@@ -165,6 +165,25 @@ export class DevServerManager extends EventEmitter<DevServerEvents> {
       }, READY_POLL_MS)
     }
     return server.state
+  }
+
+  /**
+   * Makes sure the target's preview answers before an agent turn needs it:
+   * starts the dev command if the user has approved it, then waits until it
+   * is ready. False (never an error) when it can't: no command, not approved,
+   * no URL, it exited, or it was not ready in time.
+   */
+  async ensureRunning(project: Project, target: DevTarget, timeoutMs = 30_000): Promise<boolean> {
+    const command = project.config?.website.devCommand?.trim()
+    if (!command || !target.url || !(await this.isApproved(project.id, command))) return false
+    if (!(await this.start(project, target).catch(() => null))) return false
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      const status = this.servers.get(scopeKey(project.id, target.chatId))?.state.status
+      if (status === 'running' || status === 'external') return true
+      if (status !== 'starting' || Date.now() >= deadline) return false
+      await new Promise((r) => setTimeout(r, 250))
+    }
   }
 
   stop(projectId: string, chatId: string | null = null): void {

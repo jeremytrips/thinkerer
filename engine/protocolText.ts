@@ -1,5 +1,5 @@
 import type { ChatRecord, ChatWorktree, ProtocolChecks, RunRecord, UsageObservation } from '../shared/types'
-import { branchExists, git } from './worktrees'
+import { git } from './worktrees'
 
 // What the software protocol tells the agent at each stage, and the report it
 // leaves when the chat ships. Everything here is kept short on purpose: these
@@ -59,18 +59,31 @@ export function fixFindingsPrompt(findings: string): string {
   ].join('\n')
 }
 
-/** The reviewer's whole input: acceptance criteria, check result and the branch diff, nothing from the implementer's conversation. */
-export async function reviewPrompt(wt: ChatWorktree, cwd: string, plan: string | null, checks: ProtocolChecks | null): Promise<string> {
-  const base = (await branchExists(cwd, wt.base)) ? `${wt.base}...HEAD` : `${wt.baseCommit}..HEAD`
-  const stat = (await git(cwd, ['diff', '--stat=120', base, '--', '.', ...NOISE_SPECS]).catch(() => '')).trim()
-  const diff = await git(cwd, ['diff', '--no-color', '-U3', base, '--', '.', ...NOISE_SPECS]).catch(() => '')
+/**
+ * What the reviewer looks at: from just before the first commit an implement
+ * turn made, to HEAD. Not `base...HEAD`: once the base branch has this branch
+ * merged, that diff is empty although the work is there. Chats whose turns
+ * have no recorded commit fall back to the commit the worktree started from.
+ * Null when the range has no changes, so no review is spent on nothing.
+ */
+export async function reviewRange(wt: ChatWorktree, cwd: string, turns: RunRecord[]): Promise<string | null> {
+  const first = turns.find((t) => (t.protocolStage ?? 'implement') === 'implement' && t.commit)?.commit
+  const range = first ? `${first}~1..HEAD` : `${wt.baseCommit}..HEAD`
+  const files = (await git(cwd, ['diff', '--name-only', range]).catch(() => '')).trim()
+  return files ? range : null
+}
+
+/** The reviewer's whole input: acceptance criteria, check result and the diff of the implement turns, nothing from the implementer's conversation. */
+export async function reviewPrompt(cwd: string, range: string, plan: string | null, checks: ProtocolChecks | null): Promise<string> {
+  const stat = (await git(cwd, ['diff', '--stat=120', range, '--', '.', ...NOISE_SPECS]).catch(() => '')).trim()
+  const diff = await git(cwd, ['diff', '--no-color', '-U3', range, '--', '.', ...NOISE_SPECS]).catch(() => '')
   const lines = ['Review the change on this branch against the plan below.', '', '## Plan', plan ? clip(plan, MAX_PLAN_CHARS) : '(no plan recorded)', '']
   if (checks) lines.push('## Checks', `\`${checks.command}\`: ${checks.status === 'passed' ? 'passed' : checks.status === 'failed' ? `failed (exit code ${checks.exitCode})` : 'not run'}`, '')
   lines.push('## Files changed', stat || '(no changes)', '')
   if (diff.length <= MAX_REVIEW_DIFF_CHARS) {
     lines.push('## Diff', '```diff', diff.trimEnd(), '```')
   } else {
-    lines.push(`The diff is too large to include (${Math.round(diff.length / 1000)}k characters). Open what you need with \`git diff ${base} -- <file>\`.`)
+    lines.push(`The diff is too large to include (${Math.round(diff.length / 1000)}k characters). Open what you need with \`git diff ${range} -- <file>\`.`)
   }
   return lines.join('\n')
 }
