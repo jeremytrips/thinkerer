@@ -32,9 +32,10 @@ const TOOLS = [
   },
   {
     name: 'mobile_boot',
-    description: 'Boot an emulator/simulator and wait until it is ready (can take a minute). Headless by default; the user sees it in Thinkerer\'s Emulator panel. It keeps running after the run; shut it down when done unless the user is using it.',
-    inputSchema: obj({ device, window: { type: 'boolean', description: 'Also open the emulator window / Simulator.app (default false)' } }, ['device']),
-    run: async (a) => mobile.boot(a.device, { window: !!a.window })
+    description: 'Boot an emulator/simulator headless and wait until it is ready (can take a minute). It shows only in Thinkerer\'s Emulator panel, never as a window on the desktop. It keeps running after the run; shut it down when done unless the user is using it.',
+    // No window option on purpose: devices an agent starts live only inside Thinkerer.
+    inputSchema: obj({ device }),
+    run: async (a) => mobile.boot(a.device, { window: false })
   },
   {
     name: 'mobile_shutdown',

@@ -183,6 +183,9 @@ describe('thinkerer-mobile MCP server', () => {
     const names = replies[2].result.tools.map((t: { name: string }) => t.name)
     expect(names).toEqual(expect.arrayContaining(['mobile_list_devices', 'mobile_boot', 'mobile_screenshot', 'mobile_tap', 'mobile_swipe', 'mobile_type', 'mobile_describe_ui', 'mobile_open_url', 'mobile_install_app', 'mobile_launch_app']))
     expect(replies[2].result.tools.every((t: { inputSchema?: { type: string } }) => t.inputSchema?.type === 'object')).toBe(true)
+    // Agents can only boot headless: no option to open a desktop window.
+    const boot = replies[2].result.tools.find((t: { name: string }) => t.name === 'mobile_boot')
+    expect(Object.keys(boot.inputSchema.properties)).toEqual(['device'])
     const listed = JSON.parse(replies[3].result.content[0].text)
     expect(listed.tools).toHaveProperty('android.available')
     expect(listed.tools).toHaveProperty('ios.available')

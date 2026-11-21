@@ -447,6 +447,14 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
         'State clearly whether the browser check PASSED or FAILED.'
       )
     }
+    // Emulators an agent starts must stay inside Thinkerer's Emulator panel: a desktop window
+    // (Simulator.app, the emulator UI) steals focus and is not what the user asked for.
+    lines.push(
+      servers.some((s) => s.id === 'mobile')
+        ? 'Android emulators and iOS simulators run headless and show only in Thinkerer\'s Emulator panel. Start and drive them with the mobile MCP tools (mobile_boot boots headless).'
+        : 'If you start an Android emulator or iOS simulator, boot it headless so it shows only in Thinkerer\'s Emulator panel: `xcrun simctl boot <udid>` or `emulator -avd <name> -no-window`.',
+      'Never open a device window yourself: no `open -a Simulator`, Xcode, Android Studio, or `emulator` without `-no-window`.'
+    )
     if (servers.some((s) => s.id === 'health')) lines.push('The health MCP server reports project health (git state, preview reachability).')
     return lines.join(' ')
   }

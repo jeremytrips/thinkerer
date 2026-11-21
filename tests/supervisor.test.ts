@@ -213,6 +213,9 @@ describe('AgentSupervisor', () => {
     expect(seen[0].mcp.map((s) => s.id)).toEqual(['health'])
     expect(seen[0].mcp[0].env.THINKERER_PROJECT_ROOT).toBe(repo)
     expect(seen[0].policy.appendSystemPrompt).toMatch(/health MCP server/)
+    // No mobile server enabled: the agent is still told to keep emulators headless, inside Thinkerer.
+    expect(seen[0].policy.appendSystemPrompt).toMatch(/emulator -avd <name> -no-window/)
+    expect(seen[0].policy.appendSystemPrompt).toMatch(/Never open a device window yourself/)
     expect((await tasks.list(repo))[0]).toMatchObject({ status: 'doing', runIds: [final.id] })
   })
 

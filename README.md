@@ -162,6 +162,11 @@ The agent controls the **same devices** through the built-in **Mobile emulators*
 `mobile_install_app`/`launch_app`/`terminate_app`/`list_apps` and `mobile_logs`. All coordinates are
 logical points (iOS points, Android dp). Both use one dependency-free driver, `mcp/mobile-driver.mjs`.
 
+Devices a chat starts run **only inside Thinkerer**. `mobile_boot` always boots headless (it has no
+window option), and every run's instructions tell the agent never to open a device window
+(Simulator.app, Xcode, Android Studio, or `emulator` without `-no-window`). Without the MCP server
+enabled, the instructions also give the headless shell commands to use instead.
+
 The embedded preview and the agent's Playwright browser are **separate browser sessions** that visit
 the same dev server. They don't share cookies or login state; per the spec, a shared live session is
 post-MVP.
