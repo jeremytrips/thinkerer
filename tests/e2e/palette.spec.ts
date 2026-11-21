@@ -64,13 +64,25 @@ test('the command palette switches project and tab, starts a chat and runs slash
       await page.keyboard.press('Enter')
       await expect(dialog).toBeHidden()
     }
+    // Opened over another dialog, the palette is drawn on top of it.
+    await page.getByRole('button', { name: 'About', exact: true }).click()
+    const aboutBox = (await page.getByRole('dialog', { name: 'About Thinkerer' }).boundingBox())!
+    let dialog = await palette(page, '')
+    // Over the About card, the topmost element belongs to the palette's layer, not to About.
+    const onTop = await page.evaluate(([x, y]) => !!document.elementFromPoint(x, y)?.closest('.palette-backdrop'), [aboutBox.x + aboutBox.width / 2, aboutBox.y + aboutBox.height / 2])
+    expect(onTop).toBe(true)
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeHidden()
+    await expect(page.getByRole('dialog', { name: 'About Thinkerer' })).toBeVisible() // esc closed only the palette
+    await page.getByRole('button', { name: 'Close' }).click()
+
     await importFolder(alpha)
     await expect(page.getByRole('tab', { name: 'Overview', selected: true })).toBeVisible()
     await page.getByRole('button', { name: '← Projects' }).click()
     await importFolder(beta)
 
     // Switch project: Beta is open, so the palette offers Alpha (and home), not Beta.
-    let dialog = await palette(page, '')
+    dialog = await palette(page, '')
     await expect(dialog.getByRole('group', { name: 'Projects' }).getByRole('option')).toHaveCount(2)
     await expect(dialog.getByRole('group', { name: 'Actions' }).getByRole('option', { name: /New chat/ })).toBeVisible()
     await page.waitForTimeout(250) // let the 140ms fade-in finish
@@ -91,6 +103,11 @@ test('the command palette switches project and tab, starts a chat and runs slash
     // esc closes without doing anything; no match says so.
     dialog = await palette(page, 'zzzz')
     await expect(dialog).toContainText('No commands match “zzzz”.')
+    // Clicking inside the palette (not on an entry) and Tab keep the keys working.
+    await dialog.getByRole('combobox').fill('')
+    await dialog.getByText('Projects', { exact: true }).click()
+    await page.keyboard.press('Tab')
+    await expect(dialog.getByRole('combobox')).toBeFocused()
     await page.keyboard.press('Escape')
     await expect(dialog).toBeHidden()
     await expect(page.getByRole('tab', { name: 'Tasks', selected: true })).toBeVisible()
@@ -112,6 +129,8 @@ test('the command palette switches project and tab, starts a chat and runs slash
     await expect(page.getByLabel('Working')).toHaveCount(0)
 
     // A leading "/" lists only slash commands; ⌘K works while typing in the composer.
+    // A draft in the composer survives a slash command run from the palette.
+    await composer.fill('keep this draft')
     await composer.focus()
     dialog = await palette(page, '/')
     await expect(dialog.getByRole('group')).toHaveCount(1)
@@ -121,6 +140,7 @@ test('the command palette switches project and tab, starts a chat and runs slash
     await dialog.getByRole('combobox').fill('/done')
     await page.keyboard.press('Enter')
     await expect(page.getByRole('article', { name: /^\/done: Marked done/ })).toBeVisible()
+    await expect(composer).toHaveValue('keep this draft')
   } finally {
     await app.close()
     rmSync(tmp, { recursive: true, force: true })

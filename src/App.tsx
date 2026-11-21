@@ -3,7 +3,7 @@ import type { AppInfo, Project } from '../shared/types'
 import { api, errorMessage, loadState, saveState } from './api'
 import { paletteSourceItems } from './palette'
 import { appPaletteItems } from './paletteModel'
-import { CommandPalette } from './views/CommandPalette'
+import { CommandPalette, isPaletteKey } from './views/CommandPalette'
 import { Home } from './views/Home'
 import { ProjectView, TABS, type TabId } from './views/ProjectView'
 
@@ -38,7 +38,7 @@ export function App() {
   // ⌘K (Ctrl+K off macOS) toggles the palette from anywhere in the window, text fields included.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
+      if (isPaletteKey(e)) {
         e.preventDefault()
         setPalette((open) => !open)
       }
@@ -68,7 +68,7 @@ export function App() {
 
   return (
     <div className="app">
-      {palette && <CommandPalette items={paletteItems()} onClose={() => setPalette(false)} />}
+      {palette && <CommandPalette items={paletteItems()} current={paletteItems} onClose={() => setPalette(false)} />}
       {error && (
         <div className="banner banner-error" role="alert">
           {error} <button className="link" onClick={() => setError(null)}>Dismiss</button>

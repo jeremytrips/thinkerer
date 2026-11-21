@@ -2,13 +2,13 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { checksPending } from '../../shared/protocol'
 import type { AppInfo, ChatCommand, PreviewCapture, Project, ProtocolAction, ProviderChoice, RunMode, RunRecord } from '../../shared/types'
 import { api, errorMessage, loadState, saveState } from '../api'
-import { usePaletteSource } from '../palette'
 import { AgentComposer } from './AgentComposer'
+import { useChatPalette } from './chatPalette'
 import { ChatHeader, ChatList, byCreated, chatOf, groupChats, upsertRecord } from './AgentChats'
 import { AgentPreviewSide, usePreviewLayout } from './AgentPreview'
 import { AgentTranscript, lastAgentPage, transcriptItems } from './AgentTranscript'
 import { RestoreDialog } from './Changes'
-import { agentItems, chatPaletteItems, commandOf, matchingCommands, type SlashItem } from './ChatBits'
+import { agentItems, commandOf, matchingCommands, type SlashItem } from './ChatBits'
 import { LIVE } from './ChatTurn'
 import { ProtocolBar } from './ProtocolBar'
 import { composerMode } from './composerMode'
@@ -100,10 +100,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill, onPrefillUsed 
     if (prefill.chatId) return openChat(prefill.chatId)
     openChat(null)
     // An empty prefill (the palette's "New chat") keeps a draft already typed there.
-    if (prefill.prompt) {
-      setDraft(prefill.prompt, NEW)
-      setTaskId(prefill.taskId)
-    }
+    if (prefill.prompt) (setDraft(prefill.prompt, NEW), setTaskId(prefill.taskId))
     composerRef.current?.focus()
   }, [prefill?.nonce])
 
@@ -143,11 +140,11 @@ export function AgentTab({ project, info, isSelf, onTab, prefill, onPrefillUsed 
     }
   }
 
-  async function runCommand(name: ChatCommand) {
-    if (!chatId) return
+  async function runCommand(name: ChatCommand, keepDraft = false) {
+    if (!chatId || starting) return
     setError(null)
     setNotice(null)
-    setDraft('')
+    if (!keepDraft) setDraft('')
     setStarting(true)
     stick.current = true
     try {
@@ -266,9 +263,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill, onPrefillUsed 
   const protocolChat = chat ? !!record?.protocol : useProtocol
   const { approving, planning } = composerMode({ hasChat: !!chat, protocolChat, stage: record?.protocol?.stage, mode, draft })
 
-  const complete = (name: string) => (setDraft(`/${name} `), composerRef.current?.focus())
-  usePaletteSource('agent', () => chatPaletteItems({ chatTitle: chat?.title ?? null, closed: finished || isGit === false, agentCommands, run: (n) => void runCommand(n), complete }))
-
+  useChatPalette({ chatTitle: chat?.title ?? null, closed: finished || isGit === false, busy: starting, agentCommands, draft, setDraft, composerRef, runCommand: (n, keep) => void runCommand(n, keep) })
   const items = transcriptItems(turns, record?.notes ?? [])
   const lastTurnId = turns.at(-1)?.id
 

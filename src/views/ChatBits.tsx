@@ -1,5 +1,4 @@
 import type { ChatCommand, ChatNote } from '../../shared/types'
-import type { PaletteItem } from '../paletteModel'
 
 /** Slash commands Thinkerer runs itself; the agent never sees them. */
 export const COMMANDS: { name: ChatCommand; hint: string }[] = [
@@ -117,25 +116,4 @@ export function ChatNoteView({ note }: { note: ChatNote }) {
       )}
     </article>
   )
-}
-
-/**
- * The open chat's slash commands as palette entries. Thinkerer's commands run on that chat
- * right away, as picking them from the slash menu does; the agent's own commands go into
- * the composer, so arguments can follow.
- */
-export function chatPaletteItems(p: {
-  chatTitle: string | null
-  /** No message can be sent (finished chat, or no Git). */
-  closed: boolean
-  agentCommands: SlashItem[]
-  run: (name: ChatCommand) => void
-  complete: (name: string) => void
-}): PaletteItem[] {
-  if (p.closed) return []
-  const own: PaletteItem[] = p.chatTitle
-    ? COMMANDS.map((c) => ({ id: `slash:${c.name}`, section: 'Slash commands', title: `/${c.name}`, hint: `${c.hint} · ${p.chatTitle}`, run: () => p.run(c.name) }))
-    : []
-  const agent: PaletteItem[] = p.agentCommands.map((c) => ({ id: `slash-agent:${c.name}`, section: 'Slash commands', title: `/${c.name}`, hint: c.hint, shortcut: 'agent', run: () => p.complete(c.name) }))
-  return [...own, ...agent]
 }

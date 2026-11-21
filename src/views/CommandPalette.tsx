@@ -2,16 +2,25 @@ import { useEffect, useMemo, useState, type KeyboardEvent } from 'react'
 import { useOverlay } from '../overlay'
 import { filterPalette, type PaletteItem } from '../paletteModel'
 
+export const IS_MAC = typeof navigator !== 'undefined' && /Mac/i.test(navigator.userAgent)
 /** "⌘K" on a Mac, "Ctrl K" elsewhere. */
-export const PALETTE_SHORTCUT = typeof navigator !== 'undefined' && /Mac/i.test(navigator.userAgent) ? '⌘K' : 'Ctrl K'
+export const PALETTE_SHORTCUT = IS_MAC ? '⌘K' : 'Ctrl K'
+
+/** The palette's shortcut: ⌘K on a Mac (Ctrl+K stays the text fields' delete-to-end-of-line), Ctrl+K elsewhere. */
+export function isPaletteKey(e: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean }, mac = IS_MAC): boolean {
+  const mod = mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
+  return mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k'
+}
 
 interface Props {
   items: PaletteItem[]
+  /** The entries as they are now. Read again when one runs, since what is shown was gathered when the palette opened. */
+  current: () => PaletteItem[]
   onClose: () => void
 }
 
 /** The ⌘K palette: type to filter, ↑/↓ to move, ↵ to run, esc to close. */
-export function CommandPalette({ items, onClose }: Props) {
+export function CommandPalette({ items, current, onClose }: Props) {
   useOverlay()
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
@@ -25,8 +34,11 @@ export function CommandPalette({ items, onClose }: Props) {
   }, [activeId])
 
   function run(item: PaletteItem) {
+    // The view behind may have changed since opening (a chat finished, a command started):
+    // run the entry's current version, or nothing if it is no longer offered.
+    const fresh = current().find((i) => i.id === item.id)
     onClose()
-    item.run()
+    fresh?.run()
   }
 
   function onKeyDown(e: KeyboardEvent) {
@@ -35,6 +47,8 @@ export function CommandPalette({ items, onClose }: Props) {
       e.stopPropagation()
       return onClose()
     }
+    // The input is the palette's only focusable element: Tab must not wander to the page behind.
+    if (e.key === 'Tab') return e.preventDefault()
     if (!flat.length) return
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault()
@@ -49,7 +63,13 @@ export function CommandPalette({ items, onClose }: Props) {
   let n = -1
   return (
     <div className="modal-backdrop palette-backdrop" role="presentation" onMouseDown={onClose}>
-      <div className="palette" role="dialog" aria-modal="true" aria-label="Command palette" onMouseDown={(e) => e.stopPropagation()} onKeyDown={onKeyDown}>
+      <div className="palette" role="dialog" aria-modal="true" aria-label="Command palette" onMouseDown={(e) => {
+          e.stopPropagation()
+          // Clicks anywhere in the palette keep focus in the input, so the keys keep working.
+          if (!(e.target instanceof HTMLInputElement)) e.preventDefault()
+        }}
+        onKeyDown={onKeyDown}
+      >
         <input
           className="palette-input"
           autoFocus

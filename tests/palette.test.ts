@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { appPaletteItems, filterPalette, fuzzyScore, type PaletteItem } from '../src/paletteModel'
-import { chatPaletteItems } from '../src/views/ChatBits'
+import { chatPaletteItems, withCommand } from '../src/views/chatPalette'
+import { isPaletteKey } from '../src/views/CommandPalette'
 
 const item = (id: string, section: PaletteItem['section'], title: string, hint?: string): PaletteItem => ({ id, section, title, hint, run: () => {} })
 const titles = (items: PaletteItem[], q: string) => filterPalette(items, q).flatMap((g) => g.items.map((i) => i.title))
@@ -72,7 +73,7 @@ describe('chatPaletteItems', () => {
   it('runs Thinkerer commands on the open chat and completes agent commands', () => {
     const run = vi.fn()
     const complete = vi.fn()
-    const items = chatPaletteItems({ chatTitle: 'Fix login', closed: false, agentCommands, run, complete })
+    const items = chatPaletteItems({ chatTitle: 'Fix login', closed: false, busy: false, agentCommands, run, complete })
     expect(items.map((i) => i.title)).toEqual(['/merge', '/cleanup', '/done', '/discard', '/compact'])
     items[0].run()
     expect(run).toHaveBeenCalledWith('merge')
@@ -81,7 +82,32 @@ describe('chatPaletteItems', () => {
   })
   it('offers only agent commands without an open chat, and nothing once closed', () => {
     const fns = { run: vi.fn(), complete: vi.fn() }
-    expect(chatPaletteItems({ chatTitle: null, closed: false, agentCommands, ...fns }).map((i) => i.title)).toEqual(['/compact'])
-    expect(chatPaletteItems({ chatTitle: 'x', closed: true, agentCommands, ...fns })).toEqual([])
+    expect(chatPaletteItems({ chatTitle: null, closed: false, busy: false, agentCommands, ...fns }).map((i) => i.title)).toEqual(['/compact'])
+    expect(chatPaletteItems({ chatTitle: 'x', closed: true, busy: false, agentCommands, ...fns })).toEqual([])
+  })
+  it('offers no Thinkerer command while one is already running', () => {
+    const fns = { run: vi.fn(), complete: vi.fn() }
+    expect(chatPaletteItems({ chatTitle: 'x', closed: false, busy: true, agentCommands, ...fns }).map((i) => i.title)).toEqual(['/compact'])
+  })
+})
+
+describe('withCommand', () => {
+  it('keeps what was typed after the agent command, and replaces a command already there', () => {
+    expect(withCommand('', 'compact')).toBe('/compact ')
+    expect(withCommand('focus on the tests', 'compact')).toBe('/compact focus on the tests')
+    expect(withCommand('/review focus on the tests', 'compact')).toBe('/compact focus on the tests')
+  })
+})
+
+describe('isPaletteKey', () => {
+  const key = (k: Partial<{ key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean }>) => ({ key: 'k', metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...k })
+  it('is ⌘K on a Mac, leaving Ctrl+K to text fields', () => {
+    expect(isPaletteKey(key({ metaKey: true }), true)).toBe(true)
+    expect(isPaletteKey(key({ ctrlKey: true }), true)).toBe(false)
+  })
+  it('is Ctrl+K elsewhere, without other modifiers', () => {
+    expect(isPaletteKey(key({ ctrlKey: true }), false)).toBe(true)
+    expect(isPaletteKey(key({ metaKey: true }), false)).toBe(false)
+    expect(isPaletteKey(key({ ctrlKey: true, shiftKey: true }), false)).toBe(false)
   })
 })

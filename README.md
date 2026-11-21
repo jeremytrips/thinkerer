@@ -94,14 +94,15 @@ The result is commit `8438cfd`; typecheck, unit and e2e tests passed when re-run
 | Settings | Name, components, target, dev command, preview URL, chat worktree hooks and ports, default provider, Claude Code model / effort / optional tools, software protocol (check command, review rounds, review model / effort), LLM providers, agent permissions |
 | Marketing | Placeholder (post-MVP) |
 
-**Command palette:** ⌘K (Ctrl+K off macOS), or **Commands** in the top bar, opens a palette from any
-screen, text fields included. Type to filter (fuzzy on titles, substring on hints), ↑/↓ to move, ↵ to
+**Command palette:** ⌘K on macOS (Ctrl+K stays delete-to-end-of-line there), Ctrl+K elsewhere, or
+**Commands** in the top bar, opens a palette from any screen, text fields and other dialogs included. Type to filter (fuzzy on titles, substring on hints), ↑/↓ to move, ↵ to
 run, esc to close. It switches project (or back to all projects) and tab, starts a **New chat** (Agent
 tab, composer focused, a draft already there is kept), and on the projects screen imports a folder,
 creates a project or opens About. On the Agent tab it lists the open chat's slash commands: `/merge`
-`/cleanup` `/done` `/discard` run on that chat right away, as from the slash menu; the agent CLI's own
-commands go into the composer. A leading `/` shows only slash commands. Verified by
-`tests/e2e/palette.spec.ts` (2026-11-21).
+`/cleanup` `/done` `/discard` run on that chat right away, as from the slash menu, and leave a draft in
+its composer alone (they aren't offered while a command is already running); the agent CLI's own
+commands go in front of the draft. A leading `/` shows only slash commands. Verified by
+`tests/e2e/palette.spec.ts` (2026-11-22).
 
 **Theme:** dark by default; the app switches to light when the OS asks for light
 (`prefers-color-scheme`), and the window background follows it. All colours are tokens in
