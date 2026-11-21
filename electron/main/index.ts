@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, session, shell } from 'electron'
+import { app, BrowserWindow, nativeTheme, session, shell } from 'electron'
 import { findExecutable } from '../../engine/agents/detect'
 import { scriptAdapter } from '../../engine/agents/script'
 import { AgentSupervisor } from '../../engine/agents/supervisor'
@@ -63,6 +63,13 @@ function rendererOrigin(): string {
   return isDev ? new URL(process.env.ELECTRON_RENDERER_URL!).origin : 'file://'
 }
 
+// Matches --bg in src/styles.css for each theme, so the area the renderer has not painted yet
+// (startup, resize, reload) does not flash the wrong colour.
+const WINDOW_BG = { dark: '#14161a', light: '#f6f6f4' } as const
+function windowBackground(): string {
+  return nativeTheme.shouldUseDarkColors ? WINDOW_BG.dark : WINDOW_BG.light
+}
+
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
@@ -70,7 +77,7 @@ function createWindow(): BrowserWindow {
     minWidth: 900,
     minHeight: 600,
     title: 'Thinkerer',
-    backgroundColor: '#14161a',
+    backgroundColor: windowBackground(),
     show: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -81,6 +88,9 @@ function createWindow(): BrowserWindow {
     }
   })
   win.once('ready-to-show', () => win.show())
+  const onTheme = () => { if (!win.isDestroyed()) win.setBackgroundColor(windowBackground()) }
+  nativeTheme.on('updated', onTheme)
+  win.on('closed', () => nativeTheme.off('updated', onTheme))
 
   // The renderer is an untrusted surface: no new windows, no navigating away.
   win.webContents.setWindowOpenHandler(({ url }) => {

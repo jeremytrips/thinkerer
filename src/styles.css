@@ -21,6 +21,7 @@
   --backdrop: rgb(0 0 0 / 0.45);
   --shadow: rgb(0 0 0 / 0.4);
   --shadow-soft: rgb(0 0 0 / 0.25);
+  /* The device frame around a mobile preview stays near-black in both themes, like real hardware. */
   --bezel: #1c1c1e;
   /* Work types on the board (always shown with their label, never colour alone). */
   --type-software: #7c89f0;
@@ -57,10 +58,9 @@
     --danger-soft: #fbe5e2;
     --info-soft: #e8eefb;
     --code-bg: #fafaf8;
-    --backdrop: rgb(0 0 0 / 0.45);
-    --shadow: rgb(0 0 0 / 0.4);
-    --shadow-soft: rgb(0 0 0 / 0.25);
-    --bezel: #1c1c1e;
+    --backdrop: rgb(0 0 0 / 0.3);
+    --shadow: rgb(0 0 0 / 0.22);
+    --shadow-soft: rgb(0 0 0 / 0.14);
     --type-software: #4b5bd6;
     --type-firmware: #0f8a8a;
     --type-electronics: #b3731a;
@@ -261,7 +261,7 @@ select, input, textarea {
 .changed li, .tree-changes li { padding: 1px 0; }
 .git-code { display: inline-block; min-width: 2ch; color: var(--warn); white-space: pre; }
 .composer { display: flex; flex-direction: column; gap: 6px; flex: none; }
-.composer-box { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 8px 10px 8px; }
+.composer-box { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 8px 10px 8px; }
 .composer-box:focus-within { border-color: var(--accent); }
 .composer-box textarea { border: none; background: none; padding: 2px 0; resize: none; field-sizing: content; min-height: 44px; max-height: 240px; outline: none; }
 .composer-box textarea:focus-visible { outline: none; }
@@ -275,12 +275,12 @@ select, input, textarea {
 .surface-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; flex: none; }
 .surface-bar .segmented { margin: 0; }
 .agent-page { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.slash-menu { list-style: none; margin: 0; padding: 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); display: flex; flex-direction: column; gap: 2px; }
+.slash-menu { list-style: none; margin: 0; padding: 4px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); display: flex; flex-direction: column; gap: 2px; }
 .slash-item { width: 100%; text-align: left; display: flex; gap: 10px; align-items: baseline; border-color: transparent; background: none; }
 .slash-item.active { background: var(--accent-soft); }
 .composer-attachments { display: flex; gap: 6px; flex-wrap: wrap; }
 .attachment-chip { display: flex; align-items: center; gap: 6px; max-width: 280px; border: 1px solid var(--border); border-radius: var(--radius-control); padding: 3px 3px 3px 4px; background: var(--surface); }
-.attachment-chip img { width: 56px; height: 36px; object-fit: cover; object-position: top; border-radius: 3px; flex: none; }
+.attachment-chip img { width: 56px; height: 36px; object-fit: cover; object-position: top; border-radius: var(--radius-badge); flex: none; }
 .sent-attachments { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 .sent-attachment { padding: 0; border-radius: var(--radius-control); overflow: hidden; }
 .sent-attachment img { display: block; width: 160px; height: 100px; object-fit: cover; object-position: top; }

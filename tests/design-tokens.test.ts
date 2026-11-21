@@ -8,7 +8,11 @@ import { describe, expect, it } from 'vitest'
 const root = resolve(__dirname, '..')
 const css = readFileSync(join(root, 'src/styles.css'), 'utf8')
 const design = readFileSync(join(root, 'docs/DESIGN.md'), 'utf8')
-const COLOUR = /#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?)\(/
+const HEX = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})\b/
+const COLOUR = new RegExp(`${HEX.source}|\\b(?:rgba?|hsla?)\\(`)
+// In source files a `#word` can be a fragment link or selector (`href="#add"`), so only hex inside
+// a string that is nothing but the colour counts there, plus rgb()/hsl() anywhere.
+const SOURCE_COLOUR = new RegExp(`(?<!(?:href|to|id|htmlFor)=\\{?)['"\`]${HEX.source}['"\`]|\\b(?:rgba?|hsla?)\\(`)
 
 /** Returns the body of the first `{…}` block starting at `from`, matching braces. */
 function block(source: string, from: number): { body: string; end: number } {
@@ -42,11 +46,11 @@ function designTokens(): string[] {
   return [...names]
 }
 
-function tsxFiles(dir: string): string[] {
+function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name)
-    if (statSync(path).isDirectory()) return tsxFiles(path)
-    return path.endsWith('.tsx') ? [path] : []
+    if (statSync(path).isDirectory()) return sourceFiles(path)
+    return /\.(?:tsx?|html)$/.test(path) ? [path] : []
   })
 }
 
@@ -64,7 +68,8 @@ describe('design tokens', () => {
     expect(tokens.length).toBeGreaterThan(20)
     const inDark = defined(dark.body)
     const inLight = defined(light.body)
-    const themeAgnostic = new Set(['--radius', '--radius-control', '--radius-badge', '--mono'])
+    // Not theme-dependent: sizes, the font stack, and the device bezel (dark hardware in both themes).
+    const themeAgnostic = new Set(['--radius', '--radius-control', '--radius-badge', '--mono', '--bezel'])
     for (const t of tokens) {
       expect(inDark.has(t), `${t} missing in :root`).toBe(true)
       if (!themeAgnostic.has(t)) expect(inLight.has(t), `${t} missing in light theme`).toBe(true)
@@ -79,14 +84,22 @@ describe('design tokens', () => {
     expect(offenders).toEqual([])
   })
 
-  it('has no inline colours in src/**/*.tsx', () => {
+  it('keeps the Electron window background in step with --bg', () => {
+    const main = readFileSync(join(root, 'electron/main/index.ts'), 'utf8')
+    const m = main.match(/WINDOW_BG = \{ dark: '(#[0-9a-f]+)', light: '(#[0-9a-f]+)' \}/)
+    expect(m, 'WINDOW_BG not found in electron/main/index.ts').not.toBeNull()
+    const value = (body: string) => body.match(/--bg:\s*(#[0-9a-f]+)/)?.[1]
+    expect([m?.[1], m?.[2]]).toEqual([value(dark.body), value(light.body)])
+  })
+
+  it('has no inline colours in src/ (ts, tsx, html)', () => {
     const offenders: string[] = []
-    for (const file of tsxFiles(join(root, 'src'))) {
+    for (const file of sourceFiles(join(root, 'src'))) {
       readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
         // Any colour property counts unless its value is a literal `var(--…)` string: a bare
         // identifier (`color: tone`) could hold anything, so it is flagged too.
         const styled = /\b(?:color|background\w*|border\w*Color|fill|stroke)\s*[:=]\s*(?!\{?\s*['"`]var\(--)[^\s,;}]/.test(line)
-        if (COLOUR.test(line) || styled) offenders.push(`${file}:${i + 1}: ${line.trim()}`)
+        if (SOURCE_COLOUR.test(line) || styled) offenders.push(`${file}:${i + 1}: ${line.trim()}`)
       })
     }
     expect(offenders).toEqual([])

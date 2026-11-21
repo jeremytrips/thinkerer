@@ -31,12 +31,14 @@ Dark is the primary theme; light must keep working.
 | `--info-soft`, `--code-bg` | info banners; code, logs and diffs |
 | `--backdrop`, `--shadow`, `--shadow-soft`, `--bezel` | modal backdrop, overlays, device-frame preview |
 | `--type-software` … `--type-other` | work-type tags on the board (always with a label) |
-| `--radius`, `--radius-control`, `--radius-badge` | 8px panels; 6px controls; 4px badges |
+| `--radius`, `--radius-control`, `--radius-badge` | 8px panels; 6px controls; 4px badges (pills use 999px; the chat bubble keeps its tail shape) |
 | `--mono` | paths, commands, diffs, logs, IDs |
 
 Dark values live in `:root`; light overrides sit under `@media (prefers-color-scheme: light)`.
 `tests/design-tokens.test.ts` checks that every token above is defined in both themes and that no
-colour literal appears outside those two blocks or inline in `src/`.
+colour literal appears outside those two blocks or inline in `src/` (`.ts`, `.tsx`, `.html`).
+`--bezel` and the sizes are the same in both themes. The Electron window background in
+`electron/main/index.ts` copies `--bg` for each theme, and the same test keeps the two in step.
 
 Target sizes: 13px body, 12px meta, 15–17px titles; row height 32–36px; 8px spacing grid.
 Motion: 120–180ms ease-out, opacity/translate only; honour `prefers-reduced-motion`.

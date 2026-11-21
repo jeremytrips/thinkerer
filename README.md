@@ -94,6 +94,11 @@ The result is commit `8438cfd`; typecheck, unit and e2e tests passed when re-run
 | Settings | Name, components, target, dev command, preview URL, chat worktree hooks and ports, default provider, Claude Code model / effort / optional tools, software protocol (check command, review rounds, review model / effort), LLM providers, agent permissions |
 | Marketing | Placeholder (post-MVP) |
 
+**Theme:** dark by default; the app switches to light when the OS asks for light
+(`prefers-color-scheme`), and the window background follows it. All colours are tokens in
+`src/styles.css` ([`docs/DESIGN.md`](docs/DESIGN.md)); `tests/design-tokens.test.ts` and the theme e2e
+test check this (2026-11-21).
+
 ### Tasks (project board)
 
 - **Items.** Milestones (target date, Planned / Active / Done) → epics → tasks. Every item has a short key (`M-1`,
