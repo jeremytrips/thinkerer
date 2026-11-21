@@ -18,13 +18,5 @@
   },
   "marketing": {
     "enabled": true
-  },
-  "protocol": {
-    "checkCommand": "npm run typecheck && npm test",
-    "maxReviewRounds": 2,
-    "review": {
-      "model": "",
-      "effort": ""
-    }
   }
 }
