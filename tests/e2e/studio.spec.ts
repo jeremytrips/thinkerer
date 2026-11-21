@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -44,9 +44,17 @@ http.createServer((q, s) => { s.setHeader('content-type', 'text/html'); s.end(pa
       marketing: { enabled: true }
     })
   )
+  // A server configured for Claude Code itself, to import (no secrets, so no Keychain access).
+  writeFileSync(
+    join(project, '.mcp.json'),
+    JSON.stringify({ mcpServers: { 'Local Health': { command: process.execPath, args: [join(root, 'mcp', 'thinkerer-health.mjs')], env: { LOG_LEVEL: 'info' } } } })
+  )
   execFileSync('git', ['init', '-q'], { cwd: project })
+  // A throwaway home, so importing never reads the real ~/.claude.json.
+  const home = join(tmp, 'home')
+  mkdirSync(home)
 
-  const app = await electron.launch({ args: [root], cwd: root, env: { ...process.env, THINKERER_APP_DATA: join(tmp, 'appdata') } })
+  const app = await electron.launch({ args: [root], cwd: root, env: { ...process.env, HOME: home, THINKERER_APP_DATA: join(tmp, 'appdata') } })
   try {
     const page = await app.firstWindow()
     await app.evaluate(({ dialog }, folder) => {
@@ -71,6 +79,42 @@ http.createServer((q, s) => { s.setHeader('content-type', 'text/html'); s.end(pa
     await expect(page.locator('table.effective')).toContainText('Project health')
     await expect(page.locator('table.effective tr', { hasText: 'Playwright browser' })).toContainText('✓ included')
     await page.screenshot({ path: join(shots, 'mcp.png') })
+
+    // Check a server: connect and list its tools
+    const health = page.locator('.mcp-server', { hasText: 'Project health' })
+    await health.getByRole('button', { name: 'Check' }).click()
+    await expect(health.locator('.mcp-check')).toContainText(/Connected to thinkerer-health .* 1 tool/, { timeout: 15_000 })
+
+    // Import a server from Claude Code's own configuration (.mcp.json), then check it
+    await page.getByRole('button', { name: 'Import from Claude Code…' }).click()
+    const candidate = page.locator('.import-list li', { hasText: 'Local Health' })
+    await expect(candidate).toContainText('.mcp.json')
+    await expect(candidate).toContainText('local-health')
+    await candidate.getByRole('button', { name: 'Import' }).click()
+    await expect(candidate.getByRole('button', { name: 'Replace' })).toBeVisible()
+    const imported = page.locator('.mcp-server', { hasText: 'local-health' })
+    await expect(imported).toContainText('Imported from .mcp.json')
+    await imported.getByRole('button', { name: 'Check' }).click()
+    await expect(imported.locator('.mcp-check')).toContainText('1 tool', { timeout: 15_000 })
+    await page.screenshot({ path: join(shots, 'mcp-import-check.png') })
+
+    // Claude Code run options in Settings, saved to .thinkerer/project.json
+    await page.getByRole('tab', { name: 'Settings' }).click()
+    await page.getByLabel('Model').fill('sonnet')
+    await page.getByLabel('Effort').selectOption('high')
+    await page.getByRole('group', { name: 'Optional Claude Code tools' }).getByRole('checkbox', { name: /Web search/ }).check()
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    await expect(page.getByText('Saved to .thinkerer/project.json')).toBeVisible()
+    const saved = JSON.parse(readFileSync(join(project, '.thinkerer', 'project.json'), 'utf8'))
+    expect(saved.agent.claude).toEqual({ model: 'sonnet', effort: 'high', tools: ['Task', 'Skill', 'WebSearch'] })
+    await page.screenshot({ path: join(shots, 'settings-claude.png') })
+
+    // Plan mode is offered per message in the composer
+    await page.getByRole('tab', { name: 'Agent' }).click()
+    await expect(page.getByLabel('Mode for the next message')).toHaveValue('auto')
+    await page.getByLabel('Mode for the next message').selectOption('plan')
+    await expect(page.getByRole('button', { name: 'Plan', exact: true })).toBeVisible()
+    await page.getByLabel('Mode for the next message').selectOption('auto')
 
     // Website Studio: real dev server + embedded preview
     await page.getByRole('tab', { name: 'Website' }).click()

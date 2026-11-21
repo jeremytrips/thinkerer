@@ -12,6 +12,7 @@ import type {
   ProviderStatus,
   RunArtifact,
   RunEvent,
+  RunMode,
   RunRecord,
   RunSummary,
   UsageObservation
@@ -105,6 +106,8 @@ export interface StartOptions {
   attachments?: PromptAttachment[]
   /** Send this as a follow-up in an existing chat. It keeps that chat's provider and task. */
   chatId?: string | null
+  /** 'plan' runs this message read-only. */
+  mode?: RunMode
 }
 
 export interface SupervisorEvents {
@@ -159,6 +162,8 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
   async start(projectId: string, prompt: string, requested: ProviderChoice, opts: StartOptions = {}): Promise<RunSummary> {
     if (typeof prompt !== 'string' || !prompt.trim()) throw new Error('Prompt is empty')
     if (prompt.length > 100_000) throw new Error('Prompt is too long')
+    const mode: RunMode = opts.mode ?? 'auto'
+    if (mode !== 'auto' && mode !== 'plan') throw new Error('Invalid mode')
     if (opts.attachments?.some((a) => !ATTACHMENT_ID.test(a.id))) throw new Error('Invalid attachment')
     const chatId = opts.chatId ?? null
     if (chatId !== null && !RUN_ID.test(chatId)) throw new Error('Invalid chat')
@@ -198,6 +203,8 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
         chatId: chatId ?? id,
         sessionId: null,
         prompt,
+        mode,
+        capabilities: null,
         taskId: chat ? chat.taskId : (opts.taskId ?? null),
         checkpoint: null,
         afterCommit: null,
@@ -285,15 +292,18 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       const { servers, secretEnv } = await this.resolveMcp(project, record.id, ws)
       record.mcpServers = servers.map((s) => s.id)
       this.addEvent(run, { kind: 'status', text: `MCP tools: ${record.mcpServers.join(', ') || 'none'}` })
+      if (record.mode === 'plan') this.addEvent(run, { kind: 'status', text: 'Plan mode: this message runs read-only; reply to carry the plan out' })
 
       const inv = adapter.buildInvocation({
         executable: status.executable!,
         cwd: ws.cwd,
         prompt: record.prompt + attachmentNote(record.attachments ?? []),
         resumeSessionId: run.resumeSessionId,
-        policy: { ...this.policy, appendSystemPrompt: this.instructions(servers, ws) },
+        policy: { ...this.policy, appendSystemPrompt: this.instructions(servers, ws, record.mode ?? 'auto') },
         mcp: servers,
-        secretEnv
+        secretEnv,
+        mode: record.mode ?? 'auto',
+        claude: project.config!.agent.claude
       })
       if (run.cancelRequested) return void (await this.finish(run, 'cancelled', null, null))
       const child = spawn(inv.command, inv.args, {
@@ -405,11 +415,18 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
   private async resolveMcp(project: Project, runId: string, ws: Workspace): Promise<{ servers: ResolvedMcpServer[]; secretEnv: Record<string, string> }> {
     if (!this.opts.mcp) return { servers: [], secretEnv: {} }
     const ctx = await this.opts.mcp.context()
-    return this.opts.mcp.registry.resolveForRun(project, { ...ctx, artifactsDir: this.artifactsDir(runId), cwd: ws.cwd, previewUrl: ws.previewUrl })
+    const provider = this.active.get(runId)?.record.provider
+    return this.opts.mcp.registry.resolveForRun(project, { ...ctx, artifactsDir: this.artifactsDir(runId), cwd: ws.cwd, previewUrl: ws.previewUrl, provider })
   }
 
-  private instructions(servers: ResolvedMcpServer[], ws: Workspace): string {
+  private instructions(servers: ResolvedMcpServer[], ws: Workspace, mode: RunMode): string {
     const lines = [this.policy.appendSystemPrompt]
+    if (mode === 'plan') {
+      lines.push(
+        'This message is in plan mode: investigate read-only and reply with a concrete, step-by-step plan. Do not edit files or run commands that change anything.',
+        'The user will reply in this chat to carry the plan out.'
+      )
+    }
     const wt = ws.chat?.worktree
     if (wt) {
       lines.push(
@@ -595,6 +612,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
         for (const u of parser.parseLine(line)) {
           if (u.currentAction) run.record.currentAction = u.currentAction
           if (u.sessionId) run.record.sessionId = u.sessionId
+          if (u.capabilities) run.record.capabilities = u.capabilities
           if (u.usage) run.record.usage = mergeUsage(run.record.usage, u.usage)
           if (u.result) {
             sawResult = { isError: u.result.isError }

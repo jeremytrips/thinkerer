@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { AppInfo, RunEvent, RunRecord, RunStatus } from '../../shared/types'
+import type { AgentCapabilities, AppInfo, RunEvent, RunRecord, RunStatus } from '../../shared/types'
 import { api } from '../api'
 import { ArtifactGallery, SentAttachments } from './RunMedia'
 import { ChangeList } from './Changes'
@@ -45,6 +45,7 @@ export function ChatTurn({ turn, projectId, root, isLast, anyLive, info, isSelf,
   return (
     <article className="turn" aria-label={`Message: ${turn.prompt.slice(0, 80)}`}>
       <div className="bubble-user">
+        {turn.mode === 'plan' && <span className="badge mode-badge" title="Read-only: the agent proposes a plan">Plan</span>}
         {turn.prompt}
         {(turn.attachments?.length ?? 0) > 0 && <SentAttachments runId={turn.id} attachments={turn.attachments!} />}
       </div>
@@ -156,11 +157,48 @@ export function ChatTurn({ turn, projectId, root, isLast, anyLive, info, isSelf,
             {turn.selection.rationale}
             {taskTitle && <> · task: {taskTitle}</>}
           </div>
+          {turn.capabilities && <SessionInfo caps={turn.capabilities} />}
           <div className="events">
             {details.filter((e) => e.kind !== 'result').map((e, i) => <EventLine key={i} event={e} root={root} />)}
           </div>
         </details>
       </div>
     </article>
+  )
+}
+
+/** What the agent CLI reported for this session: model, tools, MCP connections, commands, subagents. */
+function SessionInfo({ caps }: { caps: AgentCapabilities }) {
+  const rows: [string, React.ReactNode][] = [
+    ['Model', <span className="mono">{caps.model ?? 'unknown'}{caps.version ? ` · Claude Code ${caps.version}` : ''}{caps.permissionMode ? ` · ${caps.permissionMode} mode` : ''}</span>],
+    ['Tools', <span className="mono">{caps.tools.join(', ') || 'none'}</span>],
+    [
+      'MCP',
+      caps.mcpServers.length ? (
+        <span>
+          {caps.mcpServers.map((m, i) => (
+            <span key={m.name} className={m.status === 'connected' ? 'ok-text' : 'error-text'}>
+              {i > 0 && ', '}
+              {m.name} {m.status === 'connected' ? '✓' : `✗ ${m.status}`}
+            </span>
+          ))}
+        </span>
+      ) : (
+        <span className="muted">none</span>
+      )
+    ],
+    ['Subagents', caps.tools.includes('Task') ? <span className="mono">{caps.agents.join(', ') || 'none'}</span> : <span className="muted">off (enable in Settings → Claude Code)</span>],
+    ['Skills', caps.tools.includes('Skill') || caps.skills.length ? <span className="mono">{caps.skills.join(', ') || 'none'}</span> : <span className="muted">none</span>],
+    ['Commands', <span className="mono">{caps.commands.map((c) => `/${c}`).join(' ') || 'none'}</span>]
+  ]
+  return (
+    <dl className="session-info" aria-label="Agent session">
+      {rows.map(([k, v]) => (
+        <div key={k}>
+          <dt className="muted">{k}</dt>
+          <dd>{v}</dd>
+        </div>
+      ))}
+    </dl>
   )
 }

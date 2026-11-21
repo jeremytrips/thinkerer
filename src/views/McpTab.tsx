@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { EffectiveMcp, McpServerView, Project } from '../../shared/types'
+import type { EffectiveMcp, McpCheckResult, McpImportCandidate, McpServerView, McpTransport, Project } from '../../shared/types'
 import { api, errorMessage } from '../api'
 
 export function McpTab({ project, onChanged }: { project: Project; onChanged: () => Promise<void> }) {
@@ -7,6 +7,8 @@ export function McpTab({ project, onChanged }: { project: Project; onChanged: ()
   const [effective, setEffective] = useState<EffectiveMcp[]>([])
   const [error, setError] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [checks, setChecks] = useState<Record<string, McpCheckResult | 'checking'>>({})
   const saved = project.config!.agent.enabledMcpServers
   // Optimistic so the checkbox responds immediately; reverted if saving fails.
   const [enabled, setEnabled] = useState<string[]>(saved)
@@ -30,6 +32,16 @@ export function McpTab({ project, onChanged }: { project: Project; onChanged: ()
     }
   }
 
+  async function check(id: string) {
+    setChecks((cur) => ({ ...cur, [id]: 'checking' }))
+    try {
+      const res = await api.mcp.check(project.id, id)
+      setChecks((cur) => ({ ...cur, [id]: res }))
+    } catch (err) {
+      setChecks((cur) => ({ ...cur, [id]: { ok: false, serverInfo: null, tools: [], error: errorMessage(err), ms: 0 } }))
+    }
+  }
+
   const toggle = (id: string, on: boolean) => {
     const next = on ? [...enabled, id] : enabled.filter((x) => x !== id)
     setEnabled(next)
@@ -48,7 +60,8 @@ export function McpTab({ project, onChanged }: { project: Project; onChanged: ()
       <h1>MCP tools</h1>
       <p className="muted">
         One registry for all projects. Enable servers per project; both Claude Code and Codex receive the same enabled servers.
-        Changes take effect at the next agent run. Your own global CLI MCP configuration is never passed to agents.
+        Changes take effect at the next agent run. Your own global CLI MCP configuration is never passed to agents, but you can import
+        servers from it. Each turn’s Details show which servers actually connected.
       </p>
       {error && <div className="banner banner-error">{error}</div>}
 
@@ -81,8 +94,12 @@ export function McpTab({ project, onChanged }: { project: Project; onChanged: ()
 
       <div className="row space">
         <h3>Registry</h3>
-        {!adding && <button className="small" onClick={() => setAdding(true)}>Add server…</button>}
+        <div className="row">
+          {!importing && <button className="small" onClick={() => setImporting(true)}>Import from Claude Code…</button>}
+          {!adding && <button className="small" onClick={() => setAdding(true)}>Add server…</button>}
+        </div>
       </div>
+      {importing && <ImportServers projectId={project.id} onClose={() => setImporting(false)} onImport={(key) => act(() => api.mcp.import(project.id, key))} />}
       {adding && <AddServer onCancel={() => setAdding(false)} onSave={(def) => act(async () => { await api.mcp.upsert(def); setAdding(false) })} />}
 
       <ul className="mcp-list">
@@ -92,12 +109,26 @@ export function McpTab({ project, onChanged }: { project: Project; onChanged: ()
               <label className="check">
                 <input type="checkbox" checked={enabled.includes(s.id)} onChange={(e) => toggle(s.id, e.target.checked)} />
                 <strong>{s.label}</strong> <span className="badge">{s.builtin ? 'built-in' : 'custom'}</span>
+                {s.transport && s.transport !== 'stdio' && <span className="badge">{s.transport === 'http' ? 'HTTP' : 'SSE'}</span>}
                 <span className="mono small muted">{s.id}</span>
               </label>
-              {!s.builtin && <button className="small link" onClick={() => act(() => api.mcp.remove(s.id))}>Remove</button>}
+              <div className="row">
+                <button className="small" onClick={() => void check(s.id)} disabled={checks[s.id] === 'checking'} title="Connect and list its tools (no tool is called)">
+                  {checks[s.id] === 'checking' ? 'Checking…' : 'Check'}
+                </button>
+                {!s.builtin && <button className="small link" onClick={() => act(() => api.mcp.remove(s.id))}>Remove</button>}
+              </div>
             </div>
             {s.description && <p className="small muted">{s.description}</p>}
-            <div className="mono small cmd">{s.command} {s.args.join(' ')}</div>
+            {s.transport && s.transport !== 'stdio' ? (
+              <div className="mono small cmd">
+                {s.url}
+                {Object.entries(s.headers ?? {}).map(([k, v]) => <div key={k}>{k}: {v}</div>)}
+              </div>
+            ) : (
+              <div className="mono small cmd">{s.command} {s.args.join(' ')}</div>
+            )}
+            {checks[s.id] && checks[s.id] !== 'checking' && <CheckResult result={checks[s.id] as McpCheckResult} />}
             {s.secretEnv.length > 0 && (
               <div className="secrets">
                 {s.secretEnv.map((name) => (
@@ -132,14 +163,93 @@ function SecretField({ serverId, name, isSet, onDone }: { serverId: string; name
   )
 }
 
+function CheckResult({ result }: { result: McpCheckResult }) {
+  if (!result.ok) return <div className="banner banner-error small mcp-check">Could not connect: {result.error}</div>
+  return (
+    <details className="small mcp-check">
+      <summary className="ok-text">
+        ✓ Connected{result.serverInfo ? ` to ${result.serverInfo}` : ''} · {result.tools.length} tool{result.tools.length === 1 ? '' : 's'} · {result.ms} ms
+      </summary>
+      <ul className="mcp-tools">
+        {result.tools.map((t) => (
+          <li key={t.name}>
+            <span className="mono">{t.name}</span> {t.description && <span className="muted">— {t.description}</span>}
+          </li>
+        ))}
+      </ul>
+    </details>
+  )
+}
+
+function ImportServers({ projectId, onClose, onImport }: { projectId: string; onClose: () => void; onImport: (key: string) => Promise<void> }) {
+  const [found, setFound] = useState<McpImportCandidate[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const load = useCallback(() => {
+    api.mcp.importCandidates(projectId).then(setFound, (e) => setError(errorMessage(e)))
+  }, [projectId])
+  useEffect(load, [load])
+
+  return (
+    <div className="card form">
+      <div className="row space">
+        <h3>Import from Claude Code</h3>
+        <button className="small" onClick={onClose}>Close</button>
+      </div>
+      <p className="small muted">
+        Servers configured for Claude Code itself: this project’s <span className="mono">.mcp.json</span>, and your user and per-project servers
+        in <span className="mono">~/.claude.json</span>. Claude’s files are only read. Secret-looking values (tokens, keys, auth headers) are
+        moved into Thinkerer’s encrypted storage; values Claude takes from your shell (<span className="mono">{'${VAR}'}</span>) become secrets
+        to set after importing. Servers that sign in with OAuth (<span className="mono">claude mcp login</span>) may not authenticate here.
+      </p>
+      {error && <div className="banner banner-error">{error}</div>}
+      {!found ? (
+        <p className="muted small">Looking…</p>
+      ) : found.length === 0 ? (
+        <p className="muted small">No MCP servers found in Claude Code’s configuration.</p>
+      ) : (
+        <ul className="import-list">
+          {found.map((c) => (
+            <li key={c.key}>
+              <div className="row space">
+                <span>
+                  <strong>{c.name}</strong> <span className="badge">{c.def.transport === 'http' ? 'HTTP' : c.def.transport === 'sse' ? 'SSE' : 'stdio'}</span>{' '}
+                  <span className="small muted">{c.sourceLabel}</span>
+                </span>
+                <button className="small" disabled={!!c.unsupported} onClick={() => void onImport(c.key).then(load)}>
+                  {c.exists ? 'Replace' : 'Import'}
+                </button>
+              </div>
+              <div className="mono small cmd">{c.def.transport === 'http' || c.def.transport === 'sse' ? c.def.url : `${c.def.command} ${c.def.args.join(' ')}`}</div>
+              <div className="small muted">
+                id <span className="mono">{c.def.id}</span>
+                {c.secretsFound.length > 0 && <> · secrets copied: <span className="mono">{c.secretsFound.join(', ')}</span></>}
+                {c.secretsMissing.length > 0 && <> · secrets to set: <span className="mono">{c.secretsMissing.join(', ')}</span></>}
+                {c.exists && <> · already in the registry</>}
+              </div>
+              {c.unsupported && <div className="small error-text">{c.unsupported}</div>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+const lines = (text: string) => text.split('\n').map((l) => l.trim()).filter(Boolean)
+const pairs = (text: string, sep: string) => Object.fromEntries(lines(text).filter((l) => l.includes(sep)).map((l) => [l.slice(0, l.indexOf(sep)).trim(), l.slice(l.indexOf(sep) + 1).trim()]))
+
 function AddServer({ onCancel, onSave }: { onCancel: () => void; onSave: (def: McpServerView) => void }) {
+  const [transport, setTransport] = useState<McpTransport>('stdio')
   const [id, setId] = useState('')
   const [label, setLabel] = useState('')
   const [description, setDescription] = useState('')
   const [command, setCommand] = useState('')
   const [args, setArgs] = useState('')
   const [env, setEnv] = useState('')
+  const [url, setUrl] = useState('')
+  const [headers, setHeaders] = useState('')
   const [secrets, setSecrets] = useState('')
+  const remote = transport !== 'stdio'
 
   return (
     <form
@@ -151,31 +261,51 @@ function AddServer({ onCancel, onSave }: { onCancel: () => void; onSave: (def: M
           label,
           description,
           builtin: false,
-          command,
-          args: args.split('\n').map((a) => a.trim()).filter(Boolean),
-          env: Object.fromEntries(
-            env
-              .split('\n')
-              .map((l) => l.trim())
-              .filter(Boolean)
-              .map((l) => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1)])
-          ),
+          transport,
+          command: remote ? '' : command,
+          args: remote ? [] : lines(args),
+          env: remote ? {} : pairs(env, '='),
+          ...(remote ? { url: url.trim(), headers: pairs(headers, ':') } : {}),
           secretEnv: secrets.split(',').map((s) => s.trim()).filter(Boolean),
           secretsSet: []
         })
       }}
     >
-      <h3>Add a stdio MCP server</h3>
+      <h3>Add an MCP server</h3>
+      <label>
+        Type
+        <select value={transport} onChange={(e) => setTransport(e.target.value as McpTransport)}>
+          <option value="stdio">Local program (stdio)</option>
+          <option value="http">Remote, streamable HTTP</option>
+          <option value="sse">Remote, SSE (Claude Code only)</option>
+        </select>
+      </label>
       <label>Id <input className="mono" value={id} onChange={(e) => setId(e.target.value)} placeholder="my-server" /></label>
       <label>Label <input value={label} onChange={(e) => setLabel(e.target.value)} /></label>
       <label>Description <input value={description} onChange={(e) => setDescription(e.target.value)} /></label>
-      <label>Command <input className="mono" value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx" /></label>
-      <label>Arguments (one per line)<textarea className="mono" rows={3} value={args} onChange={(e) => setArgs(e.target.value)} /></label>
-      <label>Environment, non-secret (KEY=value per line)<textarea className="mono" rows={2} value={env} onChange={(e) => setEnv(e.target.value)} /></label>
-      <label>Secret env var names (comma-separated; values are set after saving)<input className="mono" value={secrets} onChange={(e) => setSecrets(e.target.value)} placeholder="API_TOKEN" /></label>
+      {remote ? (
+        <>
+          <label>URL <input className="mono" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://mcp.example.com/mcp" /></label>
+          <label>
+            Headers (Name: value per line; use {'${SECRET}'} for secrets)
+            <textarea className="mono" rows={2} value={headers} onChange={(e) => setHeaders(e.target.value)} placeholder={'Authorization: Bearer ${API_TOKEN}'} />
+          </label>
+        </>
+      ) : (
+        <>
+          <label>Command <input className="mono" value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx" /></label>
+          <label>Arguments (one per line)<textarea className="mono" rows={3} value={args} onChange={(e) => setArgs(e.target.value)} /></label>
+          <label>Environment, non-secret (KEY=value per line)<textarea className="mono" rows={2} value={env} onChange={(e) => setEnv(e.target.value)} /></label>
+        </>
+      )}
+      <label>
+        Secret names (comma-separated; values are set after saving)
+        <input className="mono" value={secrets} onChange={(e) => setSecrets(e.target.value)} placeholder="API_TOKEN" />
+        <span className="small muted">{remote ? 'Referenced in headers as ${NAME}.' : 'Passed to the server as environment variables.'}</span>
+      </label>
       <div className="row">
         <button type="button" onClick={onCancel}>Cancel</button>
-        <button type="submit" className="primary" disabled={!id || !label || !command}>Save server</button>
+        <button type="submit" className="primary" disabled={!id || !label || (remote ? !url : !command)}>Save server</button>
       </div>
     </form>
   )

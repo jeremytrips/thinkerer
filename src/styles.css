@@ -383,3 +383,17 @@ legend { color: var(--muted); padding: 0 4px; }
 .console-loaded { color: var(--muted); }
 .checks { display: flex; flex-direction: column; gap: 8px; }
 .actions { margin: 0; padding-left: 22px; }
+
+/* Agent session details, plan badge, Claude/MCP settings */
+.slash-menu { max-height: 340px; overflow-y: auto; }
+.mode-badge { margin-right: 8px; vertical-align: 1px; }
+.session-info { margin: 6px 0; display: grid; gap: 3px; }
+.session-info > div { display: grid; grid-template-columns: 90px 1fr; gap: 8px; }
+.session-info dt, .session-info dd { margin: 0; overflow-wrap: anywhere; }
+.tool-options { display: grid; gap: 6px; }
+.tool-options label.check { align-items: flex-start; }
+.tool-options label.check input { margin-top: 4px; }
+.mcp-tools { margin: 6px 0 0; padding-left: 18px; }
+.mcp-check { margin-top: 6px; }
+.import-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.import-list li { border-top: 1px solid var(--border); padding-top: 8px; }

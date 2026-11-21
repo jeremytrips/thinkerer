@@ -32,11 +32,13 @@ export const codexAdapter: AgentAdapter = {
     }
   },
 
-  buildInvocation({ executable, cwd, prompt, resumeSessionId, policy, mcp, secretEnv }) {
+  buildInvocation({ executable, cwd, prompt, resumeSessionId, policy, mcp, secretEnv, mode = 'auto' }) {
+    // Plan mode: a read-only sandbox, so the agent can investigate but not change anything.
+    const sandbox = mode === 'plan' ? 'read-only' : 'workspace-write'
     // `exec resume` has no --cd/--sandbox flags: it runs in the spawn cwd (the project) and takes the sandbox as config.
     const start = resumeSessionId
-      ? ['exec', 'resume', '--json', '-c', 'sandbox_mode="workspace-write"']
-      : ['exec', '--json', '--cd', cwd, '--sandbox', 'workspace-write']
+      ? ['exec', 'resume', '--json', '-c', `sandbox_mode="${sandbox}"`]
+      : ['exec', '--json', '--cd', cwd, '--sandbox', sandbox]
     return {
       command: executable,
       args: [
@@ -74,6 +76,25 @@ export function codexMcpArgs(servers: ResolvedMcpServer[]): string[] {
   const secrets: string[] = []
   for (const s of servers) {
     const k = `mcp_servers.${s.id}`
+    if (s.transport !== 'stdio') {
+      // Streamable HTTP. The registry only hands Codex headers it can express: static values,
+      // a whole value from a secret (env_http_headers), or "Authorization: Bearer ${SECRET}".
+      args.push('-c', `${k}.url=${JSON.stringify(s.url)}`)
+      const fixed: string[] = []
+      const fromEnv: string[] = []
+      for (const [name, value] of Object.entries(s.headers)) {
+        const found = codexHeaderRef(name, value)
+        const ref = found === 'unsupported' ? null : found
+        if (ref?.bearer) args.push('-c', `${k}.bearer_token_env_var=${JSON.stringify(ref.bearer)}`)
+        else if (ref?.env) fromEnv.push(`${JSON.stringify(name)} = ${JSON.stringify(ref.env)}`)
+        else fixed.push(`${JSON.stringify(name)} = ${JSON.stringify(value)}`)
+      }
+      if (fixed.length) args.push('-c', `${k}.http_headers={ ${fixed.join(', ')} }`)
+      if (fromEnv.length) args.push('-c', `${k}.env_http_headers={ ${fromEnv.join(', ')} }`)
+      args.push('-c', `${k}.default_tools_approval_mode="approve"`)
+      secrets.push(...s.secretEnv)
+      continue
+    }
     const env = Object.entries(s.env).map(([n, v]) => `${JSON.stringify(n)} = ${JSON.stringify(v)}`).join(', ')
     args.push('-c', `${k}.command=${JSON.stringify(s.command)}`)
     args.push('-c', `${k}.args=${JSON.stringify(s.args)}`)
@@ -85,6 +106,18 @@ export function codexMcpArgs(servers: ResolvedMcpServer[]): string[] {
   }
   if (secrets.length) args.push('-c', `shell_environment_policy.exclude=${JSON.stringify([...new Set(secrets)])}`)
   return args
+}
+
+const WHOLE_REF = /^\$\{([A-Z_][A-Z0-9_]*)\}$/
+const BEARER_REF = /^Bearer \$\{([A-Z_][A-Z0-9_]*)\}$/
+
+/** How Codex can send a header that uses a secret; null for a static value; 'unsupported' for other templates. */
+export function codexHeaderRef(name: string, value: string): { env?: string; bearer?: string } | null | 'unsupported' {
+  const bearer = name.toLowerCase() === 'authorization' ? value.match(BEARER_REF) : null
+  if (bearer) return { bearer: bearer[1] }
+  const whole = value.match(WHOLE_REF)
+  if (whole) return { env: whole[1] }
+  return value.includes('${') ? 'unsupported' : null
 }
 
 export function parseLoginStatus(code: number, output: string): Pick<ProviderStatus, 'authenticated' | 'detail'> {

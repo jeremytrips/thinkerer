@@ -10,13 +10,14 @@ import type {
   ProviderChoice,
   ProviderStatus,
   RunEvent,
+  RunMode,
   RunRecord,
   RunSummary,
   Task
 } from '../../shared/types'
 import { api, errorMessage, loadState, saveState } from '../api'
 import { RestoreDialog } from './Changes'
-import { ChatNoteView, SlashMenu, commandOf, matchingCommands } from './ChatBits'
+import { ChatNoteView, SlashMenu, agentItems, commandOf, matchingCommands, type SlashItem } from './ChatBits'
 import { ChatTurn, LIVE } from './ChatTurn'
 import { EmulatorPane } from './EmulatorPane'
 import { PreviewPane, type PreviewDevice } from './PreviewPane'
@@ -73,6 +74,7 @@ interface Chat {
 interface Queued {
   text: string
   attachments: PreviewCapture[]
+  mode: RunMode
 }
 
 const byCreated = (a: { createdAt: string }, b: { createdAt: string }) => a.createdAt.localeCompare(b.createdAt)
@@ -107,6 +109,8 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [records, setRecords] = useState<ChatRecord[]>([])
   const [menuIndex, setMenuIndex] = useState(0)
+  // How the next message runs; plan mode is read-only and goes back to auto once sent.
+  const [mode, setMode] = useState<RunMode>('auto')
   // The open chat (null: a new one) and its turns with their events.
   const [chatId, setChatId] = useState<string | null>(null)
   const chatRef = useRef<string | null>(null)
@@ -160,7 +164,11 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   const draftKey = chatId ?? NEW
   const draft = drafts[draftKey] ?? ''
   const setDraft = (text: string, key = draftKey) => setDrafts((cur) => ({ ...cur, [key]: text }))
-  const menu = chatId && !finished ? matchingCommands(draft) : []
+  const chatProvider = chat ? chat.last.provider : choice === 'auto' ? 'claude' : choice
+  // The agent CLI's own commands and skills, as it reported them for this chat (or the project's latest run).
+  const capabilities = [...(chat ? chat.turns : runs)].filter((r) => r.capabilities && r.provider === chatProvider).sort(byCreated).at(-1)?.capabilities ?? null
+  const agentCommands = capabilities ? agentItems(capabilities.commands, capabilities.skills) : []
+  const menu = finished ? [] : matchingCommands(draft, agentCommands, !!chatId)
   /** Live runs working in a folder: only they can conflict with restoring a checkpoint there. */
   const liveIn = (folder: string) => runs.some((r) => LIVE.includes(r.status) && (r.cwd ?? r.projectPath) === folder)
 
@@ -265,7 +273,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
         sendingQueued.current.delete(id)
         continue
       }
-      void send(id, q.text, q.attachments)
+      void send(id, q.text, q.attachments, q.mode)
         .then((ok) => ok || giveBack(id, q))
         .finally(() => sendingQueued.current.delete(id))
     }
@@ -282,11 +290,11 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   }
 
   /** Starts a run: a new chat when `target` is null, else a follow-up in that chat. */
-  async function send(target: string | null, text: string, attach: PreviewCapture[]): Promise<boolean> {
+  async function send(target: string | null, text: string, attach: PreviewCapture[], runMode: RunMode = 'auto'): Promise<boolean> {
     setError(null)
     setNotice(null)
     try {
-      const summary = await api.runs.start(project.id, text, choice, target ? null : taskId || null, attach.map((a) => a.id), target)
+      const summary = await api.runs.start(project.id, text, choice, target ? null : taskId || null, attach.map((a) => a.id), target, runMode)
       if (!target) {
         setTaskId('')
         openChat(chatOf(summary))
@@ -328,19 +336,23 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
     }
     const target = chatId
     const attach = attachments
+    const runMode = mode
     setDraft('')
     setAttachments([])
+    setMode('auto')
     if (target && chat?.live) {
       setQueued((cur) => ({
         ...cur,
-        [target]: cur[target] ? { text: `${cur[target].text}\n\n${text}`, attachments: [...cur[target].attachments, ...attach] } : { text, attachments: attach }
+        [target]: cur[target]
+          ? { text: `${cur[target].text}\n\n${text}`, attachments: [...cur[target].attachments, ...attach], mode: runMode }
+          : { text, attachments: attach, mode: runMode }
       }))
       return
     }
     setStarting(true)
     if (!target) setPending(text)
-    void send(target, text, attach)
-      .then((ok) => ok || giveBack(target ?? NEW, { text, attachments: attach }))
+    void send(target, text, attach, runMode)
+      .then((ok) => ok || giveBack(target ?? NEW, { text, attachments: attach, mode: runMode }))
       .finally(() => {
         setStarting(false)
         setPending(null)
@@ -356,7 +368,14 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   }
 
   function retry(turn: RunRecord) {
-    void send(chatOf(turn), turn.prompt, [])
+    void send(chatOf(turn), turn.prompt, [], turn.mode ?? 'auto')
+  }
+
+  /** A Thinkerer command runs now; an agent command is completed in the composer so arguments can follow. */
+  function pick(item: SlashItem) {
+    if (item.kind === 'thinkerer') return void runCommand(item.name as ChatCommand)
+    setDraft(`/${item.name} `)
+    composerRef.current?.focus()
   }
 
   function attach(capture: PreviewCapture) {
@@ -421,7 +440,6 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
     }
   }
 
-  const chatProvider = chat ? chat.last.provider : choice === 'auto' ? 'claude' : choice
   const effective = mcp.find((m) => m.provider === chatProvider)
   const includedTools = effective?.servers.filter((s) => s.included) ?? []
   const excludedTools = effective?.servers.filter((s) => !s.included) ?? []
@@ -632,7 +650,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
               ))}
             </ul>
           )}
-          <SlashMenu items={menu} active={Math.min(menuIndex, menu.length - 1)} onPick={(name) => void runCommand(name)} />
+          <SlashMenu items={menu} active={Math.min(menuIndex, menu.length - 1)} onPick={pick} />
           <div className="composer-box">
             <textarea
               ref={composerRef}
@@ -649,13 +667,18 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
                 }
                 if (menu.length && e.key === 'Tab') {
                   e.preventDefault()
-                  setDraft(`/${menu[Math.min(menuIndex, menu.length - 1)].name}`)
+                  const item = menu[Math.min(menuIndex, menu.length - 1)]
+                  setDraft(item.kind === 'agent' ? `/${item.name} ` : `/${item.name}`)
                   return
                 }
                 // Enter sends; Shift+Enter is a new line. Not while an IME is composing.
                 if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault()
-                  if (menu.length && !commandOf(draft)) return void runCommand(menu[Math.min(menuIndex, menu.length - 1)].name)
+                  if (menu.length && !commandOf(draft)) {
+                    const item = menu[Math.min(menuIndex, menu.length - 1)]
+                    // An agent command typed out in full is sent as it is; a partial one is completed first.
+                    if (item.kind === 'thinkerer' || draft.trim() !== `/${item.name}`) return pick(item)
+                  }
                   submit()
                 }
               }}
@@ -681,7 +704,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
                 </button>
               )}
               <button type="submit" className="primary small" disabled={!draft.trim() || starting || isGit === false || finished}>
-                {starting ? 'Sending…' : commandOf(draft) ? 'Run' : chat?.live ? 'Queue' : 'Send'}
+                {starting ? 'Sending…' : commandOf(draft) ? 'Run' : chat?.live ? 'Queue' : mode === 'plan' ? 'Plan' : 'Send'}
               </button>
             </div>
           </div>
@@ -715,6 +738,13 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
                 </label>
               </>
             )}
+            <label className="inline" title="Plan: the agent only investigates (read-only) and proposes a plan; reply to carry it out">
+              Mode
+              <select value={mode} onChange={(e) => setMode(e.target.value as RunMode)} aria-label="Mode for the next message" disabled={finished}>
+                <option value="auto">Make changes</option>
+                <option value="plan">Plan only (read-only)</option>
+              </select>
+            </label>
             <button type="button" className="link small" onClick={() => onTab('mcp')} title="Tools this provider will receive">
               MCP tools: {includedTools.length ? includedTools.map((s) => s.id).join(', ') : 'none'}
               {excludedTools.length > 0 && ` (${excludedTools.length} unavailable)`}

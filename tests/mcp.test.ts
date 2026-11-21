@@ -29,7 +29,7 @@ const project = (enabled: string[], previewUrl = 'http://localhost:5174/'): Proj
     components: ['website'],
     target: 'web',
     website: { devCommand: 'npm run dev', previewUrl },
-    agent: { provider: 'auto', enabledMcpServers: enabled },
+    agent: { provider: 'auto', enabledMcpServers: enabled, claude: { model: '', effort: '', tools: [] } },
     worktrees: { setupCommand: '', teardownCommand: '', ports: 0 },
     marketing: { enabled: true }
   }
@@ -59,9 +59,12 @@ describe('MCP registry', () => {
     expect(servers).toEqual([
       {
         id: 'mobile',
+        transport: 'stdio',
         command: '/usr/bin/node',
         args: ['/app/mcp/thinkerer-mobile.mjs'],
         env: { THINKERER_ARTIFACTS: '/data/runs/r1-artifacts', THINKERER_PROJECT_ROOT: '/work/tree', THINKERER_PREVIEW_URL: 'http://localhost:5174/' },
+        url: '',
+        headers: {},
         secretEnv: []
       }
     ])
@@ -91,8 +94,8 @@ describe('MCP registry', () => {
 
   it('translates the same servers for both CLIs, keeping secrets out of argv', () => {
     const servers: ResolvedMcpServer[] = [
-      { id: 'health', command: 'node', args: ['/app/mcp/thinkerer-health.mjs'], env: { THINKERER_PROJECT_ROOT: '/work/site' }, secretEnv: [] },
-      { id: 'notes', command: 'npx', args: ['notes-mcp'], env: {}, secretEnv: ['NOTES_TOKEN'] }
+      { id: 'health', transport: 'stdio', command: 'node', args: ['/app/mcp/thinkerer-health.mjs'], env: { THINKERER_PROJECT_ROOT: '/work/site' }, url: '', headers: {}, secretEnv: [] },
+      { id: 'notes', transport: 'stdio', command: 'npx', args: ['notes-mcp'], env: {}, url: '', headers: {}, secretEnv: ['NOTES_TOKEN'] }
     ]
     expect(claudeMcpConfig(servers)).toEqual({
       mcpServers: {

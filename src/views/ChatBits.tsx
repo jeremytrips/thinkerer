@@ -8,33 +8,72 @@ export const COMMANDS: { name: ChatCommand; hint: string }[] = [
   { name: 'discard', hint: 'Delete the worktree and branch, merged or not (asks first)' }
 ]
 
-/** The command a draft is, e.g. "/merge" → 'merge'; null for an ordinary message. */
+/** A slash menu entry: a Thinkerer command, or one of the agent CLI's own commands and skills (sent to the agent). */
+export interface SlashItem {
+  name: string
+  hint: string
+  kind: 'thinkerer' | 'agent'
+}
+
+/** Hints for Claude Code commands that are useful in a chat; others show as "Claude Code command" or "Skill". */
+const AGENT_HINTS: Record<string, string> = {
+  compact: 'Summarize the conversation so far to free up context',
+  context: 'Show what is using the context window',
+  cost: 'Show session cost and usage',
+  usage: 'Show plan usage limits',
+  init: 'Write a CLAUDE.md describing this codebase',
+  review: 'Review the changes on this branch',
+  'code-review': 'Review the changes on this branch',
+  'security-review': 'Security review of the pending changes',
+  simplify: 'Look for ways to simplify the recent changes',
+  debug: 'Debug a problem step by step',
+  verify: 'Verify the change works',
+  recap: 'Recap what happened in this session',
+  insights: 'Insights about your Claude Code sessions'
+}
+
+export function agentItems(commands: string[], skills: string[]): SlashItem[] {
+  const isSkill = new Set(skills)
+  const own = new Set<string>(COMMANDS.map((c) => c.name))
+  return commands
+    .filter((c) => !own.has(c))
+    .map((name) => ({ name, kind: 'agent' as const, hint: AGENT_HINTS[name] ?? (isSkill.has(name) ? 'Skill · sent to the agent' : 'Claude Code command · sent to the agent') }))
+}
+
+/** The Thinkerer command a draft is, e.g. "/merge" → 'merge'; null for an ordinary message (including agent commands). */
 export function commandOf(draft: string): ChatCommand | null {
   const m = draft.trim().match(/^\/([a-z]+)$/)
   return (m && COMMANDS.find((c) => c.name === m[1])?.name) || null
 }
 
-/** Commands matching a draft that is being typed as one ("/", "/cl"…). */
-export function matchingCommands(draft: string): typeof COMMANDS {
-  const m = draft.match(/^\/([a-z]*)$/)
-  return m ? COMMANDS.filter((c) => c.name.startsWith(m[1])) : []
+/** Items matching a draft that is being typed as a command ("/", "/cl"…). Thinkerer's commands first. */
+export function matchingCommands(draft: string, agent: SlashItem[] = [], thinkerer = true): SlashItem[] {
+  const m = draft.match(/^\/([\w:.-]*)$/)
+  if (!m) return []
+  const q = m[1].toLowerCase()
+  const own: SlashItem[] = thinkerer ? COMMANDS.map((c) => ({ ...c, kind: 'thinkerer' as const })) : []
+  const hits = [...own, ...agent].filter((c) => c.name.toLowerCase().startsWith(q))
+  // Also match inside names ("/rev" finds code-review), after the prefix matches.
+  const inner = q ? agent.filter((c) => !c.name.toLowerCase().startsWith(q) && c.name.toLowerCase().includes(q)) : []
+  return [...hits, ...inner].slice(0, 12)
 }
 
-export function SlashMenu({ items, active, onPick }: { items: typeof COMMANDS; active: number; onPick: (name: ChatCommand) => void }) {
+export function SlashMenu({ items, active, onPick }: { items: SlashItem[]; active: number; onPick: (item: SlashItem) => void }) {
   if (!items.length) return null
   return (
     <ul className="slash-menu" role="listbox" aria-label="Chat commands">
       {items.map((c, i) => (
-        <li key={c.name} role="option" aria-selected={i === active}>
+        <li key={`${c.kind}:${c.name}`} role="option" aria-selected={i === active}>
           <button
             type="button"
             className={i === active ? 'slash-item active' : 'slash-item'}
             // Keep focus in the composer.
             onMouseDown={(e) => e.preventDefault()}
-            onClick={() => onPick(c.name)}
+            onClick={() => onPick(c)}
           >
             <span className="mono">/{c.name}</span>
             <span className="small muted">{c.hint}</span>
+            {c.kind === 'agent' && <span className="badge push-right">agent</span>}
           </button>
         </li>
       ))}

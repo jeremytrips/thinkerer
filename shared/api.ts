@@ -10,6 +10,8 @@ import type {
   FileContent,
   FileEntry,
   GitStatus,
+  McpCheckResult,
+  McpImportCandidate,
   McpServerDef,
   McpServerView,
   MobileDevice,
@@ -23,6 +25,7 @@ import type {
   ProviderStatus,
   RestorePreview,
   RunEvent,
+  RunMode,
   RunRecord,
   RunSummary,
   Task,
@@ -79,6 +82,12 @@ export interface ThinkererApi {
     remove(serverId: string): Promise<boolean>
     setSecret(serverId: string, name: string, value: string | null): Promise<boolean>
     effective(projectId: string): Promise<EffectiveMcp[]>
+    /** Connects to a server as this project's agents would and lists its tools (no tool is called). */
+    check(projectId: string, serverId: string): Promise<McpCheckResult>
+    /** Servers configured for Claude Code itself (.mcp.json, ~/.claude.json), without secret values. */
+    importCandidates(projectId: string): Promise<McpImportCandidate[]>
+    /** Adds one of them to the registry (asks first); secret values go to encrypted storage. */
+    import(projectId: string, key: string): Promise<McpServerDef>
   }
   /** chatId selects a chat's worktree (its own dev server, ports and preview); null is the project folder. */
   website: {
@@ -133,7 +142,8 @@ export interface ThinkererApi {
       provider: ProviderChoice,
       taskId?: string | null,
       attachmentIds?: string[],
-      chatId?: string | null
+      chatId?: string | null,
+      mode?: RunMode
     ): Promise<RunSummary>
     cancel(runId: string): Promise<boolean>
     /** Live runs for the project, oldest first. */
