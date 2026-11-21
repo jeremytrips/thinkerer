@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -12,7 +12,7 @@ import { ChatDevices } from '../engine/chatDevices'
 import { McpRegistry } from '../engine/mcp'
 import { ProjectService } from '../engine/projects'
 import { TaskStore } from '../engine/tasks'
-import type { RunSummary } from '../shared/types'
+import type { ProviderId, RunSummary } from '../shared/types'
 
 // Supervisor lifecycle tests use a stand-in process (tests/fixtures/stand-in-agent.mjs)
 // that speaks the Claude stream-json format. Real CLI coverage: tests/claude.live.test.ts.
@@ -20,13 +20,13 @@ import type { RunSummary } from '../shared/types'
 const FIXTURE = join(__dirname, 'fixtures', 'stand-in-agent.mjs')
 
 /** In 'hang' mode each run writes its grandchild's pid to `${pidFile}.<n>` (n = 0, 1, …). */
-function standIn(mode: 'ok' | 'hang', pidFile = '', seen?: InvocationOptions[]): AgentAdapter {
+function standIn(mode: 'ok' | 'hang', pidFile = '', seen?: InvocationOptions[], id: ProviderId = 'claude'): AgentAdapter {
   let n = 0
   return {
-    id: 'claude',
+    id,
     label: 'Stand-in',
     policySummary: 'test',
-    detect: async () => ({ id: 'claude', label: 'Stand-in', installed: true, executable: process.execPath, version: 'test', authenticated: true, adapterAvailable: true, detail: '', policy: 'test' }),
+    detect: async () => ({ id, label: 'Stand-in', installed: true, executable: process.execPath, version: 'test', authenticated: true, adapterAvailable: true, detail: '', policy: 'test' }),
     buildInvocation: (opts) => {
       seen?.push(opts)
       return { command: opts.executable, args: [FIXTURE, mode, pidFile && `${pidFile}.${n++}`], stdin: opts.prompt, env: process.env }
@@ -218,6 +218,22 @@ describe('AgentSupervisor', () => {
     expect(seen[0].policy.appendSystemPrompt).toMatch(/emulator -avd <name> -no-window/)
     expect(seen[0].policy.appendSystemPrompt).toMatch(/Never open a device window yourself/)
     expect((await tasks.list(repo))[0]).toMatchObject({ status: 'doing', runIds: [final.id] })
+  })
+
+  it('hands the project’s AGENTS.md and CLAUDE.md to both providers and records which it gave', async () => {
+    writeFileSync(join(repo, 'AGENTS.md'), 'Rule from AGENTS: always write tests.')
+    writeFileSync(join(repo, 'CLAUDE.md'), '@AGENTS.md\n')
+    for (const provider of ['claude', 'codex'] as const) {
+      const seen: InvocationOptions[] = []
+      const sup = new AgentSupervisor(join(tmp, 'appdata'), projects, { adapters: [standIn('ok', '', seen, provider)] })
+      const finished = waitFor(sup, done)
+      await sup.start(projectId, 'go', provider)
+      const final = await finished
+      expect(final.provider).toBe(provider)
+      expect(seen[0].policy.appendSystemPrompt).toContain('Rule from AGENTS: always write tests.')
+      expect(seen[0].policy.appendSystemPrompt.match(/Rule from AGENTS/g)).toHaveLength(1)
+      expect(final.instructionFiles).toEqual(['AGENTS.md', 'CLAUDE.md'])
+    }
   })
 
   it('gives a run the chat’s own emulators and limits the mobile server to them', async () => {

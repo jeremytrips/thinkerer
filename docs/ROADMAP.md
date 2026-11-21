@@ -11,14 +11,14 @@ foundations first, then the component plug-in model, then components.
 
 ## Now
 
-### R-01 · Agent instructions reach every run · `todo`
+### R-01 · Agent instructions reach every run · `done` (2026-11-21)
 Why: without this, no guideline or skill has any effect. A run inside Thinkerer was observed to
 start without the contents of `CLAUDE.md` in its context, and Codex gets `AGENTS.md` only if it
 loads it itself.
-- [ ] Find out why project instructions don't load under the current Claude invocation; fix it or
-      have the engine inject `AGENTS.md` itself through `appendSystemPrompt` / `developer_instructions`.
-- [ ] Both providers demonstrably receive `AGENTS.md` (live test or stand-in assertion).
-- [ ] The Agent tab shows which instruction files a run received.
+- [x] Likely cause: `--restricted` ignores project settings, so Claude skipped `CLAUDE.md`. The engine now
+      injects `AGENTS.md`/`CLAUDE.md` itself through `appendSystemPrompt` (`engine/agents/instructions.ts`).
+- [x] Both providers demonstrably receive `AGENTS.md` (stand-in assertion in `tests/supervisor.test.ts`).
+- [x] The Agent tab shows which instruction files a run received (turn footer).
 
 ### R-02 · Raycast-style UI foundation · `todo`
 Why: every later studio reuses it.

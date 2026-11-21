@@ -29,6 +29,7 @@ import { gitStatus } from '../git'
 import type { McpRegistry, McpRunContext, ResolvedMcpServer } from '../mcp'
 import type { ProjectService } from '../projects'
 import { readJson, writeJson } from '../store'
+import { loadProjectInstructions } from './instructions'
 import type { TaskStore } from '../tasks'
 import {
   allocatePorts,
@@ -319,13 +320,16 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       record.mcpServers = servers.map((s) => s.id)
       this.addEvent(run, { kind: 'status', text: `MCP tools: ${record.mcpServers.join(', ') || 'none'}` })
       if (record.mode === 'plan') this.addEvent(run, { kind: 'status', text: 'Plan mode: this message runs read-only; reply to carry the plan out' })
+      const instr = await loadProjectInstructions(ws.cwd)
+      record.instructionFiles = instr.files
+      this.addEvent(run, { kind: 'status', text: `Instructions: ${instr.files.join(', ') || 'none'}` })
 
       const inv = adapter.buildInvocation({
         executable: status.executable!,
         cwd: ws.cwd,
         prompt: record.prompt + attachmentNote(record.attachments ?? []),
         resumeSessionId: run.resumeSessionId,
-        policy: { ...this.policy, appendSystemPrompt: this.instructions(servers, ws, record.mode ?? 'auto', devices?.ids, run.instructions) },
+        policy: { ...this.policy, appendSystemPrompt: this.instructions(servers, ws, record.mode ?? 'auto', devices?.ids, run.instructions, instr.text) },
         mcp: servers,
         secretEnv,
         mode: record.mode ?? 'auto',
@@ -466,7 +470,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     return this.opts.mcp.registry.resolveForRun(project, { ...ctx, artifactsDir: this.artifactsDir(runId), cwd: ws.cwd, previewUrl: ws.previewUrl, provider, devices })
   }
 
-  private instructions(servers: ResolvedMcpServer[], ws: Workspace, mode: RunMode, devices: string[] | undefined, extra: string): string {
+  private instructions(servers: ResolvedMcpServer[], ws: Workspace, mode: RunMode, devices: string[] | undefined, extra: string, project = ''): string {
     const lines = [this.policy.appendSystemPrompt]
     if (mode === 'plan') {
       lines.push(
@@ -508,7 +512,9 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     )
     if (servers.some((s) => s.id === 'health')) lines.push('The health MCP server reports project health (git state, preview reachability).')
     if (extra) lines.push(extra)
-    return lines.join(' ')
+    // Last, and on its own lines: the project's own instructions, read by Thinkerer (see instructions.ts).
+    const text = lines.join(' ')
+    return project ? `${text}\n\nProject instructions from the repository (follow them):\n\n${project}` : text
   }
 
   artifactsDir(runId: string): string {

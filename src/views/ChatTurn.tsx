@@ -95,6 +95,11 @@ export function ChatTurn({ turn, projectId, root, isLast, anyLive, info, isSelf,
                   {changes.length} file{changes.length === 1 ? '' : 's'} changed {showChanges ? '▾' : '▸'}
                 </button>
               )}
+              {turn.instructionFiles && (
+                <span className="muted" title="Project instruction files Thinkerer gave the agent">
+                  Instructions: {turn.instructionFiles.join(', ') || 'none'}
+                </span>
+              )}
               {turn.checkpoint && (
                 <button
                   type="button"
