@@ -30,7 +30,7 @@ import type { McpRegistry, McpRunContext, ResolvedMcpServer } from '../mcp'
 import type { ProjectService } from '../projects'
 import { readJson, writeJson } from '../store'
 import { loadProjectInstructions } from './instructions'
-import type { TaskStore } from '../tasks'
+import type { BoardService } from '../board'
 import {
   allocatePorts,
   commitAll,
@@ -44,7 +44,7 @@ import {
 } from '../worktrees'
 import { claudeAdapter } from './claude'
 import { codexAdapter } from './codex'
-import type { AgentAdapter, RunPolicy } from './types'
+import { blockedCommand, type AgentAdapter, type RunPolicy } from './types'
 
 const MAX_EVENTS = 5000
 const KILL_GRACE_MS = 3000
@@ -106,7 +106,8 @@ interface Workspace {
 export interface SupervisorOptions {
   adapters?: AgentAdapter[]
   policy?: RunPolicy
-  tasks?: TaskStore
+  /** The project boards: a run on a task links its chat and moves the task along. */
+  board?: BoardService
   /** MCP servers come from the registry; without it, runs get none. */
   mcp?: { registry: McpRegistry; context: () => Promise<Omit<McpRunContext, 'artifactsDir'>> }
   chats?: ChatStore
@@ -214,6 +215,8 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       const wantsWorktree = chatId ? !!stored?.worktree || stored?.state === 'setting-up' : !!(await currentBranch(project.path)) && !!(await headCommit(project.path))
       const selected = await this.selectProvider(chat ? chat.provider : requested)
       const { provider, status } = selected
+      const blocked = blockedCommand(this.adapters[provider]!, prompt)
+      if (blocked) throw new Error(`/${blocked} isn't available in Thinkerer chats; it would disconnect this chat from its session. Start a new chat instead.`)
       const rationale = chat ? `Continuing this chat with ${this.adapters[provider]!.label}` : selected.rationale
       const now = new Date().toISOString()
       // Only runs in the same folder can see each other's edits.
@@ -291,9 +294,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     const record = run.record
     const adapter = this.adapters[record.provider]!
     try {
-      if (record.taskId && this.opts.tasks) {
-        await this.opts.tasks.attachRun(project.path, record.taskId, record.id)
-      }
+      if (record.taskId) this.opts.board?.runStarted(project.path, record.taskId, record.chatId ?? record.id, record.id)
       const ws = await this.prepareWorkspace(run, project)
       if (run.cancelRequested) return void (await this.finish(run, 'cancelled', null, null))
       record.cwd = ws.cwd
@@ -470,8 +471,17 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
   ): Promise<{ servers: ResolvedMcpServer[]; secretEnv: Record<string, string> }> {
     if (!this.opts.mcp) return { servers: [], secretEnv: {} }
     const ctx = await this.opts.mcp.context()
-    const provider = this.active.get(runId)?.record.provider
-    return this.opts.mcp.registry.resolveForRun(project, { ...ctx, artifactsDir: this.artifactsDir(runId), cwd: ws.cwd, previewUrl: ws.previewUrl, provider, devices })
+    const record = this.active.get(runId)?.record
+    return this.opts.mcp.registry.resolveForRun(project, {
+      ...ctx,
+      artifactsDir: this.artifactsDir(runId),
+      cwd: ws.cwd,
+      previewUrl: ws.previewUrl,
+      provider: record?.provider,
+      devices,
+      chatId: record?.chatId ?? runId,
+      taskId: record?.taskId ?? null
+    })
   }
 
   private instructions(servers: ResolvedMcpServer[], ws: Workspace, mode: RunMode, devices: string[] | undefined, extra: string, project = ''): string {
@@ -515,6 +525,9 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       'Never open a device window yourself: no `open -a Simulator`, Xcode, Android Studio, or `emulator` without `-no-window`.'
     )
     if (servers.some((s) => s.id === 'health')) lines.push('The health MCP server reports project health (git state, preview reachability).')
+    if (servers.some((s) => s.id === 'board')) {
+      lines.push('The board MCP server is the project’s task board: board_current_task shows the task this chat works on; tick its criteria (board_check) only once verified, and record follow-up work there (board_create). Never edit files under .thinkerer/local/.')
+    }
     if (extra) lines.push(extra)
     // Last, and on its own lines: the project's own instructions, read by Thinkerer (see instructions.ts).
     const text = lines.join(' ')

@@ -1,10 +1,12 @@
 import { spawn } from 'node:child_process'
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { claudeMcpConfig } from '../engine/agents/claude'
 import { codexMcpArgs } from '../engine/agents/codex'
+import { BoardService } from '../engine/board'
 import { McpRegistry, type ResolvedMcpServer, type SecretStore } from '../engine/mcp'
 import type { Project } from '../shared/types'
 
@@ -46,7 +48,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('MCP registry', () => {
   it('lists built-ins and resolves only project-enabled servers with placeholders filled', async () => {
-    expect((await reg.list()).map((s) => s.id)).toEqual(['playwright', 'health', 'mobile'])
+    expect((await reg.list()).map((s) => s.id)).toEqual(['playwright', 'health', 'mobile', 'board'])
     const { servers } = await reg.resolveForRun(project(['playwright']), ctx)
     expect(servers).toHaveLength(1)
     const pw = servers[0]
@@ -73,6 +75,25 @@ describe('MCP registry', () => {
     const chat = await reg.resolveForRun(project(['mobile']), { ...ctx, devices: ['ios:AAA', 'android:Thinkerer_x'] })
     expect(chat.servers[0].env.THINKERER_DEVICES).toBe('ios:AAA,android:Thinkerer_x')
     expect((await reg.resolveForRun(project(['mobile']), { ...ctx, devices: [] })).servers[0].env.THINKERER_DEVICES).toBe('')
+  })
+
+  it('points the board server at the main project folder, not the chat worktree, with the chat and task', async () => {
+    const { servers } = await reg.resolveForRun(project(['board']), { ...ctx, cwd: '/work/tree', chatId: 'chat-1', taskId: 'task-1' })
+    expect(servers[0]).toMatchObject({
+      id: 'board',
+      command: '/usr/bin/node',
+      args: ['--no-warnings', '/app/mcp/thinkerer-board.mjs'],
+      env: { THINKERER_BOARD_ROOT: '/work/site', THINKERER_CHAT_ID: 'chat-1', THINKERER_TASK_ID: 'task-1' }
+    })
+    expect((await reg.resolveForRun(project(['board']), ctx)).servers[0].env).toMatchObject({ THINKERER_CHAT_ID: '', THINKERER_TASK_ID: '' })
+  })
+
+  it('runs the board server with Thinkerer’s own Node (it needs node:sqlite), the other scripts with node', async () => {
+    const withApp = { ...ctx, appNode: { command: '/Apps/Thinkerer', env: { ELECTRON_RUN_AS_NODE: '1' } } }
+    const { servers } = await reg.resolveForRun(project(['board', 'health']), withApp)
+    expect(servers[0]).toMatchObject({ id: 'board', command: '/Apps/Thinkerer', env: { ELECTRON_RUN_AS_NODE: '1', THINKERER_BOARD_ROOT: '/work/site' } })
+    expect(servers[1]).toMatchObject({ id: 'health', command: '/usr/bin/node' })
+    expect(servers[1].env).not.toHaveProperty('ELECTRON_RUN_AS_NODE')
   })
 
   it('explains why a server is excluded', async () => {
@@ -121,6 +142,113 @@ describe('MCP registry', () => {
       '-c', 'mcp_servers.notes.default_tools_approval_mode="approve"',
       '-c', 'shell_environment_policy.exclude=["NOTES_TOKEN"]'
     ])
+  })
+})
+
+/** The parts of a JSON-RPC reply these tests read. */
+interface RpcReply {
+  id: number | null
+  result?: { content?: { type: string; text: string }[]; isError?: boolean; serverInfo?: { name: string }; tools?: { name: string }[] }
+  error?: { code: number; message: string }
+}
+
+/** A stdio MCP session: `call` sends one request and resolves with its reply. */
+function mcpSession(script: string, env: Record<string, string>, runtime = process.execPath) {
+  const child = spawn(runtime, ['--no-warnings', resolve(__dirname, '..', 'mcp', script)], { env: { ...process.env, ...env } })
+  const waiting = new Map<number, (msg: RpcReply) => void>()
+  let buf = ''
+  let id = 0
+  child.stdout.on('data', (d) => {
+    buf += d
+    for (let nl; (nl = buf.indexOf('\n')) >= 0; buf = buf.slice(nl + 1)) {
+      const msg = JSON.parse(buf.slice(0, nl)) as RpcReply
+      if (msg.id !== null) waiting.get(msg.id)?.(msg)
+    }
+  })
+  const request = (method: string, params: object = {}) =>
+    new Promise<RpcReply>((done, fail) => {
+      const n = ++id
+      const timer = setTimeout(() => fail(new Error(`timeout: ${method}`)), 10_000)
+      waiting.set(n, (msg) => (clearTimeout(timer), done(msg)))
+      child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: n, method, params }) + '\n')
+    })
+  const tool = async (name: string, args: object = {}) => {
+    const reply = await request('tools/call', { name, arguments: args })
+    const text = reply.result?.content?.[0]?.text ?? ''
+    const isError = reply.result?.isError === true
+    return { isError, text, value: isError ? null : JSON.parse(text) }
+  }
+  return { request, tool, close: () => child.kill() }
+}
+
+describe('thinkerer-board MCP server', () => {
+  it('lets an agent read its task and work the board, as itself, in the app’s board', async () => {
+    const board = new BoardService(20)
+    const task = board.create(dir, { kind: 'task', title: 'Wire the sensor', criteria: [{ text: 'reads 3.3 V', done: false }] })
+    board.runStarted(dir, task.id, 'chat-1', 'run-1')
+    const seen: string[] = []
+    board.on('change', (p) => seen.push(p))
+    const s = mcpSession('thinkerer-board.mjs', { THINKERER_BOARD_ROOT: dir, THINKERER_CHAT_ID: 'chat-1', THINKERER_TASK_ID: task.id })
+    try {
+      expect((await s.request('initialize', { protocolVersion: '2025-06-18' })).result?.serverInfo?.name).toBe('thinkerer-board')
+      const tools = ((await s.request('tools/list')).result?.tools ?? []).map((t) => t.name)
+      expect(tools).toEqual(['board_overview', 'board_list', 'board_get', 'board_current_task', 'board_create', 'board_update', 'board_check', 'board_archive', 'board_unarchive'])
+      expect(tools.some((t: string) => /delete|remove/.test(t))).toBe(false)
+
+      expect((await s.tool('board_current_task')).value).toMatchObject({ key: 'T-1', title: 'Wire the sensor', status: 'doing', criteria: ['1. [ ] reads 3.3 V'] })
+      const epic = (await s.tool('board_create', { kind: 'epic', title: 'Sensor board', type: 'electronics', criteria: ['ERC clean'] })).value
+      expect(epic).toMatchObject({ key: 'E-1', type: 'electronics', criteria: ['1. [ ] ERC clean'] })
+      const follow = (await s.tool('board_create', { kind: 'task', title: 'Order parts', epic: 'E-1', blockedBy: ['T-1'] })).value
+      expect(follow).toMatchObject({ key: 'T-2', epic: 'E-1', type: 'electronics', blockedBy: ['T-1'] })
+      expect((await s.tool('board_check', { key: 'T-1', index: 1, done: true })).value.criteria).toEqual(['1. [x] reads 3.3 V'])
+      expect((await s.tool('board_update', { key: 'T-1', epic: 'E-1', status: 'review' })).value).toMatchObject({ epic: 'E-1', status: 'review' })
+      expect((await s.tool('board_archive', { key: 'T-2' })).value).toMatchObject({ key: 'T-2', archived: true })
+      expect((await s.tool('board_list', { kind: 'task' })).value.map((t: { key: string }) => t.key)).toEqual(['T-1'])
+      expect((await s.tool('board_list', { archived: true })).value.map((t: { key: string }) => t.key)).toEqual(['T-2'])
+      const overview = (await s.tool('board_overview')).value
+      expect(overview).toMatchObject({ epics: [{ key: 'E-1', progress: '0/1 tasks done' }], openTasks: ['T-1 [review] Wire the sensor (E-1)'], doneTasks: 0 })
+
+      const bad = await s.tool('board_update', { key: 'T-1', status: 'shipped' })
+      expect(bad).toMatchObject({ isError: true, text: expect.stringMatching(/Invalid task status/) })
+      expect((await s.tool('board_get', { key: 'T-99' })).isError).toBe(true)
+      expect((await s.tool('board_check', { key: 'T-1', index: 5, done: true })).text).toMatch(/index must be 1–1/)
+      // Errors name fields as the agent knows them, and nothing is dropped silently.
+      expect(await s.tool('board_create', { kind: 'task', title: 'Order the case', milestone: 'M-1' })).toMatchObject({ isError: true, text: "milestone can't be set on a task" })
+      expect((await s.tool('board_update', { key: 'T-1', epic: 'E-1', status: 'review' })).isError).toBe(false)
+      await s.tool('board_archive', { key: 'E-1' })
+      expect((await s.tool('board_create', { kind: 'task', title: 'Late', epic: 'E-1' })).text).toMatch(/E-1 is archived; restore it first/)
+    } finally {
+      s.close()
+    }
+    // The app sees the agent's writes, attributed to its chat, and is told about them.
+    const t1 = board.board(dir).tasks.find((t) => t.key === 'T-1')!
+    expect(t1).toMatchObject({ status: 'review', criteria: [{ text: 'reads 3.3 V', done: true }] })
+    expect(board.history(dir, 'T-1')[0].source).toBe('agent:chat-1')
+    await new Promise((r) => setTimeout(r, 100))
+    expect(seen).toContain(dir)
+    board.close()
+  })
+
+  it('runs under Electron as Node, as the app launches it for agents', async () => {
+    const electron = createRequire(__filename)('electron') as string
+    const s = mcpSession('thinkerer-board.mjs', { ELECTRON_RUN_AS_NODE: '1', THINKERER_BOARD_ROOT: dir, THINKERER_CHAT_ID: 'chat-e' }, electron)
+    try {
+      expect((await s.tool('board_create', { kind: 'task', title: 'From Electron' })).value).toMatchObject({ key: 'T-1' })
+    } finally {
+      s.close()
+    }
+    const board = new BoardService()
+    expect(board.board(dir).tasks.map((t) => t.title)).toEqual(['From Electron'])
+    board.close()
+  })
+
+  it('says so when it runs outside Thinkerer', async () => {
+    const s = mcpSession('thinkerer-board.mjs', { THINKERER_BOARD_ROOT: '' })
+    try {
+      expect((await s.tool('board_overview')).text).toMatch(/runs inside Thinkerer/)
+    } finally {
+      s.close()
+    }
   })
 })
 

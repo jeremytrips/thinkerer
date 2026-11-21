@@ -210,7 +210,7 @@ describe('Built-in server ids', () => {
     const reg = new McpRegistry(appdata, secrets)
 
     const list = await reg.list()
-    expect(list.map((s) => s.id)).toEqual(['playwright', 'health', 'mobile', 'mobile-custom'])
+    expect(list.map((s) => s.id)).toEqual(['playwright', 'health', 'mobile', 'board', 'mobile-custom'])
     const renamed = list.find((s) => s.id === 'mobile-custom')!
     expect(renamed).toMatchObject({ command: 'my-mobile-mcp', label: expect.stringMatching(/My mobile.*renamed from "mobile"/), secretsSet: ['MOBILE_TOKEN'] })
     expect(await secrets.get('mobile', 'MOBILE_TOKEN')).toBeNull()
@@ -220,7 +220,7 @@ describe('Built-in server ids', () => {
     // The built-in still answers to 'mobile'.
     expect((await reg.get('mobile'))?.builtin).toBe(true)
     await reg.remove('mobile-custom')
-    expect((await reg.list()).map((s) => s.id)).toEqual(['playwright', 'health', 'mobile'])
+    expect((await reg.list()).map((s) => s.id)).toEqual(['playwright', 'health', 'mobile', 'board'])
   })
 
   it('finds a free id within the length limit', () => {

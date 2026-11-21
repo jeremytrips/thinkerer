@@ -23,7 +23,18 @@ const previewApi: ThinkererApi = {
   files: { list: async () => [], read: unavailable },
   git: { status: async () => null, init: unavailable, workingChanges: async () => [], workingDiff: unavailable, runDiff: unavailable },
   checkpoints: { list: async () => [], preview: unavailable, restore: unavailable },
-  tasks: { list: async () => [], create: unavailable, update: unavailable, remove: unavailable },
+  board: {
+    get: async () => ({ milestones: [], epics: [], tasks: [] }),
+    history: async () => [],
+    create: unavailable,
+    update: unavailable,
+    archive: unavailable,
+    unarchive: unavailable,
+    remove: unavailable,
+    reorder: unavailable,
+    move: unavailable,
+    onChange: noop
+  },
   mcp: {
     list: async () => [],
     upsert: unavailable,

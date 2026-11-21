@@ -1,5 +1,5 @@
 import type { ProviderStatus } from '../../shared/types'
-import { parseClaudeLine } from './claude'
+import { claudeAdapter, parseClaudeLine } from './claude'
 import { childEnv } from './detect'
 import type { AgentAdapter } from './types'
 
@@ -24,7 +24,8 @@ export function scriptAdapter(script: string): AgentAdapter {
     id: 'claude',
     label: 'Claude Code',
     policySummary: status.policy,
-    reviewCommand: '/code-review',
+    reviewCommand: claudeAdapter.reviewCommand,
+    blockedCommands: claudeAdapter.blockedCommands,
     detect: async () => status,
     buildInvocation: ({ executable, prompt, mode }) => ({
       command: executable,

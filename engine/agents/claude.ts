@@ -24,13 +24,15 @@ export const CLAUDE_POLICY_SUMMARY =
   'Restricted mode: file reads and writes confined to the project folder; auto mode: the approved commands (npm scripts, tsc, vitest, Playwright tests, read-only git) always run, and the Claude safety classifier approves or denies any other shell command; nothing waits for a prompt. Plan mode messages are read-only: only read-only git commands are pre-approved, and no npm scripts or MCP tools. Optional tools (subagents, skills, web search, notebooks) only as enabled in the project’s settings. MCP: only the servers enabled for this project in Thinkerer; your own Claude MCP servers and settings files are not loaded.'
 
 /** Commands that only make sense in Claude's interactive terminal, or that Thinkerer handles itself (model, effort, MCP, /clear would break the chat's session). */
-const NOT_IN_CHATS = new Set(['clear', 'config', 'model', 'effort', 'fast', 'mcp', 'agents', 'output-style', 'rename', 'color', 'focus', 'heapdump', 'doctor', 'import', 'reload-plugins', 'reload-skills', 'auto-mode-setup', 'fewer-permission-prompts', 'update-config', 'team-onboarding'])
+const NOT_IN_CHATS = new Set(['clear', 'reset', 'new', 'config', 'model', 'effort', 'fast', 'mcp', 'agents', 'output-style', 'rename', 'color', 'focus', 'heapdump', 'doctor', 'import', 'reload-plugins', 'reload-skills', 'auto-mode-setup', 'fewer-permission-prompts', 'update-config', 'team-onboarding'])
 
 export const claudeAdapter: AgentAdapter = {
   id: 'claude',
   label: 'Claude Code',
   policySummary: CLAUDE_POLICY_SUMMARY,
   reviewCommand: '/code-review',
+  // /reset and /new are aliases of /clear (Claude Code 2.1.330).
+  blockedCommands: ['clear', 'reset', 'new'],
 
   async detect(): Promise<ProviderStatus> {
     const base = { id: 'claude' as const, label: 'Claude Code', adapterAvailable: true, policy: CLAUDE_POLICY_SUMMARY }

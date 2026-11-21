@@ -3,8 +3,8 @@
 **Format.** Three horizons: **Now** (being worked on, at most ~3 items), **Next** (agreed, ordered),
 **Later** (direction, unordered). Each item has an ID, a one-line why, and acceptance criteria an
 agent can verify. Status: `todo`, `doing`, `done`. When an item ships, mark it `done` with the date
-and commit, and move the facts into the README. Break `doing` items into `.thinkerer/tasks.json`
-tasks so they show on the Tasks board (see `.thinkerer/skills/roadmap-item.md`).
+and commit, and move the facts into the README. Break `doing` items into tasks on the project board
+(the board MCP server) so they show in the Tasks tab (see `.thinkerer/skills/roadmap-item.md`).
 
 Priorities among the engineering components are not decided yet. The order below is a proposal:
 foundations first, then the component plug-in model, then components.
@@ -39,6 +39,17 @@ Why: a repeatable process for software chats that costs fewer tokens: plan, impl
 - [x] Review in a fresh read-only session (Claude: `/code-review` on the chat's range, with the plan; Codex: the plan and the diff); fixes resume the implementer.
 - [x] Report on ship from recorded data, including reported tokens per stage; cleanup stays manual.
 - [x] Settings → Software protocol: check command, review rounds, review model and effort.
+
+### R-11 · Project management (board) · `doing`
+Why: the Tasks tab grows from a flat list into the project's plan, shared by the user and every agent.
+- [x] Milestones → epics → tasks with keys, types (software, firmware, electronics, mechanical, marketing,
+      research, other), priority, labels, "done when" criteria, blockers; SQLite in `.thinkerer/local/`.
+- [x] Plan, Board and Archived views with a detail pane; archive / restore / delete archived only.
+- [x] Task status follows its chats (run → In progress, review → In review, merge/ship → Done, discard → To do).
+- [x] Built-in board MCP server for every provider; no delete for agents; changes show live.
+- [x] Claude's `/clear` refused in chats (adapter `blockedCommands`).
+- [x] Move this roadmap into the board through the MCP server (the user does this when needed).
+- [x] Manual check in the running app after **Restart app** (create items, a chat moving a task, an agent edit).
 
 ## Next
 
