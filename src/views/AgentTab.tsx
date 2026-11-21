@@ -1,23 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type {
-  AppInfo,
-  ChatCommand,
-  ChatRecord,
-  EffectiveMcp,
-  PreviewCapture,
-  Project,
-  ProtocolAction,
-  ProviderChoice,
-  ProviderStatus,
-  RunEvent,
-  RunMode,
-  RunRecord,
-  RunSummary,
-  Task
-} from '../../shared/types'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { AppInfo, ChatCommand, PreviewCapture, Project, ProtocolAction, ProviderChoice, RunMode, RunRecord } from '../../shared/types'
 import { api, errorMessage, loadState, saveState } from '../api'
 import { AgentComposer } from './AgentComposer'
-import { ChatHeader, ChatList, byCreated, chatOf, groupChats, mergeRecords, upsertRecord } from './AgentChats'
+import { ChatHeader, ChatList, byCreated, chatOf, groupChats, upsertRecord } from './AgentChats'
 import { AgentPreviewSide, usePreviewLayout } from './AgentPreview'
 import { AgentTranscript, lastAgentPage, transcriptItems } from './AgentTranscript'
 import { RestoreDialog } from './Changes'
@@ -27,8 +12,8 @@ import { ProtocolBar } from './ProtocolBar'
 import { composerMode } from './composerMode'
 import { modeAfterGiveBack, type Queued } from './queue'
 import type { TabId } from './ProjectView'
+import { useAgentChat } from './useAgentChat'
 import { useFollowUps } from './useFollowUps'
-
 const NEW = 'new' // draft key for the "New chat" composer
 
 export interface AgentPrefill {
@@ -50,37 +35,21 @@ interface Props {
 }
 
 export function AgentTab({ project, info, isSelf, onTab, prefill, onPrefillUsed }: Props) {
-  // Set when a prefill (from the Tasks tab) chose what to show, so reopening the last chat doesn't override it.
-  const prefilled = useRef(false)
-  const [providers, setProviders] = useState<ProviderStatus[] | null>(null)
   const [choice, setChoice] = useState<ProviderChoice>(project.config!.agent.provider)
-  const [runs, setRuns] = useState<RunSummary[]>([])
-  const [records, setRecords] = useState<ChatRecord[]>([])
   const [menuIndex, setMenuIndex] = useState(0)
   // How each composer's next message runs (keyed like drafts); plan mode is read-only and goes back to auto once sent.
   const [modes, setModes] = useState<Record<string, RunMode>>({})
   // New chats follow the software protocol (plan → implement + tests → review → ship) unless turned off.
   const [useProtocol, setUseProtocol] = useState(() => loadState('agent.protocol', true))
-  // The open chat (null: a new one) and its turns with their events.
-  const [chatId, setChatId] = useState<string | null>(null)
-  const chatRef = useRef<string | null>(null)
-  const [turns, setTurns] = useState<RunRecord[]>([])
-  const turnsRef = useRef<RunRecord[]>([])
-  turnsRef.current = turns
-  const fetching = useRef(new Set<string>())
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   // The first message of a new chat, shown while its checkpoint is being saved.
   const [pending, setPending] = useState<string | null>(null)
   const [taskId, setTaskId] = useState<string>('')
-  const [tasks, setTasks] = useState<Task[]>([])
-  const [mcp, setMcp] = useState<EffectiveMcp[]>([])
-  const [isGit, setIsGit] = useState<boolean | null>(null)
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [restoreFor, setRestoreFor] = useState<RunRecord | null>(null)
   const [attachments, setAttachments] = useState<PreviewCapture[]>([])
-  const [reloadNonce, setReloadNonce] = useState(0)
   const scrollRef = useRef<HTMLDivElement>(null)
   // Follow new output only while the user is at the bottom of the transcript.
   const stick = useRef(true)
@@ -88,7 +57,8 @@ export function AgentTab({ project, info, isSelf, onTab, prefill, onPrefillUsed 
   const mainRef = useRef<HTMLDivElement>(null)
   const layout = usePreviewLayout(sectionRef, mainRef)
   const composerRef = useRef<HTMLTextAreaElement>(null)
-  const reloadedFor = useRef(new Set<string>())
+  const { prefilled, providers, runs, records, setRecords, chatId, chatRef, turns, openChat, ensureTurn, refreshContext, isGit, tasks, mcp, reloadNonce } =
+    useAgentChat({ projectId: project.id, onError: setError, stick })
 
   const chats = groupChats(runs, records)
   const chat = chats.find((c) => c.id === chatId) ?? null
@@ -112,84 +82,6 @@ export function AgentTab({ project, info, isSelf, onTab, prefill, onPrefillUsed 
   const liveIn = (folder: string) => runs.some((r) => LIVE.includes(r.status) && (r.cwd ?? r.projectPath) === folder)
   const followUps = useFollowUps({ chats, runs, send: (id, q) => send(id, q.text, q.attachments, q.mode), giveBack })
   const queued = followUps.queued
-
-  function openChat(id: string | null) {
-    chatRef.current = id
-    stick.current = true
-    setChatId(id)
-    setTurns([])
-    saveState(`agent.chat.${project.id}`, id)
-    if (!id) return
-    api.runs.chat(project.id, id).then(
-      (loaded) => chatRef.current === id && setTurns((cur) => [...loaded, ...cur.filter((t) => !loaded.some((l) => l.id === t.id))].sort(byCreated)),
-      (e) => setError(errorMessage(e))
-    )
-  }
-
-  /** Loads a turn of the open chat that the transcript doesn't have yet (a follow-up that just started). */
-  function ensureTurn(runId: string) {
-    if (fetching.current.has(runId) || turnsRef.current.some((t) => t.id === runId)) return
-    fetching.current.add(runId)
-    const forChat = chatRef.current
-    api.runs
-      .get(runId)
-      .then((rec) => {
-        if (!rec || chatRef.current !== forChat) return
-        setTurns((cur) => (cur.some((t) => t.id === rec.id) ? cur : [...cur, rec].sort(byCreated)))
-      }, () => {})
-      .finally(() => fetching.current.delete(runId))
-  }
-
-  const refreshChats = useCallback(() => {
-    api.chats.list(project.id).then((list) => setRecords((cur) => mergeRecords(cur, list)), () => {})
-  }, [project.id])
-
-  const refreshContext = useCallback(() => {
-    refreshChats()
-    api.git.status(project.id).then((s) => setIsGit(!!s), () => setIsGit(null))
-    api.board.get(project.id).then((b) => setTasks(b.tasks), () => {})
-    api.mcp.effective(project.id).then(setMcp, () => {})
-  }, [project.id, refreshChats])
-
-  useEffect(() => {
-    api.agents.providers().then(setProviders, (e) => setError(errorMessage(e)))
-    refreshContext()
-    // Reopen the newest working chat (e.g. after a renderer reload), else the one open last time.
-    Promise.all([api.runs.list(project.id), api.runs.active(project.id)]).then(([list, live]) => {
-      setRuns(list)
-      if (prefilled.current) return
-      const saved = loadState<string | null>(`agent.chat.${project.id}`, null)
-      const newest = live[live.length - 1]
-      if (newest) openChat(newest.chatId ?? newest.id)
-      else openChat(saved && list.some((r) => chatOf(r) === saved) ? saved : null)
-    }, () => !prefilled.current && openChat(null))
-
-    const offChat = api.chats.onUpdate((c) => {
-      if (c.projectId === project.id) setRecords((cur) => upsertRecord(cur, c))
-    })
-    const offEvent = api.runs.onEvent((runId: string, event: RunEvent) => {
-      setTurns((cur) => (cur.some((t) => t.id === runId) ? cur.map((t) => (t.id === runId ? { ...t, events: [...t.events, event] } : t)) : cur))
-    })
-    const offUpdate = api.runs.onUpdate((summary) => {
-      if (summary.projectId !== project.id) return
-      setRuns((cur) => [summary, ...cur.filter((r) => r.id !== summary.id)])
-      if (chatOf(summary) === chatRef.current) {
-        if (turnsRef.current.some((t) => t.id === summary.id)) setTurns((cur) => cur.map((t) => (t.id === summary.id ? { ...t, ...summary } : t)))
-        else ensureTurn(summary.id)
-      }
-      if (summary.endedAt) refreshContext()
-      // Show the result: reload the preview once when a run that changed files finishes.
-      if (summary.endedAt && summary.changes?.length && !reloadedFor.current.has(summary.id)) {
-        reloadedFor.current.add(summary.id)
-        setReloadNonce((n) => n + 1)
-      }
-    })
-    return () => {
-      offChat()
-      offEvent()
-      offUpdate()
-    }
-  }, [project.id, refreshContext])
 
   useEffect(() => {
     if (!prefill) return
