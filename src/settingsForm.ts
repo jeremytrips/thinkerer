@@ -53,26 +53,44 @@ function wholeNumber(value: string, { min, max }: { min: number; max: number }):
   return n >= min && n <= max ? n : null
 }
 
+// Same limits as applyPatch in engine/projects.ts, checked here so the message says what to fix.
+export const MAX_NAME_LENGTH = 100
+export const MAX_COMMAND_LENGTH = 500
+const COMMANDS = [
+  ['devCommand', 'Development command'],
+  ['setupCommand', 'Setup command'],
+  ['teardownCommand', 'Teardown command'],
+  ['checkCommand', 'Check command']
+] as const
+
 export function patchFromForm(form: SettingsForm): { patch: ProjectConfigPatch } | { error: string } {
-  if (!form.name.trim()) return { error: 'Display name cannot be empty' }
+  const name = form.name.trim()
+  if (!name) return { error: 'Display name cannot be empty' }
+  if (name.length > MAX_NAME_LENGTH) return { error: `Display name must be ${MAX_NAME_LENGTH} characters or fewer` }
+  for (const [key, label] of COMMANDS) {
+    if (form[key].length > MAX_COMMAND_LENGTH) return { error: `${label} must be ${MAX_COMMAND_LENGTH} characters or fewer` }
+  }
   const ports = wholeNumber(form.ports, PORTS_RANGE)
   if (ports === null) return { error: `Ports per worktree must be a whole number from ${PORTS_RANGE.min} to ${PORTS_RANGE.max}` }
   const rounds = wholeNumber(form.reviewRounds, REVIEW_ROUNDS_RANGE)
   if (rounds === null) return { error: `Review rounds must be a whole number from ${REVIEW_ROUNDS_RANGE.min} to ${REVIEW_ROUNDS_RANGE.max}` }
   return {
     patch: {
-      name: form.name,
+      name,
       components: form.components,
       target: form.target,
       website: { devCommand: form.devCommand, previewUrl: form.previewUrl },
-      agent: { provider: form.provider, claude: { model: form.model, effort: form.effort, tools: form.claudeTools } },
+      agent: { provider: form.provider, claude: { model: form.model.trim(), effort: form.effort, tools: form.claudeTools } },
       worktrees: { setupCommand: form.setupCommand, teardownCommand: form.teardownCommand, ports },
-      protocol: { checkCommand: form.checkCommand, maxReviewRounds: rounds, review: { model: form.reviewModel, effort: form.reviewEffort } }
+      protocol: { checkCommand: form.checkCommand, maxReviewRounds: rounds, review: { model: form.reviewModel.trim(), effort: form.reviewEffort } }
     }
   }
 }
 
-/** The form as the server would store it: trimmed where it trims, arrays in a fixed order. */
+/** A whole number without leading zeros ('03' and '3' save the same); anything else unchanged. */
+const sameNumber = (v: string) => (/^\d+$/.test(v.trim()) ? String(Number(v.trim())) : v.trim())
+
+/** The form as the server would store it: trimmed where it trims, numbers as saved, arrays in a fixed order. */
 function canonical(form: SettingsForm): SettingsForm {
   return {
     ...form,
@@ -80,8 +98,8 @@ function canonical(form: SettingsForm): SettingsForm {
     model: form.model.trim(),
     checkCommand: form.checkCommand.trim(),
     reviewModel: form.reviewModel.trim(),
-    ports: form.ports.trim(),
-    reviewRounds: form.reviewRounds.trim(),
+    ports: sameNumber(form.ports),
+    reviewRounds: sameNumber(form.reviewRounds),
     components: [...new Set(form.components)].sort(),
     claudeTools: [...new Set(form.claudeTools)].sort()
   }

@@ -33,7 +33,25 @@ export function SettingsTab({ project, onChanged, onRemoved }: { project: Projec
   const [confirmRemove, setConfirmRemove] = useState(false)
   const [removeError, setRemoveError] = useState<string | null>(null)
   const [providers, setProviders] = useState<ProviderStatus[] | null>(null)
+  /** The config on disk changed (e.g. after /merge) while the form had edits; saving would overwrite it. */
+  const [stale, setStale] = useState(false)
   const dirty = isDirty(form, baseline)
+
+  // Follow config changes made elsewhere: reload a clean form, warn about an edited one.
+  const incoming = project.config!
+  useEffect(() => {
+    if (!isDirty(formFromConfig(incoming), baseline)) return setBaseline(incoming) // nothing the form shows changed
+    if (isDirty(form, baseline)) return setStale(true)
+    setBaseline(incoming)
+    setForm(formFromConfig(incoming))
+  }, [incoming])
+
+  function reload() {
+    setBaseline(incoming)
+    setForm(formFromConfig(incoming))
+    setStale(false)
+    setStatus(null)
+  }
 
   const detectProviders = () => api.agents.providers().then(setProviders, () => setProviders([]))
 
@@ -50,26 +68,40 @@ export function SettingsTab({ project, onChanged, onRemoved }: { project: Projec
     if (saving) return
     const result = patchFromForm(form)
     if ('error' in result) return setStatus({ tone: 'error', text: result.error })
+    const submitted = form
     setSaving(true)
     setStatus(null)
     try {
       const updated = await api.projects.update(project.id, result.patch)
-      if (updated.config) {
-        setBaseline(updated.config)
-        setForm(formFromConfig(updated.config))
-      }
-      await onChanged()
+      const saved = updated.config!
+      setBaseline(saved)
+      // Edits typed while the save ran are kept; they then show as unsaved changes.
+      setForm((current) => (current === submitted ? formFromConfig(saved) : current))
+      setStale(false)
       setStatus({ tone: 'ok', text: 'Saved to .thinkerer/project.json' })
     } catch (err) {
       setStatus({ tone: 'error', text: errorMessage(err) })
+      return
     } finally {
       setSaving(false)
+    }
+    try {
+      await onChanged()
+    } catch (err) {
+      setStatus({ tone: 'error', text: `Saved, but the project list did not refresh: ${errorMessage(err)}. Restart the app to see the change everywhere.` })
     }
   }
 
   return (
     <section className="settings">
       <h1>Settings</h1>
+      {stale && (
+        <div className="banner banner-error" role="alert">
+          These settings changed on disk since you started editing (for example after <span className="mono">/merge</span>). Saving
+          now overwrites them with this form.{' '}
+          <button type="button" className="small" onClick={reload}>Discard my edits and reload</button>
+        </div>
+      )}
       <form
         className="card form"
         onSubmit={(e) => {
@@ -223,11 +255,10 @@ export function SettingsTab({ project, onChanged, onRemoved }: { project: Projec
         </fieldset>
         <div className="row">
           <button type="submit" className="primary" disabled={saving || !dirty}>{saving ? 'Saving…' : 'Save'}</button>
-          {status ? (
+          {status && (
             <span role={status.tone === 'error' ? 'alert' : 'status'} className={status.tone === 'ok' ? 'small muted' : 'small error-text'}>{status.text}</span>
-          ) : (
-            dirty && <span className="small muted">Unsaved changes</span>
           )}
+          {dirty && status?.tone !== 'ok' && <span className="small muted">Unsaved changes</span>}
         </div>
       </form>
 

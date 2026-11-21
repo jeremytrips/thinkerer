@@ -63,4 +63,24 @@ describe('settings form', () => {
     expect(isDirty({ ...form, name: '  Demo  ', model: 'opus ', checkCommand: ' npm test', reviewModel: 'sonnet ' }, config)).toBe(false)
     expect(isDirty({ ...form, components: ['mobile', 'website'], claudeTools: [...form.claudeTools].reverse() }, config)).toBe(false)
   })
+
+  it('sends a model of only spaces as empty, which the server accepts as "default"', () => {
+    const patch = patchOf({ ...formFromConfig(config), model: '   ', reviewModel: ' sonnet ' })
+    expect(patch.agent?.claude?.model).toBe('')
+    expect(patch.protocol?.review?.model).toBe('sonnet')
+  })
+
+  it('checks the server length limits with messages that say what to fix', () => {
+    const form = formFromConfig(config)
+    expect(patchFromForm({ ...form, name: 'x'.repeat(101) })).toEqual({ error: 'Display name must be 100 characters or fewer' })
+    expect(patchOf({ ...form, name: ` ${'x'.repeat(100)} ` }).name).toBe('x'.repeat(100))
+    expect(patchFromForm({ ...form, checkCommand: 'x'.repeat(501) })).toEqual({ error: 'Check command must be 500 characters or fewer' })
+    expect(patchFromForm({ ...form, setupCommand: 'x'.repeat(501) })).toEqual({ error: 'Setup command must be 500 characters or fewer' })
+  })
+
+  it('treats numbers with leading zeros as the value they save', () => {
+    const form = formFromConfig(config)
+    expect(isDirty({ ...form, ports: '02', reviewRounds: ' 003' }, config)).toBe(false)
+    expect(patchOf({ ...form, ports: '02' }).worktrees?.ports).toBe(2)
+  })
 })
