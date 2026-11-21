@@ -34,6 +34,8 @@ const NEW = 'new' // draft key for the "New chat" composer
 export interface AgentPrefill {
   prompt: string
   taskId: string
+  /** Open this existing chat instead of filling the new-chat composer. */
+  chatId?: string
   nonce: number
 }
 
@@ -43,9 +45,13 @@ interface Props {
   isSelf: boolean
   onTab: (tab: TabId) => void
   prefill?: AgentPrefill | null
+  /** Called once the prefill is applied, so it isn't applied again when the tab remounts. */
+  onPrefillUsed?: () => void
 }
 
-export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
+export function AgentTab({ project, info, isSelf, onTab, prefill, onPrefillUsed }: Props) {
+  // Set when a prefill (from the Tasks tab) chose what to show, so reopening the last chat doesn't override it.
+  const prefilled = useRef(false)
   const [providers, setProviders] = useState<ProviderStatus[] | null>(null)
   const [choice, setChoice] = useState<ProviderChoice>(project.config!.agent.provider)
   const [runs, setRuns] = useState<RunSummary[]>([])
@@ -141,7 +147,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
   const refreshContext = useCallback(() => {
     refreshChats()
     api.git.status(project.id).then((s) => setIsGit(!!s), () => setIsGit(null))
-    api.tasks.list(project.id).then(setTasks, () => {})
+    api.board.get(project.id).then((b) => setTasks(b.tasks), () => {})
     api.mcp.effective(project.id).then(setMcp, () => {})
   }, [project.id, refreshChats])
 
@@ -151,11 +157,12 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
     // Reopen the newest working chat (e.g. after a renderer reload), else the one open last time.
     Promise.all([api.runs.list(project.id), api.runs.active(project.id)]).then(([list, live]) => {
       setRuns(list)
+      if (prefilled.current) return
       const saved = loadState<string | null>(`agent.chat.${project.id}`, null)
       const newest = live[live.length - 1]
       if (newest) openChat(newest.chatId ?? newest.id)
       else openChat(saved && list.some((r) => chatOf(r) === saved) ? saved : null)
-    }, () => openChat(null))
+    }, () => !prefilled.current && openChat(null))
 
     const offChat = api.chats.onUpdate((c) => {
       if (c.projectId === project.id) setRecords((cur) => upsertRecord(cur, c))
@@ -186,6 +193,9 @@ export function AgentTab({ project, info, isSelf, onTab, prefill }: Props) {
 
   useEffect(() => {
     if (!prefill) return
+    prefilled.current = true
+    onPrefillUsed?.()
+    if (prefill.chatId) return openChat(prefill.chatId)
     openChat(null)
     setDraft(prefill.prompt, NEW)
     setTaskId(prefill.taskId)

@@ -58,7 +58,7 @@ Thinkerer maintains, per project, a small set of files agents can rely on instea
 ```text
 .thinkerer/
 ├── project.json        # config (exists)
-├── tasks.json          # task board (exists)
+├── local/board.sqlite  # project board: milestones → epics → tasks (exists; git-ignored, via the board MCP)
 ├── map.md              # generated project map: folders → purpose, key entry points (planned)
 ├── components/<id>.md  # per-component summary: architecture, conventions, commands (planned)
 └── skills/             # provider-neutral playbooks (exists for Thinkerer itself; general mechanism planned)

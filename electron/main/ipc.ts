@@ -26,8 +26,10 @@ import { checkMcpServer } from '../../engine/mcpCheck'
 import { findClaudeMcpServers } from '../../engine/mcpImport'
 import { deviceId, mobile } from '../../engine/mobile'
 import type { ProjectService } from '../../engine/projects'
-import type { TaskStore } from '../../engine/tasks'
+import type { BoardService } from '../../engine/board'
 import { commitsAhead, resolvePreviewUrl, worktreeEnv } from '../../engine/worktrees'
+import { registerBoardIpc } from './ipcBoard'
+import { bounds, str } from './validate'
 import type {
   AppInfo,
   ChatCommand,
@@ -39,8 +41,7 @@ import type {
   ProtocolAction,
   ProviderChoice,
   Result,
-  RunMode,
-  TaskStatus
+  RunMode
 } from '../../shared/types'
 import type { PreviewManager, PreviewScope } from './preview'
 import { deviceScope, type ChatDevices } from '../../engine/chatDevices'
@@ -50,7 +51,7 @@ interface Deps {
   projects: ProjectService
   supervisor: AgentSupervisor
   protocol: ProtocolService
-  tasks: TaskStore
+  board: BoardService
   mcp: McpRegistry
   /** Where bundled MCP scripts live and how to run Node, as agent runs get it. */
   mcpContext: () => Promise<Omit<McpRunContext, 'artifactsDir'>>
@@ -67,18 +68,6 @@ interface Deps {
 const PROVIDERS: ProviderChoice[] = ['auto', 'claude', 'codex']
 const MAX_ATTACHMENTS = 5
 
-function str(v: unknown, name: string, max = 10_000): string {
-  if (typeof v !== 'string' || v.length > max) throw new Error(`Invalid ${name}`)
-  return v
-}
-
-function bounds(v: unknown): { x: number; y: number; width: number; height: number } {
-  const b = v as Record<string, unknown>
-  if (!b || !['x', 'y', 'width', 'height'].every((k) => typeof b[k] === 'number' && Number.isFinite(b[k] as number))) {
-    throw new Error('Invalid bounds')
-  }
-  return { x: b.x as number, y: b.y as number, width: b.width as number, height: b.height as number }
-}
 
 /**
  * The renderer's only route to privileged work. Every channel validates its
@@ -87,7 +76,7 @@ function bounds(v: unknown): { x: number; y: number; width: number; height: numb
  * which the renderer cannot fake.
  */
 export function registerIpc(deps: Deps): void {
-  const { projects, supervisor, protocol, tasks, mcp, devServers, approvals, preview, chatDevices } = deps
+  const { projects, supervisor, protocol, board, mcp, devServers, approvals, preview, chatDevices } = deps
   const chats = supervisor.chats
   // Preview screenshots waiting to be sent with a prompt, keyed by attachment id.
   const captures = new Map<string, { projectId: string; attachment: PromptAttachment }>()
@@ -256,19 +245,7 @@ export function registerIpc(deps: Deps): void {
     return restoreCheckpoint(folder, checkpoint)
   })
 
-  // Tasks
-  handle('tasks:list', async (id: unknown) => tasks.list(await projectPath(id)))
-  handle('tasks:create', async (id: unknown, title: unknown, notes: unknown) =>
-    tasks.create(await projectPath(id), str(title, 'title', 300), notes === undefined ? '' : str(notes, 'notes', 10_000))
-  )
-  handle('tasks:update', async (id: unknown, taskId: unknown, patch: unknown) => {
-    if (!patch || typeof patch !== 'object') throw new Error('Invalid task update')
-    return tasks.update(await projectPath(id), str(taskId, 'task id', 100), patch as { title?: string; notes?: string; status?: TaskStatus })
-  })
-  handle('tasks:remove', async (id: unknown, taskId: unknown) => {
-    await tasks.remove(await projectPath(id), str(taskId, 'task id', 100))
-    return true
-  })
+  registerBoardIpc({ handle, board, projectPath, send })
 
   // MCP registry
   handle('mcp:list', () => mcp.list())

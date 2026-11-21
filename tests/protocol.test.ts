@@ -10,9 +10,9 @@ import { Approvals } from '../engine/approvals'
 import { ProjectService } from '../engine/projects'
 import { ProtocolService } from '../engine/protocol'
 import { runChatCommand } from '../engine/chatCommands'
-import { IMPLEMENT_PROMPT, countFindings } from '../engine/protocolText'
+import { IMPLEMENT_PROMPT, countFindings, fixFindingsPrompt, pickPlan, reviewEffort, reviewLevel } from '../engine/protocolText'
 import { looksLikeApproval } from '../shared/protocol'
-import type { ChatRecord, ProtocolAction, RunSummary } from '../shared/types'
+import type { ChatRecord, Effort, ProtocolAction, RunSummary } from '../shared/types'
 
 // The software protocol end to end with a stand-in agent, a real temp repo and
 // real git: plan → implement (+ checks Thinkerer runs) → fresh-session review →
@@ -27,12 +27,12 @@ let implementWrites = true
 let agentCommits = false
 
 /** Records what each turn was started with; read-only turns write nothing (like a real plan or review). */
-function recordingStandIn(calls: InvocationOptions[]): AgentAdapter {
+function recordingStandIn(calls: InvocationOptions[], id: 'claude' | 'codex' = 'claude'): AgentAdapter {
   return {
-    id: 'claude',
+    id,
     label: 'Stand-in',
     policySummary: 'test',
-    detect: async () => ({ id: 'claude', label: 'Stand-in', installed: true, executable: process.execPath, version: 'test', authenticated: true, adapterAvailable: true, detail: '', policy: 'test' }),
+    detect: async () => ({ id, label: 'Stand-in', installed: true, executable: process.execPath, version: 'test', authenticated: true, adapterAvailable: true, detail: '', policy: 'test' }),
     buildInvocation: (opts) => {
       calls.push(opts)
       const mode = opts.mode === 'plan' || !implementWrites ? 'readonly' : 'ok'
@@ -42,7 +42,8 @@ function recordingStandIn(calls: InvocationOptions[]): AgentAdapter {
       }
       return { command: opts.executable, args: [FIXTURE, mode], stdin: opts.prompt, env: process.env }
     },
-    createParser: () => ({ parseLine: parseClaudeLine })
+    createParser: () => ({ parseLine: parseClaudeLine }),
+    ...(id === 'claude' ? { reviewCommand: '/code-review' } : {})
   }
 }
 
@@ -55,7 +56,7 @@ let sup: AgentSupervisor
 let protocol: ProtocolService
 let calls: InvocationOptions[]
 
-async function setup(config: { checkCommand?: string; maxReviewRounds?: number; review?: { model?: string } } = {}) {
+async function setup(config: { checkCommand?: string; maxReviewRounds?: number; review?: { model?: string; effort?: Effort } } = {}) {
   await projects.updateConfig(projectId, { protocol: config })
   git(repo, 'add', '-A')
   git(repo, 'commit', '-qm', 'protocol config')
@@ -118,7 +119,7 @@ const checksDone = (c: ChatRecord) => !!c.protocol?.checks && c.protocol.checks.
 describe('software protocol', () => {
   it('plans, implements with checks, reviews in a fresh session, fixes in the implementer session, and ships', async () => {
     const check = 'test -f made.txt && echo checks-ok'
-    await setup({ checkCommand: check, review: { model: 'sonnet' } })
+    await setup({ checkCommand: check, review: { model: 'sonnet', effort: 'medium' } })
 
     // 1. The first message is the task, planned read-only.
     const ended = turnEnded()
@@ -142,16 +143,26 @@ describe('software protocol', () => {
     expect(chat.notes.at(-1)!.lines).toContain('checks-ok')
     await expect(protocol.advance(projectId, chatId, 'approve-plan')).rejects.toThrow('already approved')
 
-    // 3. Review: a fresh session, read-only, without sub-agents, on the review model; it gets the plan and the diff only.
+    // 3. Review: Claude Code's /code-review on the chat's branch, in a fresh read-only session on the review model.
     const review = await step(chatId, 'start-review')
     expect(review.protocolStage).toBe('review')
-    expect(calls[2]).toMatchObject({ mode: 'plan', resumeSessionId: null })
-    expect(calls[2].claude).toMatchObject({ model: 'sonnet' })
-    expect(calls[2].claude!.tools).not.toContain('Task')
-    expect(calls[2].prompt).toContain('## Plan')
-    expect(calls[2].prompt).toContain('passed')
-    expect(calls[2].prompt).toMatch(/## Diff[\s\S]*\+\+\+ b\/made\.txt/)
-    expect(calls[2].policy.appendSystemPrompt).toContain('stage 3 of 4 (code review)')
+    const branch = (await sup.chats.get(chatId))!.worktree!.branch
+    expect(calls[2]).toMatchObject({ mode: 'plan', resumeSessionId: null, prompt: `/code-review medium ${branch}` })
+    expect(review.prompt).toBe(`/code-review medium ${branch}`)
+    expect(calls[2].prompt).not.toContain('## Plan')
+    expect(calls[2].claude).toMatchObject({ model: 'sonnet', effort: 'medium' })
+    // The project's own tools (sub-agents only if it enables them), plus Skill for the review command.
+    const projectTools = (await projects.get(projectId)).config!.agent.claude.tools
+    expect(calls[2].claude!.tools).toEqual([...new Set([...projectTools, 'Skill'])])
+    const sys = calls[2].policy.appendSystemPrompt
+    expect(sys).toContain('stage 3 of 4 (code review)')
+    // The implement turns' own range (from HEAD before the first one), not origin/HEAD or main...HEAD.
+    expect(sys).toMatch(/`git diff [0-9a-f]{40}\.\.HEAD`/)
+    expect(sys).toContain('package-lock.json')
+    expect(sys).toContain(`Checks: \`${check}\` passed`)
+    expect(sys).toMatch(/Plan: \S/)
+    expect(sys).not.toContain('(no plan recorded)')
+    expect(sys).toContain('[high|medium|low] path:line')
     chat = (await sup.chats.get(chatId))!
     expect(chat.protocol).toMatchObject({ stage: 'review', round: 1 })
 
@@ -217,6 +228,21 @@ describe('software protocol', () => {
     expect(chat.notes.some((n) => n.kind === 'checks')).toBe(false)
   })
 
+  it('keeps the review prompt with the plan and diff for Codex chats, which have no skills', async () => {
+    sup = new AgentSupervisor(join(tmp, 'appdata'), projects, { adapters: [recordingStandIn(calls, 'codex')], approvals })
+    protocol = new ProtocolService({ supervisor: sup, projects, approvals })
+    await setup()
+    const ended = turnEnded()
+    const plan = await protocol.begin(projectId, 'Add a file', 'codex')
+    await ended
+    await step(plan.id, 'approve-plan')
+    await step(plan.id, 'start-review')
+    const prompt = calls.at(-1)!.prompt
+    expect(prompt).not.toContain('/code-review')
+    expect(prompt).toContain('## Plan')
+    expect(prompt).toMatch(/## Diff[\s\S]*\+\+\+ b\/made\.txt/)
+  })
+
   it('caps review rounds at the project limit', async () => {
     await setup({ maxReviewRounds: 1 })
     const ended = turnEnded()
@@ -266,9 +292,12 @@ describe('software protocol', () => {
   })
 
   it('reviews the implement commits even after the base branch already merged the chat branch', async () => {
+    // Codex: the diff itself is in the review message, so the test can read it.
+    sup = new AgentSupervisor(join(tmp, 'appdata'), projects, { adapters: [recordingStandIn(calls, 'codex')], approvals })
+    protocol = new ProtocolService({ supervisor: sup, projects, approvals })
     await setup()
     const ended = turnEnded()
-    const plan = await protocol.begin(projectId, 'Add a file', 'claude')
+    const plan = await protocol.begin(projectId, 'Add a file', 'codex')
     await ended
     await step(plan.id, 'approve-plan')
     const chat = (await sup.chats.get(plan.id))!
@@ -289,8 +318,10 @@ describe('software protocol', () => {
     await ended
     await step(plan.id, 'approve-plan')
     await step(plan.id, 'start-review')
-    const prompt = calls.at(-1)!.prompt
-    for (const f of ['a.txt', 'b.txt', 'made.txt']) expect(prompt).toContain(`+++ b/${f}`)
+    // Claude's /code-review gets the range in its instructions; that range must hold all three files.
+    const range = calls.at(-1)!.policy.appendSystemPrompt.match(/`git diff (\S+)`/)![1]
+    const files = git((await sup.chats.get(plan.id))!.worktree!.path, 'diff', '--name-only', range).split('\n')
+    expect(files).toEqual(expect.arrayContaining(['a.txt', 'b.txt', 'made.txt']))
   })
 
   it('refuses a review when the implement turns changed nothing, without starting a turn', async () => {
@@ -353,5 +384,47 @@ describe('protocol config and findings', () => {
     expect(countFindings('- [high] a.ts:1: x; y\n- [low] b.ts:2: z; w')).toBe(2)
     expect(countFindings('Looks fine to me')).toBeNull()
     expect(countFindings(null)).toBeNull()
+    // A review command's own JSON answer.
+    expect(countFindings('Done.\n```json\n[]\n```')).toBe(0)
+    expect(countFindings('[{"severity":"important","file":"a.ts"},{"severity":"nit","file":"b.ts"}]')).toBe(2)
+    expect(countFindings('see [the docs]')).toBeNull()
+    // Brackets in the prose before the JSON block don't hide it.
+    expect(countFindings('Checked [engine/protocol.ts] and [a.ts].\n```json\n[{"severity":"nit","tags":["x"]}]\n```')).toBe(1)
+    expect(countFindings('[x] then [broken')).toBeNull()
+  })
+
+  it('forwards the finding lines from a long review, not its cut-off start', () => {
+    const long = `${'prose '.repeat(2000)}\n[{"severity":"important"}]\n- [high] a.ts:1: bug; fix\n- [low] b.ts:2: nit; tidy`
+    const prompt = fixFindingsPrompt(long)
+    expect(prompt).toContain('- [high] a.ts:1: bug; fix\n- [low] b.ts:2: nit; tidy')
+    expect(prompt).not.toContain('prose')
+    // No finding lines: the end of the reply is kept.
+    const tail = fixFindingsPrompt(`${'x'.repeat(9000)}THE END`)
+    expect(tail).toContain('THE END')
+    expect(tail).toContain('start cut')
+  })
+
+  it('picks the review level: explicit review effort, else the agent effort with max held at xhigh, else medium', () => {
+    expect(reviewLevel('max', 'low')).toBe('max')
+    expect(reviewLevel('', 'max')).toBe('xhigh')
+    expect(reviewLevel('', 'high')).toBe('high')
+    expect(reviewLevel('', '')).toBe('medium')
+    // The turn's --effort follows the same cap ('' = the agent's own effort).
+    expect(reviewEffort('', 'max')).toBe('xhigh')
+    expect(reviewEffort('max', 'low')).toBe('max')
+    expect(reviewEffort('', 'high')).toBe('')
+  })
+
+  it('reviews against the latest real plan, not a later plan-stage reply that is no plan', () => {
+    const plan = '## Goal\nX\n## Acceptance criteria\n- works'
+    const turn = (resultText: string) => ({ protocolStage: 'plan' as const, status: 'succeeded' as const, resultText })
+    expect(pickPlan([turn(plan), turn('Nothing was implemented. Switch the run mode to Auto.')])).toBe(plan)
+    expect(pickPlan([turn('First draft'), turn('Second draft')])).toBe('Second draft')
+    // A refinement with Goal/Steps/Tests but no acceptance criteria is still the newest plan.
+    const revised = '**Goal**: X\n**Steps**\n1. a\n**Tests**\n- t'
+    expect(pickPlan([turn(plan), turn(revised)])).toBe(revised)
+    // A failed partial reply is not preferred over a finished one.
+    expect(pickPlan([turn('Finished reply'), { ...turn('Partial'), status: 'failed' as const }])).toBe('Finished reply')
+    expect(pickPlan([])).toBeNull()
   })
 })

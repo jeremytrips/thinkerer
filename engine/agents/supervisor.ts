@@ -32,7 +32,7 @@ import type { McpRegistry, McpRunContext, ResolvedMcpServer } from '../mcp'
 import type { ProjectService } from '../projects'
 import { readJson, writeJson } from '../store'
 import { loadProjectInstructions } from './instructions'
-import type { TaskStore } from '../tasks'
+import type { BoardService } from '../board'
 import {
   allocatePorts,
   commitAll,
@@ -46,7 +46,7 @@ import {
 } from '../worktrees'
 import { claudeAdapter } from './claude'
 import { codexAdapter } from './codex'
-import type { AgentAdapter, RunPolicy } from './types'
+import { blockedCommand, type AgentAdapter, type RunPolicy } from './types'
 
 const MAX_EVENTS = 5000
 const KILL_GRACE_MS = 3000
@@ -67,7 +67,11 @@ export const DEFAULT_POLICY: RunPolicy = {
     'npx playwright test*',
     'git status*',
     'git diff*',
-    'git log*'
+    'git log*',
+    'git show*',
+    'git merge-base*',
+    'git rev-parse*',
+    'git ls-files*'
   ],
   appendSystemPrompt: [
     'You are running inside Thinkerer, a desktop app that supervises coding agents.',
@@ -104,7 +108,8 @@ interface Workspace {
 export interface SupervisorOptions {
   adapters?: AgentAdapter[]
   policy?: RunPolicy
-  tasks?: TaskStore
+  /** The project boards: a run on a task links its chat and moves the task along. */
+  board?: BoardService
   /** MCP servers come from the registry; without it, runs get none. */
   mcp?: { registry: McpRegistry; context: () => Promise<Omit<McpRunContext, 'artifactsDir'>> }
   chats?: ChatStore
@@ -214,6 +219,8 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       const wantsWorktree = chatId ? !!stored?.worktree || stored?.state === 'setting-up' : !!(await currentBranch(project.path)) && !!(await headCommit(project.path))
       const selected = await this.selectProvider(chat ? chat.provider : requested)
       const { provider, status } = selected
+      const blocked = blockedCommand(this.adapters[provider]!, prompt)
+      if (blocked) throw new Error(`/${blocked} isn't available in Thinkerer chats; it would disconnect this chat from its session. Start a new chat instead.`)
       const rationale = chat ? `Continuing this chat with ${this.adapters[provider]!.label}` : selected.rationale
       const now = new Date().toISOString()
       // Only runs in the same folder can see each other's edits.
@@ -291,9 +298,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     const record = run.record
     const adapter = this.adapters[record.provider]!
     try {
-      if (record.taskId && this.opts.tasks) {
-        await this.opts.tasks.attachRun(project.path, record.taskId, record.id)
-      }
+      if (record.taskId) this.opts.board?.runStarted(project.path, record.taskId, record.chatId ?? record.id, record.id)
       const ws = await this.prepareWorkspace(run, project)
       if (run.cancelRequested) return void (await this.finish(run, 'cancelled', null, null))
       record.cwd = ws.cwd
@@ -477,8 +482,17 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
   ): Promise<{ servers: ResolvedMcpServer[]; secretEnv: Record<string, string> }> {
     if (!this.opts.mcp) return { servers: [], secretEnv: {} }
     const ctx = await this.opts.mcp.context()
-    const provider = this.active.get(runId)?.record.provider
-    return this.opts.mcp.registry.resolveForRun(project, { ...ctx, artifactsDir: this.artifactsDir(runId), cwd: ws.cwd, previewUrl: ws.previewUrl, provider, devices })
+    const record = this.active.get(runId)?.record
+    return this.opts.mcp.registry.resolveForRun(project, {
+      ...ctx,
+      artifactsDir: this.artifactsDir(runId),
+      cwd: ws.cwd,
+      previewUrl: ws.previewUrl,
+      provider: record?.provider,
+      devices,
+      chatId: record?.chatId ?? runId,
+      taskId: record?.taskId ?? null
+    })
   }
 
   /**
@@ -544,6 +558,9 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       'Never open a device window yourself: no `open -a Simulator`, Xcode, Android Studio, or `emulator` without `-no-window`.'
     )
     if (servers.some((s) => s.id === 'health')) lines.push('The health MCP server reports project health (git state, preview reachability).')
+    if (servers.some((s) => s.id === 'board')) {
+      lines.push('The board MCP server is the project’s task board: board_current_task shows the task this chat works on; tick its criteria (board_check) only once verified, and record follow-up work there (board_create). Never edit files under .thinkerer/local/.')
+    }
     if (extra) lines.push(extra)
     // Last, and on its own lines: the project's own instructions, read by Thinkerer (see instructions.ts).
     const text = lines.join(' ')
@@ -655,6 +672,16 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     return out
   }
 
+  /** The provider the chat's next turn runs with (the same rule as follow-ups); null for an empty chat. */
+  async chatProvider(projectId: string, chatId: string): Promise<ProviderId | null> {
+    return workingTurns(await this.getChat(projectId, chatId)).at(-1)?.provider ?? null
+  }
+
+  /** The provider CLI's own code-review command, if its adapter has one. */
+  reviewCommand(provider: ProviderId): string | null {
+    return this.adapters[provider]?.reviewCommand ?? null
+  }
+
   /**
    * What a follow-up in this chat continues: the latest turn's provider, and its
    * session if it reported one. Review turns run in their own session, so the
@@ -664,8 +691,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     const all = await this.getChat(projectId, chatId)
     if (!all.length) throw new Error('Chat not found')
     if (all.some((t) => this.active.has(t.id))) throw new Error('This chat is still working; wait for it to finish or stop it first')
-    const working = all.filter((t) => t.protocolStage !== 'review')
-    const turns = working.length ? working : all
+    const turns = workingTurns(all)
     const last = turns[turns.length - 1]
     const resumable = turns.filter((t) => t.provider === last.provider && t.sessionId).at(-1)
     return { provider: last.provider, sessionId: resumable?.sessionId ?? null, taskId: turns[0].taskId }
@@ -832,6 +858,12 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
 function missingAdapter(id: ProviderId): ProviderStatus {
   const label = id === 'claude' ? 'Claude Code' : 'Codex'
   return { id, label, installed: false, executable: null, version: null, authenticated: null, adapterAvailable: false, detail: 'No adapter registered', policy: '' }
+}
+
+/** A chat's turns that later turns continue from: review turns run in their own session and never count. */
+function workingTurns<T extends { protocolStage?: string }>(all: T[]): T[] {
+  const working = all.filter((t) => t.protocolStage !== 'review')
+  return working.length ? working : all
 }
 
 /** Tells the agent where the user's preview screenshots are and what page they show. */

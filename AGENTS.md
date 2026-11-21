@@ -31,6 +31,8 @@ next, and `docs/DESIGN.md` before any UI work.
 7. **Provider-neutral.** Anything that works for one agent provider must go through the adapter
    interface (`engine/agents/types.ts`) so every provider gets it. Same MCP tools, same instructions.
 
+The project board (Tasks tab) is managed only through the `board` MCP server; never touch `.thinkerer/local/`.
+
 Chats in Thinkerer follow the software protocol (plan → implement + tests → review → ship, see README).
 In a protocol chat, the stage instructions say what each turn is for; Thinkerer runs the checks itself.
 

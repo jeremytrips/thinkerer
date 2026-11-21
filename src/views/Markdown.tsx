@@ -53,7 +53,7 @@ function blocks(text: string): ReactNode[] {
       const ordered = /\d/.test(line.match(item)![2])
       const items: string[][] = []
       while (i < lines.length && (item.test(lines[i]) || (/^\s{2,}\S/.test(lines[i]) && items.length))) {
-        if (item.test(lines[i]) && lines[i].match(item)![1].length < 2) items.push([lines[i].replace(item, '')])
+        if (item.test(lines[i]) && (lines[i].match(item)![1].length < 2 || !items.length)) items.push([lines[i].replace(item, '')])
         else items[items.length - 1].push(lines[i].trim().replace(item, '• '))
         i++
       }

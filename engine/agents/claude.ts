@@ -12,7 +12,10 @@ const TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash']
 // Plan mode promises a read-only run, and pre-approved allow rules can still let
 // a tool run there, so only commands that cannot change anything stay
 // pre-approved (no npm scripts, no MCP tools: Playwright clicks, mobile installs/taps).
-const READ_ONLY_COMMAND = /^git (status|diff|log)\b/
+const READ_ONLY_COMMAND = /^git (status|diff|log|show|merge-base|rev-parse|ls-files)\b/
+// Those git commands can still write a file with --output (diff, log, show) or
+// --output-directory; deny rules beat allow rules, so plan mode denies them.
+export const PLAN_DENIED_COMMANDS = ['git *--output*']
 
 /** MCP servers still connecting when Claude reports its init event; their tools usually arrive moments later. */
 const TRANSIENT_MCP_STATUS = new Set(['connected', 'pending', 'connecting', 'starting'])
@@ -21,12 +24,15 @@ export const CLAUDE_POLICY_SUMMARY =
   'Restricted mode: file reads and writes confined to the project folder; auto mode: the approved commands (npm scripts, tsc, vitest, Playwright tests, read-only git) always run, and the Claude safety classifier approves or denies any other shell command; nothing waits for a prompt. Plan mode messages are read-only: only read-only git commands are pre-approved, and no npm scripts or MCP tools. Optional tools (subagents, skills, web search, notebooks) only as enabled in the project’s settings. MCP: only the servers enabled for this project in Thinkerer; your own Claude MCP servers and settings files are not loaded.'
 
 /** Commands that only make sense in Claude's interactive terminal, or that Thinkerer handles itself (model, effort, MCP, /clear would break the chat's session). */
-const NOT_IN_CHATS = new Set(['clear', 'config', 'model', 'effort', 'fast', 'mcp', 'agents', 'output-style', 'rename', 'color', 'focus', 'heapdump', 'doctor', 'import', 'reload-plugins', 'reload-skills', 'auto-mode-setup', 'fewer-permission-prompts', 'update-config', 'team-onboarding'])
+const NOT_IN_CHATS = new Set(['clear', 'reset', 'new', 'config', 'model', 'effort', 'fast', 'mcp', 'agents', 'output-style', 'rename', 'color', 'focus', 'heapdump', 'doctor', 'import', 'reload-plugins', 'reload-skills', 'auto-mode-setup', 'fewer-permission-prompts', 'update-config', 'team-onboarding'])
 
 export const claudeAdapter: AgentAdapter = {
   id: 'claude',
   label: 'Claude Code',
   policySummary: CLAUDE_POLICY_SUMMARY,
+  reviewCommand: '/code-review',
+  // /reset and /new are aliases of /clear (Claude Code 2.1.330).
+  blockedCommands: ['clear', 'reset', 'new'],
 
   async detect(): Promise<ProviderStatus> {
     const base = { id: 'claude' as const, label: 'Claude Code', adapterAvailable: true, policy: CLAUDE_POLICY_SUMMARY }
@@ -67,6 +73,7 @@ export const claudeAdapter: AgentAdapter = {
         ...(claude?.effort ? ['--effort', claude.effort] : []),
         '--tools', tools.join(','),
         ...(allowed.length ? ['--allowedTools', ...allowed] : []),
+        ...(plan ? ['--disallowedTools', ...PLAN_DENIED_COMMANDS.map((c) => `Bash(${c})`)] : []),
         // Plan mode: read-only investigation; the user's next message carries the plan out.
         '--permission-mode', plan ? 'plan' : 'auto',
         // Nothing can answer a prompt, so anything auto mode would ask about is denied.

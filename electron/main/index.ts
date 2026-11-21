@@ -7,10 +7,10 @@ import { ProtocolService } from '../../engine/protocol'
 import { Approvals } from '../../engine/approvals'
 import { ChatDevices } from '../../engine/chatDevices'
 import { DevServerManager } from '../../engine/devserver'
-import { McpRegistry } from '../../engine/mcp'
+import { McpRegistry, type McpRunContext } from '../../engine/mcp'
 import { deviceTools } from '../../engine/mobile'
 import { ProjectService } from '../../engine/projects'
-import { TaskStore } from '../../engine/tasks'
+import { BoardService } from '../../engine/board'
 import { registerIpc } from './ipc'
 import { PreviewManager } from './preview'
 import { SafeSecretStore } from './secrets'
@@ -24,7 +24,7 @@ if (process.env.THINKERER_APP_DATA) app.setPath('userData', process.env.THINKERE
 const isDev = !app.isPackaged && !!process.env.ELECTRON_RENDERER_URL
 const appData = app.getPath('userData')
 const projects = new ProjectService(appData)
-const tasks = new TaskStore()
+const board = new BoardService()
 const mcp = new McpRegistry(appData, new SafeSecretStore(appData))
 const approvals = new Approvals(appData)
 const devServers = new DevServerManager(appData, approvals)
@@ -33,21 +33,24 @@ const chatDevices = new ChatDevices(appData, deviceTools)
 // End-to-end tests drive chats with a stand-in agent script; never in a packaged app.
 const e2eAgent = !app.isPackaged ? process.env.THINKERER_E2E_AGENT : undefined
 // Bundled MCP scripts live in the app root (mcp/, node_modules/).
-const mcpContext = async (): Promise<{ appRoot: string; node: { command: string; env: Record<string, string> } }> => {
+const mcpContext = async (): Promise<Pick<McpRunContext, 'appRoot' | 'node' | 'appNode'>> => {
   const node = await findExecutable('node')
-  return {
-    appRoot: app.getAppPath(),
-    node: node ? { command: node, env: {} } : { command: process.execPath, env: { ELECTRON_RUN_AS_NODE: '1' } }
-  }
+  const appNode = { command: process.execPath, env: { ELECTRON_RUN_AS_NODE: '1' } }
+  return { appRoot: app.getAppPath(), node: node ? { command: node, env: {} } : appNode, appNode }
 }
 const supervisor = new AgentSupervisor(appData, projects, {
   adapters: e2eAgent ? [scriptAdapter(e2eAgent)] : undefined,
-  tasks,
+  board,
   approvals,
   mcp: { registry: mcp, context: mcpContext },
   devices: chatDevices,
   // A turn whose preview is down gets it started (approved dev command only) before the agent is told to check it.
   devServers
+})
+// Tasks follow their chats: review, merged/shipped, discarded.
+board.followChats(supervisor.chats, async (projectId) => {
+  const project = await projects.get(projectId).catch(() => null)
+  return project?.status === 'ok' ? project.path : null
 })
 const protocol = new ProtocolService({ supervisor, projects, approvals, stopDevServer: (projectId, chatId) => devServers.stop(projectId, chatId) })
 let mainWindow: BrowserWindow | null = null
@@ -110,7 +113,7 @@ app.whenReady().then(() => {
     projects,
     supervisor,
     protocol,
-    tasks,
+    board,
     mcp,
     mcpContext,
     devServers,
@@ -138,6 +141,7 @@ app.whenReady().then(() => {
 app.on('before-quit', () => {
   supervisor.cancelAll()
   devServers.stopAll()
+  board.close()
 })
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

@@ -6,15 +6,19 @@ import { runChatCommand } from './chatCommands'
 import type { ProjectService } from './projects'
 import {
   CHECK_TAIL_LINES,
+  commandReviewInstructions,
   IMPLEMENT_PROMPT,
   PLAN_INSTRUCTIONS,
   REVIEW_INSTRUCTIONS,
+  pickPlan,
   fixChecksPrompt,
   fixFindingsPrompt,
   implementInstructions,
   protocolReport,
-  reviewPrompt,
-  reviewRange
+  reviewEffort,
+  reviewLevel,
+  reviewRange,
+  reviewPrompt
 } from './protocolText'
 import { runHook, worktreeEnv } from './worktrees'
 
@@ -116,20 +120,25 @@ export class ProtocolService {
         if (p.round >= max) throw new Error(`This chat already had ${max} review round${max === 1 ? '' : 's'} (the project's limit). Ship it, or keep working by sending messages.`)
         if (!chat.worktree) throw new Error('Reviews need the chat to have its own worktree and branch')
         const turns = await this.deps.supervisor.getChat(projectId, chatId)
+        const wt = chat.worktree
         // Diff what the implement turns committed, not the branch against its base: the base may already
         // have this branch merged (e.g. an early /merge), which leaves a branch diff with nothing in it.
-        const range = await reviewRange(chat.worktree, chat.worktree.path, turns)
+        const range = await reviewRange(wt, wt.path, turns)
         if (!range) throw new Error('Nothing to review: the implement turns made no changes on this branch. Send a message to keep working, or check the plan.')
-        const plan = turns.filter((t) => t.protocolStage === 'plan').at(-1)?.resultText ?? null
-        const prompt = await reviewPrompt(chat.worktree.path, range, plan, p.checks)
         const { protocol: { review }, agent } = project.config!
+        const provider = await this.deps.supervisor.chatProvider(projectId, chatId)
+        const command = provider && this.deps.supervisor.reviewCommand(provider)
+        const plan = pickPlan(turns)
+        const prompt = command ? `${command} ${reviewLevel(review.effort, agent.claude.effort)} ${wt.branch}` : await reviewPrompt(wt.path, range, plan, p.checks)
+        const instructions = command ? commandReviewInstructions(range, plan, p.checks) : REVIEW_INSTRUCTIONS
+        // Sub-agents only as the project allows them; a review command may be a skill, so Skill is added for it.
+        const tools = command ? [...new Set([...agent.claude.tools, 'Skill' as const])] : agent.claude.tools.filter((t) => t !== 'Task')
         await this.startStage(chat, { stage: 'review', round: p.round + 1 }, prompt, {
           mode: 'plan',
           protocolStage: 'review',
           freshSession: true,
-          instructions: REVIEW_INSTRUCTIONS,
-          // A reviewer reads one diff; sub-agents would multiply its tokens for little gain.
-          claude: { model: review.model, effort: review.effort, tools: agent.claude.tools.filter((t) => t !== 'Task') }
+          instructions,
+          claude: { model: review.model, effort: reviewEffort(review.effort, agent.claude.effort), tools }
         })
         break
       }

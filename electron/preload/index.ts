@@ -47,11 +47,17 @@ const api: ThinkererApi = {
     preview: (projectId, id) => call('checkpoints:preview', projectId, id),
     restore: (projectId, id) => call('checkpoints:restore', projectId, id)
   },
-  tasks: {
-    list: (projectId) => call('tasks:list', projectId),
-    create: (projectId, title, notes) => call('tasks:create', projectId, title, notes),
-    update: (projectId, taskId, patch) => call('tasks:update', projectId, taskId, patch),
-    remove: (projectId, taskId) => call('tasks:remove', projectId, taskId)
+  board: {
+    get: (projectId) => call('board:get', projectId),
+    history: (projectId, item) => call('board:history', projectId, item),
+    create: (projectId, input) => call('board:create', projectId, input),
+    update: (projectId, item, patch) => call('board:update', projectId, item, patch),
+    archive: (projectId, item) => call('board:archive', projectId, item),
+    unarchive: (projectId, item) => call('board:unarchive', projectId, item),
+    remove: (projectId, item) => call('board:remove', projectId, item),
+    reorder: (projectId, kind, ids) => call('board:reorder', projectId, kind, ids),
+    move: (projectId, item, patch, ids) => call('board:move', projectId, item, patch, ids),
+    onChange: (cb) => subscribe<[string]>('board:changed', cb)
   },
   mcp: {
     list: () => call('mcp:list'),

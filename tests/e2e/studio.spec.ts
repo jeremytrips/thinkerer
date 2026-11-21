@@ -64,13 +64,11 @@ http.createServer((q, s) => { s.setHeader('content-type', 'text/html'); s.end(pa
     await page.getByRole('button', { name: 'Import folder…' }).click()
     await expect(page.getByRole('heading', { name: 'Demo site', exact: true })).toBeVisible()
 
-    // Tasks
+    // Tasks (the full flow is in tasks.spec.ts)
     await page.getByRole('tab', { name: 'Tasks' }).click()
-    await page.getByLabel('Task title').fill('Write the landing page')
+    await page.getByLabel('Title of the new item').fill('Write the landing page')
     await page.getByRole('button', { name: 'Add task' }).click()
-    await expect(page.getByRole('region', { name: 'To do' })).toContainText('Write the landing page')
-    await page.getByRole('button', { name: 'Move to In progress' }).click()
-    await expect(page.getByRole('region', { name: 'In progress' })).toContainText('Write the landing page')
+    await expect(page.getByRole('button', { name: /T-1 Write the landing page/ })).toContainText('To do')
 
     // MCP grants
     await page.getByRole('tab', { name: 'MCP' }).click()

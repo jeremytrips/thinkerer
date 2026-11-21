@@ -3,15 +3,15 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileS
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { parseClaudeLine } from '../engine/agents/claude'
+import { claudeAdapter, parseClaudeLine } from '../engine/agents/claude'
 import { AgentSupervisor, MAX_PARALLEL_RUNS } from '../engine/agents/supervisor'
-import type { AgentAdapter, InvocationOptions } from '../engine/agents/types'
+import { blockedCommand, type AgentAdapter, type InvocationOptions } from '../engine/agents/types'
 import { attachmentRelPath, saveAttachment } from '../engine/attachments'
 import { restoreCheckpoint } from '../engine/checkpoints'
 import { ChatDevices } from '../engine/chatDevices'
 import { McpRegistry } from '../engine/mcp'
 import { ProjectService } from '../engine/projects'
-import { TaskStore } from '../engine/tasks'
+import { BoardService } from '../engine/board'
 import type { ProviderId, RunSummary } from '../shared/types'
 
 // Supervisor lifecycle tests use a stand-in process (tests/fixtures/stand-in-agent.mjs)
@@ -131,10 +131,10 @@ describe('AgentSupervisor', () => {
   })
 
   it('continues a chat: follow-ups resume the provider session and keep the chat, provider and task', async () => {
-    const tasks = new TaskStore()
-    const task = await tasks.create(repo, 'Chat task')
+    const board = new BoardService()
+    const task = board.create(repo, { kind: 'task', title: 'Chat task' })
     const seen: InvocationOptions[] = []
-    const sup = new AgentSupervisor(join(tmp, 'appdata'), projects, { adapters: [standIn('ok', '', seen)], tasks })
+    const sup = new AgentSupervisor(join(tmp, 'appdata'), projects, { adapters: [standIn('ok', '', seen)], board })
     let finished = waitFor(sup, done)
     const first = await sup.start(projectId, 'first message', 'auto', { taskId: task.id })
     const firstDone = await finished
@@ -146,6 +146,8 @@ describe('AgentSupervisor', () => {
     const second = await sup.start(projectId, 'follow-up', 'codex', { chatId: first.id })
     const secondDone = await finished
     expect(secondDone).toMatchObject({ chatId: first.id, provider: 'claude', taskId: task.id, status: 'succeeded' })
+    // Both turns are linked to the task, under one chat.
+    expect(board.board(repo).tasks[0]).toMatchObject({ status: 'doing', runIds: [first.id, second.id], chatIds: [first.id] })
     expect(secondDone.selection.rationale).toMatch(/Continuing this chat/)
     expect(seen[1].resumeSessionId).toBe(firstDone.sessionId)
     // Each turn is still its own checkpointed run.
@@ -173,6 +175,25 @@ describe('AgentSupervisor', () => {
     await expect(sup.start(projectId, 'x', 'codex')).rejects.toThrow(/Codex is unavailable/)
   })
 
+  it('refuses a slash command the provider blocks, without starting a run or a chat', async () => {
+    const seen: InvocationOptions[] = []
+    const sup = new AgentSupervisor(join(tmp, 'appdata'), projects, { adapters: [{ ...standIn('ok', '', seen), blockedCommands: ['clear'] }] })
+    await expect(sup.start(projectId, '  /clear', 'claude')).rejects.toThrow(/\/clear isn't available in Thinkerer chats/)
+    await expect(sup.start(projectId, '/CLEAR now', 'claude')).rejects.toThrow(/isn't available/)
+    expect(seen).toHaveLength(0)
+    expect(await sup.listRuns(projectId)).toEqual([])
+    // Mentioning the command is fine; only a message that starts with it is refused.
+    const finished = waitFor(sup, done)
+    await sup.start(projectId, 'explain what /clear does', 'claude')
+    expect((await finished).status).toBe('succeeded')
+    expect(blockedCommand({ blockedCommands: ['clear'] }, '/clearly')).toBeNull()
+    expect(blockedCommand(claudeAdapter, '/clear')).toBe('clear')
+    // Claude Code's aliases of /clear.
+    expect(blockedCommand(claudeAdapter, '/reset')).toBe('reset')
+    expect(blockedCommand(claudeAdapter, '/new task')).toBe('new')
+    expect(blockedCommand(claudeAdapter, '/newsletter')).toBeNull()
+  })
+
   it('marks runs interrupted by an app exit as failed', async () => {
     const appData = join(tmp, 'appdata')
     const sup = new AgentSupervisor(appData, projects, { adapters: [standIn('hang', join(tmp, 'p'))] })
@@ -196,14 +217,14 @@ describe('AgentSupervisor', () => {
   })
 
   it('links runs to tasks and gives the adapter the project-approved MCP servers', async () => {
-    const tasks = new TaskStore()
-    const task = await tasks.create(repo, 'Do the thing')
+    const board = new BoardService()
+    const task = board.create(repo, { kind: 'task', title: 'Do the thing' })
     await projects.updateConfig(projectId, { agent: { enabledMcpServers: ['health'] } })
     const seen: InvocationOptions[] = []
     const registry = new McpRegistry(join(tmp, 'appdata'), { get: async () => null, set: async () => {}, names: async () => [] })
     const sup = new AgentSupervisor(join(tmp, 'appdata'), projects, {
       adapters: [standIn('ok', '', seen)],
-      tasks,
+      board,
       mcp: { registry, context: async () => ({ appRoot: '/app', node: { command: 'node', env: {} } }) }
     })
     const finished = waitFor(sup, done)
@@ -217,7 +238,8 @@ describe('AgentSupervisor', () => {
     // No mobile server enabled: the agent is still told to keep emulators headless, inside Thinkerer.
     expect(seen[0].policy.appendSystemPrompt).toMatch(/emulator -avd <name> -no-window/)
     expect(seen[0].policy.appendSystemPrompt).toMatch(/Never open a device window yourself/)
-    expect((await tasks.list(repo))[0]).toMatchObject({ status: 'doing', runIds: [final.id] })
+    expect(board.board(repo).tasks[0]).toMatchObject({ status: 'doing', runIds: [final.id], chatIds: [final.id] })
+    board.close()
   })
 
   it('tells the agent to skip the browser check when the preview is down, and starts it when it can', async () => {

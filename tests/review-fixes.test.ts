@@ -137,7 +137,15 @@ describe('Claude plan mode stays read-only', () => {
 
   it('pre-approves only read-only git commands and no MCP tools in plan mode', () => {
     const plan = allowed(claudeAdapter.buildInvocation({ ...base, mode: 'plan' }).args)
-    expect(plan).toEqual(['Bash(git status*)', 'Bash(git diff*)', 'Bash(git log*)'])
+    // Read-only git a review (e.g. /code-review) needs to find the change; nothing that writes.
+    expect(plan).toEqual(['git status*', 'git diff*', 'git log*', 'git show*', 'git merge-base*', 'git rev-parse*', 'git ls-files*'].map((c) => `Bash(${c})`))
+  })
+
+  it('denies git output-file flags in plan mode, which the read-only rules would otherwise allow', () => {
+    const args = claudeAdapter.buildInvocation({ ...base, mode: 'plan' }).args
+    const i = args.indexOf('--disallowedTools')
+    expect(args[i + 1]).toBe('Bash(git *--output*)')
+    expect(claudeAdapter.buildInvocation(base).args).not.toContain('--disallowedTools')
   })
 
   it('keeps the full approved list in auto mode', () => {
@@ -202,7 +210,7 @@ describe('Built-in server ids', () => {
     const reg = new McpRegistry(appdata, secrets)
 
     const list = await reg.list()
-    expect(list.map((s) => s.id)).toEqual(['playwright', 'health', 'mobile', 'mobile-custom'])
+    expect(list.map((s) => s.id)).toEqual(['playwright', 'health', 'mobile', 'board', 'mobile-custom'])
     const renamed = list.find((s) => s.id === 'mobile-custom')!
     expect(renamed).toMatchObject({ command: 'my-mobile-mcp', label: expect.stringMatching(/My mobile.*renamed from "mobile"/), secretsSet: ['MOBILE_TOKEN'] })
     expect(await secrets.get('mobile', 'MOBILE_TOKEN')).toBeNull()
@@ -212,7 +220,7 @@ describe('Built-in server ids', () => {
     // The built-in still answers to 'mobile'.
     expect((await reg.get('mobile'))?.builtin).toBe(true)
     await reg.remove('mobile-custom')
-    expect((await reg.list()).map((s) => s.id)).toEqual(['playwright', 'health', 'mobile'])
+    expect((await reg.list()).map((s) => s.id)).toEqual(['playwright', 'health', 'mobile', 'board'])
   })
 
   it('finds a free id within the length limit', () => {

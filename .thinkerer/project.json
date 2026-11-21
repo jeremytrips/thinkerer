@@ -13,8 +13,23 @@
     "provider": "auto",
     "enabledMcpServers": [
       "playwright",
-      "health"
-    ]
+      "health",
+      "mobile",
+      "board"
+    ],
+    "claude": {
+      "model": "",
+      "effort": "",
+      "tools": [
+        "Task",
+        "Skill"
+      ]
+    }
+  },
+  "worktrees": {
+    "setupCommand": "",
+    "teardownCommand": "",
+    "ports": 0
   },
   "marketing": {
     "enabled": true
