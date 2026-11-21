@@ -260,6 +260,16 @@ export class McpRegistry {
   }
 }
 
+/** Origin of an http(s) URL, or '' for an empty, unfilled ({portN}) or invalid one. */
+function originOf(url: string): string {
+  try {
+    const u = new URL(url)
+    return /^https?:$/.test(u.protocol) && !/[{}]/.test(url) ? u.origin : ''
+  } catch {
+    return ''
+  }
+}
+
 export function validateDef(def: McpServerDef): McpServerDef {
   if (!def || typeof def !== 'object') throw new Error('Invalid server')
   if (typeof def.id !== 'string' || !ID.test(def.id)) throw new Error('Server id must be lowercase letters, digits and dashes')
@@ -298,16 +308,6 @@ export function validateDef(def: McpServerDef): McpServerDef {
   const env = def.env ?? {}
   if (typeof env !== 'object' || Object.entries(env).some(([k, v]) => !ENV_NAME.test(k) || typeof v !== 'string')) throw new Error('Invalid environment')
   return { ...base, transport: 'stdio', command: def.command.trim(), args: def.args, env: { ...env } }
-}
-
-/** Origin of a preview URL, or '' when it is empty or not a valid URL (e.g. an unfilled {portN} template). */
-function originOf(url: string): string {
-  if (!url) return ''
-  try {
-    return new URL(url).origin
-  } catch {
-    return ''
-  }
 }
 
 export const isBuiltinId = (id: string) => BUILTIN_SERVERS.some((b) => b.id === id)

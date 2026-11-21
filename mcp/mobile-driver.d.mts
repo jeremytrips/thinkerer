@@ -2,7 +2,11 @@
 import type { MobileDevice, MobileToolStatus } from '../shared/types'
 
 export declare const IOS_INPUT_HELP: string
+/** idb errors that mean its companion went stale; the driver restarts it and retries once. */
+export declare const STALE_IDB: RegExp
 export declare const KEYS: string[]
+/** Arguments for Android's `input text` that type `line` literally. */
+export declare function androidTextChunks(line: string): string[]
 export interface MobileScreenshot {
   data: Buffer
   mimeType: 'image/png' | 'image/jpeg'

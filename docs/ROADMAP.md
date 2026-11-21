@@ -28,6 +28,8 @@ Why: every later studio reuses it.
 
 ### R-03 · Split oversized views · `todo`
 Why: `AgentTab.tsx` (~800 lines) and `supervisor.ts` (~750) make agent runs expensive.
+Progress: `AgentTab.tsx` split into `Agent{Chats,Composer,Preview,Transcript}.tsx` + `useFollowUps.ts`
+(427 lines left); `mcp/mobile-driver.mjs` split into `mcp/mobile/`. `supervisor.ts` is still to do.
 - [ ] No file over ~400 lines in `src/views` and `engine/agents`; behaviour unchanged; tests pass.
 
 ## Next

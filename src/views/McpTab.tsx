@@ -226,6 +226,9 @@ function ImportServers({ projectId, onClose, onImport }: { projectId: string; on
                 {c.secretsMissing.length > 0 && <> · secrets to set: <span className="mono">{c.secretsMissing.join(', ')}</span></>}
                 {c.exists && <> · already in the registry</>}
               </div>
+              {c.notes.map((n) => (
+                <div key={n} className="small muted">{n}</div>
+              ))}
               {c.unsupported && <div className="small error-text">{c.unsupported}</div>}
             </li>
           ))}

@@ -104,33 +104,34 @@ export function claudeMcpConfig(servers: ResolvedMcpServer[]) {
   }
 }
 
+/** Untrusted JSON as an object whose fields can be inspected. */
+type Json = Record<string, unknown>
+const obj = (v: unknown): Json => (v && typeof v === 'object' ? (v as Json) : {})
+const list = (v: unknown): Json[] => (Array.isArray(v) ? v.map(obj) : [])
+
 /** The session details from Claude's init event. */
-export function claudeCapabilities(msg: Record<string, unknown>): AgentCapabilities {
+export function claudeCapabilities(msg: Json): AgentCapabilities {
   const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
-  const objects = (v: unknown): Record<string, unknown>[] =>
-    Array.isArray(v) ? v.filter((x): x is Record<string, unknown> => x !== null && typeof x === 'object') : []
   const terminalOnly = new Set(strings(msg.terminal_slash_commands))
   return {
     model: typeof msg.model === 'string' ? msg.model : null,
     version: typeof msg.claude_code_version === 'string' ? msg.claude_code_version : null,
     permissionMode: typeof msg.permissionMode === 'string' ? msg.permissionMode : null,
     tools: strings(msg.tools),
-    mcpServers: objects(msg.mcp_servers).flatMap((m) =>
-      typeof m.name === 'string' ? [{ name: m.name, status: typeof m.status === 'string' ? m.status : 'unknown' }] : []
-    ),
+    mcpServers: list(msg.mcp_servers).flatMap((m) => (typeof m.name === 'string' ? [{ name: m.name, status: typeof m.status === 'string' ? m.status : 'unknown' }] : [])),
     commands: strings(msg.slash_commands).filter((c) => !terminalOnly.has(c) && !NOT_IN_CHATS.has(c) && !c.startsWith('_')),
     skills: strings(msg.skills),
     agents: strings(msg.agents),
-    plugins: objects(msg.plugins).flatMap((p) => (typeof p.name === 'string' ? [p.name] : []))
+    plugins: list(msg.plugins).flatMap((p) => (typeof p.name === 'string' ? [p.name] : []))
   }
 }
 
 type Block = { type: string; text?: string; name?: string; input?: Record<string, unknown>; content?: unknown; is_error?: boolean }
 
 export function parseClaudeLine(line: string): ParsedUpdate[] {
-  let msg: Record<string, any>
+  let msg: Json
   try {
-    msg = JSON.parse(line)
+    msg = obj(JSON.parse(line))
   } catch {
     return line.trim() ? [{ event: { kind: 'log', text: line } }] : []
   }
@@ -139,11 +140,12 @@ export function parseClaudeLine(line: string): ParsedUpdate[] {
       if (msg.subtype === 'init') {
         const capabilities = claudeCapabilities(msg)
         const mode = capabilities.permissionMode === 'plan' ? ' · plan mode (read-only)' : ''
+        const model = capabilities.model
         return [
           {
             sessionId: typeof msg.session_id === 'string' ? msg.session_id : undefined,
             capabilities,
-            event: { kind: 'status', text: `Session started · model ${msg.model ?? 'unknown'}${mode}`, meta: { model: msg.model ?? null } }
+            event: { kind: 'status', text: `Session started · model ${model ?? 'unknown'}${mode}`, meta: { model } }
           },
           // A server that didn't connect is easy to miss and explains missing tools, so say so in the conversation.
           // Servers still starting aren't failures (Claude connects them asynchronously).
@@ -154,7 +156,7 @@ export function parseClaudeLine(line: string): ParsedUpdate[] {
       }
       return []
     case 'assistant':
-      return ((msg.message?.content ?? []) as Block[]).flatMap((b): ParsedUpdate[] => {
+      return blocks(msg).flatMap((b): ParsedUpdate[] => {
         if (b.type === 'text' && b.text?.trim()) return [{ event: { kind: 'text', text: b.text } }]
         if (b.type === 'tool_use') {
           const summary = summarizeToolInput(b.name ?? 'tool', b.input ?? {})
@@ -163,30 +165,27 @@ export function parseClaudeLine(line: string): ParsedUpdate[] {
         return []
       })
     case 'user':
-      return ((msg.message?.content ?? []) as Block[])
-        .filter((b) => b && b.type === 'tool_result')
+      return blocks(msg)
+        .filter((b) => b.type === 'tool_result')
         .map((b) => ({ event: { kind: 'tool-result' as const, text: truncate(contentText(b.content), 4000), meta: { isError: !!b.is_error } } }))
     case 'rate_limit_event':
       return [{ usage: rateLimitUsage(msg.rate_limit_info) }]
     case 'result': {
-      const u = msg.usage ?? {}
+      const u = obj(msg.usage)
       const usage: UsageObservation = {
         inputTokens: num(u.input_tokens),
         outputTokens: num(u.output_tokens),
         cacheReadTokens: num(u.cache_read_input_tokens),
         cacheCreationTokens: num(u.cache_creation_input_tokens)
       }
-      type Denial = { tool_name?: unknown; tool_input?: { plan?: unknown } }
-      const all: Denial[] = Array.isArray(msg.permission_denials)
-        ? (msg.permission_denials as unknown[]).filter((d): d is Denial => d !== null && typeof d === 'object')
-        : []
+      const all = list(msg.permission_denials)
       // In plan mode, leaving plan mode needs a person's approval; that is the user's next message, not a policy denial.
       const plans = all.filter((d) => d.tool_name === 'ExitPlanMode')
       const denials = all
         .filter((d) => d.tool_name !== 'ExitPlanMode')
         .map((d) => ({ tool: String(d.tool_name), input: truncate(JSON.stringify(d.tool_input ?? {}), 500) }))
-      const plan = plans.map((d) => d.tool_input?.plan).find((p): p is string => typeof p === 'string' && !!p.trim())
-      const text = typeof msg.result === 'string' && msg.result.trim() ? msg.result : (plan ?? msg.subtype ?? 'finished')
+      const plan = plans.map((d) => obj(d.tool_input).plan).find((p): p is string => typeof p === 'string' && !!p.trim())
+      const text = typeof msg.result === 'string' && msg.result.trim() ? msg.result : (plan ?? (typeof msg.subtype === 'string' ? msg.subtype : 'finished'))
       return [
         ...(plan && plan !== text ? [{ event: { kind: 'text' as const, text: plan } }] : []),
         { usage, result: { text, isError: !!msg.is_error, denials }, event: { kind: 'result', text, meta: { isError: !!msg.is_error } } }
@@ -197,14 +196,28 @@ export function parseClaudeLine(line: string): ParsedUpdate[] {
   }
 }
 
-function rateLimitUsage(info: any): UsageObservation {
+/** Content blocks of an assistant or user message. */
+function blocks(msg: Json): Block[] {
+  return list(obj(msg.message).content).map((b) => ({
+    type: typeof b.type === 'string' ? b.type : '',
+    text: typeof b.text === 'string' ? b.text : undefined,
+    name: typeof b.name === 'string' ? b.name : undefined,
+    input: b.input && typeof b.input === 'object' ? (b.input as Record<string, unknown>) : undefined,
+    content: b.content,
+    is_error: b.is_error === true
+  }))
+}
+
+function rateLimitUsage(raw: unknown): UsageObservation {
+  const info = obj(raw)
   const windows: NonNullable<UsageObservation['windows']> = {}
-  for (const [name, w] of Object.entries<any>(info?.unifiedWindows ?? {})) {
-    if (typeof w?.utilization === 'number') {
+  for (const [name, value] of Object.entries(obj(info.unifiedWindows))) {
+    const w = obj(value)
+    if (typeof w.utilization === 'number') {
       windows[name] = { utilization: w.utilization, resetsAt: typeof w.resetsAt === 'number' ? new Date(w.resetsAt * 1000).toISOString() : null }
     }
   }
-  return { windows, rateLimitStatus: typeof info?.status === 'string' ? info.status : undefined }
+  return { windows, rateLimitStatus: typeof info.status === 'string' ? info.status : undefined }
 }
 
 function summarizeToolInput(name: string, input: Record<string, unknown>): string {
@@ -214,7 +227,7 @@ function summarizeToolInput(name: string, input: Record<string, unknown>): strin
 
 function contentText(content: unknown): string {
   if (typeof content === 'string') return content
-  if (Array.isArray(content)) return content.map((c) => (typeof c?.text === 'string' ? c.text : '')).join('\n')
+  if (Array.isArray(content)) return list(content).map((c) => (typeof c.text === 'string' ? c.text : '')).join('\n')
   return ''
 }
 

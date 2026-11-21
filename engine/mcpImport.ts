@@ -27,6 +27,9 @@ type RawServer = {
 const SECRETISH = /TOKEN|SECRET|PASSW|API_?KEY|ACCESS_?KEY|PRIVATE|CREDENTIAL|AUTH|COOKIE|_PAT$|^PAT$/i
 const SECRETISH_HEADER = /^(authorization|cookie|proxy-authorization)$|token|key|secret|auth/i
 const ENV_REF = /\$\{([A-Za-z_][A-Za-z0-9_]*)(:-[^}]*)?\}/g
+/** A value that is nothing but one reference, e.g. "${TOKEN}" or "${PORT:-3000}". */
+const WHOLE_REF = /^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}$/
+const ENV_KEY = /^[A-Z_][A-Z0-9_]{0,63}$/
 
 export async function findClaudeMcpServers(projectPath: string, home: string, existingIds: string[]): Promise<FoundServer[]> {
   const found: FoundServer[] = []
@@ -53,12 +56,14 @@ export function toServerId(name: string): string {
 const envName = (s: string) => s.toUpperCase().replace(/[^A-Z0-9_]/g, '_').replace(/^([0-9])/, '_$1').slice(0, 64)
 
 function convert(source: McpImportCandidate['source'], sourceLabel: string, name: string, raw: RawServer, existingIds: string[]): FoundServer {
+  const secrets: Record<string, string> = {}
+  const missing = new Set<string>()
+  const notes: string[] = []
   // A name like 'playwright' or 'mobile' would collide with a built-in, which can't be replaced: import it under its own id.
   const slug = toServerId(name)
   // Always the same id, so importing it again replaces the earlier import (like any other server).
   const id = isBuiltinId(slug) ? `${slug.slice(0, 24).replace(/-+$/, '')}-claude` : slug
-  const secrets: Record<string, string> = {}
-  const missing = new Set<string>()
+  if (id !== slug) notes.push(`"${slug}" is a built-in server, so this is imported as "${id}"`)
   const type = typeof raw.type === 'string' ? raw.type : typeof raw.url === 'string' ? 'http' : 'stdio'
   let unsupported: string | null = null
   const draft: McpServerDef = { id, label: name.slice(0, 100), description: `Imported from ${sourceLabel}`, builtin: false, command: '', args: [], env: {}, secretEnv: [] }
@@ -70,16 +75,27 @@ function convert(source: McpImportCandidate['source'], sourceLabel: string, name
     if (draft.args.some((a) => a.includes('${'))) unsupported = 'Its arguments use environment variables, which Thinkerer does not expand'
     for (const [key, value] of Object.entries((raw.env as Record<string, unknown>) ?? {})) {
       const v = String(value)
-      const refs = [...v.matchAll(ENV_REF)]
-      if (refs.length) {
-        // Claude fills this from your shell environment; in Thinkerer it becomes a secret you set once.
-        draft.secretEnv.push(key)
-        missing.add(key)
-      } else if (SECRETISH.test(key)) {
-        draft.secretEnv.push(key)
-        secrets[key] = v
-      } else {
+      const whole = v.match(WHOLE_REF)
+      const fromShell = v.search(ENV_REF) >= 0
+      if (!fromShell && !SECRETISH.test(key)) {
         draft.env[key] = v
+        continue
+      }
+      // Secrets are stored and passed under their env var name, which must be upper-case.
+      if (!ENV_KEY.test(key)) {
+        unsupported = `Its env var "${key}" needs a secret value, but Thinkerer can only store secrets for upper-case names like ${envName(key)}`
+        continue
+      }
+      draft.secretEnv.push(key)
+      if (!fromShell) secrets[key] = v
+      else if (whole?.[2] !== undefined) {
+        // "${VAR:-default}": Claude falls back to the default, so start from it.
+        secrets[key] = whole[2]
+        notes.push(`${key} starts as its default "${whole[2]}"; change it in the MCP tab if your shell sets ${whole[1]}`)
+      } else {
+        // Claude fills this from your shell environment; in Thinkerer it becomes a secret you set once.
+        missing.add(key)
+        if (!whole) notes.push(`Set ${key} to the full value, not only the variable: ${v}`)
       }
     }
   } else if (type === 'http' || type === 'sse') {
@@ -128,7 +144,8 @@ function convert(source: McpImportCandidate['source'], sourceLabel: string, name
       secretsFound: Object.keys(secrets),
       secretsMissing: [...missing],
       exists: existingIds.includes(id),
-      unsupported
+      unsupported,
+      notes
     },
     secrets
   }

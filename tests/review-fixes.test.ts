@@ -10,6 +10,7 @@ import { freeId, McpRegistry, type ResolvedMcpServer, type SecretStore } from '.
 import { checkMcpServer } from '../engine/mcpCheck'
 import { findClaudeMcpServers } from '../engine/mcpImport'
 import { resolvePreviewUrl } from '../engine/worktrees'
+import { androidTextChunks } from '../mcp/mobile-driver.mjs'
 import type { Project } from '../shared/types'
 import { enqueue, modeAfterGiveBack, type Queued } from '../src/views/queue'
 
@@ -244,5 +245,44 @@ describe('Queued follow-ups and plan mode', () => {
     expect(modeAfterGiveBack('auto', 'auto')).toBe('auto')
     // Merged into a draft that was set to plan: stays read-only.
     expect(modeAfterGiveBack('auto', 'plan')).toBe('plan')
+  })
+})
+
+describe('Importing Claude Code env values', () => {
+  const importFrom = async (mcpServers: object) => {
+    writeFileSync(join(tmp, '.mcp.json'), JSON.stringify({ mcpServers }))
+    return (await findClaudeMcpServers(tmp, join(tmp, 'no-home'), ['playwright', 'health', 'mobile'])).map((f) => f.candidate)
+  }
+
+  it('says why a server named like a built-in gets another id', async () => {
+    const [c] = await importFrom({ playwright: { command: 'npx', args: ['@playwright/mcp'] } })
+    expect(c.notes.join(' ')).toMatch(/"playwright" is a built-in server, so this is imported as "playwright-claude"/)
+  })
+
+  it('explains values that are only partly a variable, and starts from a default when one is given', async () => {
+    const [c] = await importFrom({
+      db: { command: 'db-mcp', env: { DB_URL: 'postgres://u@${HOST}/db', PORT: '${PORT:-5432}', API_TOKEN: '${TOKEN}', MODE: 'ro' } }
+    })
+    expect(c.unsupported).toBeNull()
+    expect(c.def.env).toEqual({ MODE: 'ro' })
+    expect(c.def.secretEnv).toEqual(['DB_URL', 'PORT', 'API_TOKEN'])
+    expect(c.secretsMissing).toEqual(['DB_URL', 'API_TOKEN'])
+    expect(c.secretsFound).toEqual(['PORT'])
+    expect(c.notes.find((n) => n.startsWith('Set DB_URL'))).toContain('postgres://u@${HOST}/db')
+    expect(c.notes.find((n) => n.startsWith('PORT'))).toContain('5432')
+  })
+
+  it('says clearly why a lower-case env var that needs a secret cannot be imported', async () => {
+    const [c] = await importFrom({ svc: { command: 'svc', env: { api_token: '${TOKEN}' } } })
+    expect(c.unsupported).toMatch(/"api_token".*upper-case.*API_TOKEN/)
+  })
+})
+
+describe('Android text input', () => {
+  it('types % literally and never sends a literal "%s" in one call', () => {
+    expect(androidTextChunks('100% done')).toEqual(['100%%sdone'])
+    expect(androidTextChunks('a b')).toEqual(['a%sb'])
+    expect(androidTextChunks('printf %s')).toEqual(['printf%s%', 's'])
+    expect(androidTextChunks('')).toEqual([])
   })
 })

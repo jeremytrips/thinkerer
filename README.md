@@ -148,7 +148,9 @@ Android emulator or iOS simulator on this machine:
 - **iOS** needs Xcode. Simulators boot headless with `xcrun simctl`, which also handles screenshots,
   URLs, installing/launching apps and logs. simctl can't send touches, so taps and typing need
   [idb](https://fbidb.io): `brew install facebook/fb/idb-companion && pipx install fb-idb`. Without
-  it, the iOS screen is view-only.
+  it, the iOS screen is view-only. idb's companion process goes stale over time ("Mach port invalid,
+  device disconnected"); the driver then runs `idb kill` and retries once. Physical iPhones are not
+  supported yet.
 
 **Each chat has its own devices**, one per platform, so chats never share a screen or app state. A
 chat's device is a copy of one of your own emulators/simulators: same hardware and OS, its own apps and
@@ -170,7 +172,7 @@ The agent controls the **same devices** through the built-in **Mobile emulators*
 `mobile_boot`/`shutdown`, `mobile_screenshot` (at logical-point resolution, saved with the run),
 `mobile_describe_ui`, `mobile_tap`/`swipe`/`type`/`press_key`, `mobile_open_url`,
 `mobile_install_app`/`launch_app`/`terminate_app`/`list_apps` and `mobile_logs`. All coordinates are
-logical points (iOS points, Android dp). Both use one dependency-free driver, `mcp/mobile-driver.mjs`.
+logical points (iOS points, Android dp). Both use one dependency-free driver, `mcp/mobile-driver.mjs` (platform code in `mcp/mobile/`).
 
 The server only lists and accepts the chat's own devices (`THINKERER_DEVICES`), and the run's
 instructions name them. Devices a chat starts run **only inside Thinkerer**. `mobile_boot` always boots headless (it has no
