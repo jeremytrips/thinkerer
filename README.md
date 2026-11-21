@@ -118,6 +118,15 @@ test check this (2026-11-21).
   to In review; `/merge` or a protocol ship moves it to Done (a `/cleanup` of a chat that never merged does not);
   `/discard` moves it back to To do unless another open chat works on it. Each chat applies each of these once, so a
   status you set by hand afterwards sticks.
+- **Run an epic.** **Run epic** on an epic row in Plan opens a protocol chat on its first ready task (plan order, not
+  done or archived, no open blockers), with a line saying which epic it belongs to. When that task is Done (it ships or
+  is merged), the next ready task gets its own chat by itself, one at a time. You still approve each chat's plan, review
+  and ship. A bar in the Tasks tab and in that chat shows the task (`task 2 of 5 · T-12 in progress`), **Open chat** and
+  **Stop**. A chat discarded before its task is done, or one that cannot start, pauses the run with the reason (**Resume**
+  starts a new chat on that task). Tasks waiting on a blocker outside the epic make it wait, and it goes on once that
+  blocker is done. A chat you already opened on a task is used, not doubled. The epic moves to In progress, then Done.
+  One epic at a time per project. Runs are saved in `<appData>/epic-runs/` and go on after a restart. The worktree setup
+  command is approved when you click Run epic.
 - **Storage.** `<project>/.thinkerer/local/board.sqlite` (Node's built-in `node:sqlite`, no dependency). Thinkerer
   writes `.thinkerer/local/.gitignore` (`*`), so the board is never committed, checkpointed or merged. The database is
   created on the first change (yours or an agent's), not when a project is only opened. It is always the
@@ -129,7 +138,8 @@ test check this (2026-11-21).
   the Tasks tab within about a second (the app polls SQLite's `data_version`). It runs on Thinkerer's own Node (Electron
   as Node), not the `node` on your PATH, because it needs `node:sqlite`.
 - **Verified** 2026-11-21 by `npm test` and `tests/e2e/tasks.spec.ts`, and by hand in the running app after a restart:
-  an agent chat moved `docs/ROADMAP.md` into the board through the board MCP server.
+  an agent chat moved `docs/ROADMAP.md` into the board through the board MCP server. Epic runs: 2026-11-22 by
+  `tests/epicRuns.test.ts`, `tests/boardOrder.test.ts` and `tests/e2e/epicRun.spec.ts` (not yet by hand in the running app).
 
 ### Claude Code features
 

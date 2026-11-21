@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type { ThinkererApi } from '../../shared/api'
-import type { ChatRecord, DevLogLine, DevServerState, PreviewEvent, Result, RunEvent, RunSummary } from '../../shared/types'
+import type { ChatRecord, DevLogLine, EpicRun, DevServerState, PreviewEvent, Result, RunEvent, RunSummary } from '../../shared/types'
 
 // Sandboxed preload: exposes a narrow, typed API and nothing else. No Node
 // APIs and no raw ipcRenderer reach the renderer.
@@ -58,6 +58,12 @@ const api: ThinkererApi = {
     reorder: (projectId, kind, ids) => call('board:reorder', projectId, kind, ids),
     move: (projectId, item, patch, ids) => call('board:move', projectId, item, patch, ids),
     onChange: (cb) => subscribe<[string]>('board:changed', cb)
+  },
+  epicRuns: {
+    status: (projectId) => call('epicRuns:status', projectId),
+    start: (projectId, epic, provider) => call('epicRuns:start', projectId, epic, provider),
+    stop: (projectId) => call('epicRuns:stop', projectId),
+    onUpdate: (cb) => subscribe<[EpicRun]>('epicRuns:update', cb)
   },
   mcp: {
     list: () => call('mcp:list'),

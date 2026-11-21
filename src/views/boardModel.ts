@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import type { Board, BoardItem, Epic, EpicStatus, Milestone, MilestoneStatus, Project, Task, TaskPriority, TaskStatus, WorkType } from '../../shared/types'
 import { api, errorMessage } from '../api'
 
+export { openBlockers, taskPrompt } from '../../shared/boardOrder'
+
 // Labels and pure helpers for the Tasks tab (no rendering).
 
 export const TYPES: { id: WorkType; label: string }[] = [
@@ -61,11 +63,6 @@ export function progress(board: Board, item: Epic | Milestone): { done: number; 
   return { done: tasks.filter((t) => t.status === 'done').length, total: tasks.length }
 }
 
-/** Blockers of a task that aren't done yet. */
-export function openBlockers(board: Board, t: Task): Task[] {
-  return t.blockedBy.map((id) => board.tasks.find((x) => x.id === id)).filter((x): x is Task => !!x && x.status !== 'done' && !x.archivedAt)
-}
-
 export function allLabels(board: Board): string[] {
   return [...new Set(board.tasks.flatMap((t) => t.labels))].sort()
 }
@@ -73,14 +70,6 @@ export function allLabels(board: Board): string[] {
 export function findItem(board: Board, id: string | null): BoardItem | null {
   if (!id) return null
   return board.milestones.find((m) => m.id === id) ?? board.epics.find((e) => e.id === id) ?? board.tasks.find((t) => t.id === id) ?? null
-}
-
-/** The prompt a new chat on a task starts with: key, title, notes and its "done when" list. */
-export function taskPrompt(t: Task): string {
-  const parts = [`${t.key}: ${t.title}`]
-  if (t.notes) parts.push(t.notes)
-  if (t.criteria.length) parts.push(`Done when:\n${t.criteria.map((c) => `- [${c.done ? 'x' : ' '}] ${c.text}`).join('\n')}`)
-  return parts.join('\n\n')
 }
 
 /** Moves `id` before `beforeId` (or to the end) in an ordered id list. */

@@ -406,6 +406,12 @@ legend { color: var(--muted); padding: 0 4px; }
 .plan-row { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; border: none; background: none; padding: 5px 8px; border-radius: var(--radius-control); text-align: left; min-height: 32px; }
 .plan-row:hover:not(:disabled) { background: var(--surface-2); }
 .plan-row-static { cursor: default; }
+.plan-run { flex: none; }
+.epic-run { background: var(--info-soft); }
+.epic-run-paused, .epic-run-waiting { background: var(--warn-soft); }
+.epic-run-finished { background: var(--ok-soft); }
+.epic-run-reason { margin: 6px 0 0; }
+.epic-run-error { margin: 6px 0 0; color: var(--danger); }
 .plan-title { min-width: 0; flex: 1; }
 .plan-milestone-title { font-size: 15px; font-weight: 700; }
 .plan-row h2 { margin: 0; font-size: 15px; }

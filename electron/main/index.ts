@@ -11,6 +11,7 @@ import { McpRegistry, type McpRunContext } from '../../engine/mcp'
 import { deviceTools } from '../../engine/mobile'
 import { ProjectService } from '../../engine/projects'
 import { BoardService } from '../../engine/board'
+import { EpicRunService } from '../../engine/epicRuns'
 import { registerIpc } from './ipc'
 import { PreviewManager } from './preview'
 import { SafeSecretStore } from './secrets'
@@ -53,6 +54,8 @@ board.followChats(supervisor.chats, async (projectId) => {
   return project?.status === 'ok' ? project.path : null
 })
 const protocol = new ProtocolService({ supervisor, projects, approvals, stopDevServer: (projectId, chatId) => devServers.stop(projectId, chatId) })
+// Created after followChats: an epic run reads the board once it has followed a chat update.
+const epicRuns = new EpicRunService(appData, { board, chats: supervisor.chats, projects, begin: (...args) => protocol.begin(...args) })
 let mainWindow: BrowserWindow | null = null
 const preview = new PreviewManager(
   () => mainWindow,
@@ -124,6 +127,7 @@ app.whenReady().then(() => {
     supervisor,
     protocol,
     board,
+    epicRuns,
     mcp,
     mcpContext,
     devServers,

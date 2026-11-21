@@ -13,6 +13,7 @@ import { ProtocolBar } from './ProtocolBar'
 import { composerMode } from './composerMode'
 import { modeAfterGiveBack, type Queued } from './queue'
 import type { TabId } from './ProjectView'
+import { EpicRunBar, useEpicRun } from './EpicRunBar'
 import { useAgentChat } from './useAgentChat'
 import { useFollowUps } from './useFollowUps'
 const NEW = 'new' // draft key for the "New chat" composer
@@ -51,6 +52,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill, onPrefillUsed 
   const [notice, setNotice] = useState<string | null>(null)
   const [restoreFor, setRestoreFor] = useState<RunRecord | null>(null)
   const [attachments, setAttachments] = useState<PreviewCapture[]>([])
+  const epicRun = useEpicRun(project)
   const scrollRef = useRef<HTMLDivElement>(null)
   // Follow new output only while the user is at the bottom of the transcript.
   const stick = useRef(true)
@@ -285,6 +287,7 @@ export function AgentTab({ project, info, isSelf, onTab, prefill, onPrefillUsed 
             onAction={(a) => void advance(a)}
           />
         )}
+        {epicRun.run?.currentChatId === chatId && chatId && <EpicRunBar project={project} run={epicRun.run} onRun={epicRun.setRun} />}
 
         {isGit === false && (
           <div className="banner banner-info row space">

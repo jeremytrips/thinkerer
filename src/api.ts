@@ -35,6 +35,7 @@ const previewApi: ThinkererApi = {
     move: unavailable,
     onChange: noop
   },
+  epicRuns: { status: async () => null, start: unavailable, stop: unavailable, onUpdate: noop },
   mcp: {
     list: async () => [],
     upsert: unavailable,

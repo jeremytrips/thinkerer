@@ -290,6 +290,32 @@ export interface BoardHistoryEntry {
   change: string
 }
 
+/**
+ * An epic worked through task by task: Thinkerer opens a protocol chat on the next ready
+ * task once the previous one is done. running: a chat is open (or about to be). waiting:
+ * every open task waits on a blocker outside the epic; it goes on when that is done.
+ * paused: needs the user (a chat was discarded, or one could not start). finished: all done.
+ */
+export type EpicRunStatus = 'running' | 'waiting' | 'paused' | 'stopped' | 'finished'
+
+export interface EpicRun {
+  projectId: string
+  epicId: string
+  epicKey: string
+  epicTitle: string
+  provider: ProviderChoice
+  status: EpicRunStatus
+  currentTaskId: string | null
+  currentTaskKey: string | null
+  currentChatId: string | null
+  /** Why the run is waiting or paused, in plain words. */
+  reason: string | null
+  done: number
+  total: number
+  startedAt: string
+  updatedAt: string
+}
+
 export interface MilestoneInput {
   title: string
   description?: string

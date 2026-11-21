@@ -27,8 +27,10 @@ import { findClaudeMcpServers } from '../../engine/mcpImport'
 import { deviceId, mobile } from '../../engine/mobile'
 import type { ProjectService } from '../../engine/projects'
 import type { BoardService } from '../../engine/board'
+import type { EpicRunService } from '../../engine/epicRuns'
 import { commitsAhead, resolvePreviewUrl, worktreeEnv } from '../../engine/worktrees'
 import { registerBoardIpc } from './ipcBoard'
+import { registerEpicRunIpc } from './ipcEpicRuns'
 import { bounds, str } from './validate'
 import type {
   AppInfo,
@@ -52,6 +54,7 @@ interface Deps {
   supervisor: AgentSupervisor
   protocol: ProtocolService
   board: BoardService
+  epicRuns: EpicRunService
   mcp: McpRegistry
   /** Where bundled MCP scripts live and how to run Node, as agent runs get it. */
   mcpContext: () => Promise<Omit<McpRunContext, 'artifactsDir'>>
@@ -246,6 +249,7 @@ export function registerIpc(deps: Deps): void {
   })
 
   registerBoardIpc({ handle, board, projectPath, send })
+  registerEpicRunIpc({ handle, epicRuns: deps.epicRuns, okProject, approveSetup: (p) => approveHook(p, 'setup', 'each new chat worktree'), send })
 
   // MCP registry
   handle('mcp:list', () => mcp.list())

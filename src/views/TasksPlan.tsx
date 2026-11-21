@@ -1,5 +1,6 @@
 import { useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from 'react'
 import type { Board, Epic, Milestone, Task } from '../../shared/types'
+import { nextReadyTask, openEpicTasks } from '../../shared/boardOrder'
 import { EPIC_STATUS_LABEL, MILESTONE_STATUS_LABEL, moveBefore, openBlockers, progress } from './boardModel'
 import { PriorityBadge, Progress, TaskStatusBadge, TypeBadge } from './TasksBits'
 
@@ -13,12 +14,16 @@ interface Props {
   onSelect: (id: string) => void
   onMoveTask: (task: Task, epicId: string | null, order: string[]) => void
   onMoveEpic: (epic: Epic, milestoneId: string | null, order: string[]) => void
+  /** The epic whose run is active in this project (running, waiting or paused), if any. */
+  runEpicId?: string | null
+  /** Starts a chat on each of the epic's tasks in turn. */
+  onRunEpic?: (epic: Epic) => void
 }
 
 type Drag = { kind: 'task' | 'epic'; id: string } | null
 
 /** Milestone → epic → task tree. Drag a task onto an epic (or between tasks), an epic onto a milestone; ↑/↓ move between rows. */
-export function TasksPlan({ board, tasks, filtering, selectedId, onSelect, onMoveTask, onMoveEpic }: Props) {
+export function TasksPlan({ board, tasks, filtering, selectedId, onSelect, onMoveTask, onMoveEpic, runEpicId = null, onRunEpic }: Props) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [drag, setDrag] = useState<Drag>(null)
   const [over, setOver] = useState<string | null>(null)
@@ -114,6 +119,7 @@ export function TasksPlan({ board, tasks, filtering, selectedId, onSelect, onMov
             <Progress {...progress(board, e)} />
             <TypeBadge type={e.type} />
           </button>
+          {onRunEpic && <RunEpicButton board={board} epic={e} runEpicId={runEpicId} onRun={onRunEpic} />}
         </div>
         {open && <ul className="plan-children">{list.length ? list.map(taskRow) : <li className="small muted plan-empty">No tasks yet. Drag one here, or add one with this epic.</li>}</ul>}
       </li>
@@ -186,6 +192,23 @@ function Caret({ open, label, onClick }: { open: boolean; label: string; onClick
   return (
     <button className="caret" aria-expanded={open} aria-label={`${open ? 'Collapse' : 'Expand'} ${label}`} onClick={onClick}>
       {open ? '▾' : '▸'}
+    </button>
+  )
+}
+
+/** Disabled, with the reason as its title, when nothing of the epic can start or another epic is running. */
+function RunEpicButton({ board, epic, runEpicId, onRun }: { board: Board; epic: Epic; runEpicId: string | null; onRun: (epic: Epic) => void }) {
+  if (runEpicId === epic.id) return <span className="badge badge-accent plan-run">Running</span>
+  const why = runEpicId
+    ? 'Another epic is running in this project; stop it first'
+    : !openEpicTasks(board, epic.id).length
+      ? 'Every task of this epic is done'
+      : !nextReadyTask(board, epic.id)
+        ? 'Every open task waits on a blocker'
+        : null
+  return (
+    <button className="small plan-run" disabled={!!why} title={why ?? 'Open a chat on each task in turn; the next starts once the last ships'} aria-label={`Run epic ${epic.key}`} onClick={() => onRun(epic)}>
+      Run epic
     </button>
   )
 }

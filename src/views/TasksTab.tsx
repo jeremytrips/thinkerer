@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { BoardPatch, ChatRecord, Project, Task, TaskStatus, WorkType } from '../../shared/types'
 import { api, loadState, saveState } from '../api'
 import { EMPTY_BOARD, NO_FILTER, TASK_COLUMNS, TYPES, allLabels, findItem, isFiltering, live, matchesTask, useBoard, type BoardFilter } from './boardModel'
+import { EpicRunBar, epicRunActive, useEpicRun } from './EpicRunBar'
 import { TaskDetail } from './TaskDetail'
 import { TasksArchived } from './TasksArchived'
 import { TasksBoard } from './TasksBoard'
@@ -28,6 +29,7 @@ export function TasksTab({ project, onStartChat, onOpenChat }: Props) {
   const [filter, setFilter] = useState<BoardFilter>(NO_FILTER)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [chats, setChats] = useState<ChatRecord[]>([])
+  const { run, setRun } = useEpicRun(project)
 
   useEffect(() => {
     const load = () => api.chats.list(project.id).then(setChats, () => {})
@@ -102,6 +104,7 @@ export function TasksTab({ project, onStartChat, onOpenChat }: Props) {
             </div>
           </>
         )}
+        <EpicRunBar project={project} run={run} onRun={setRun} onOpenChat={onOpenChat} />
         {error && (
           <div className="banner banner-error row space">
             <span>{error}</span>
@@ -120,6 +123,8 @@ export function TasksTab({ project, onStartChat, onOpenChat }: Props) {
             onSelect={setSelectedId}
             onMoveTask={(t, epicId, order) => move(t.id, epicId !== t.epicId ? { epicId } : {}, order)}
             onMoveEpic={(e, milestoneId, order) => move(e.id, milestoneId !== e.milestoneId ? { milestoneId } : {}, order)}
+            runEpicId={epicRunActive(run) ? run!.epicId : null}
+            onRunEpic={(e) => void act(() => api.epicRuns.start(project.id, e.id, project.config!.agent.provider)).then((r) => r && setRun(r))}
           />
         ) : view === 'board' ? (
           <TasksBoard
