@@ -45,13 +45,29 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('MCP registry', () => {
   it('lists built-ins and resolves only project-enabled servers with placeholders filled', async () => {
-    expect((await reg.list()).map((s) => s.id)).toEqual(['playwright', 'health'])
+    expect((await reg.list()).map((s) => s.id)).toEqual(['playwright', 'health', 'mobile'])
     const { servers } = await reg.resolveForRun(project(['playwright']), ctx)
     expect(servers).toHaveLength(1)
     const pw = servers[0]
     expect(pw.command).toBe('/usr/bin/node')
     expect(pw.args).toEqual(expect.arrayContaining(['/app/mcp/playwright-launch.mjs', '/data/runs/r1-artifacts', '--headless', '--isolated', '--allowed-origins', 'http://localhost:5174']))
     expect(pw.args.join(' ')).not.toMatch(/\{\w+\}/)
+  })
+
+  it('resolves the mobile server with the run artifacts, project and preview', async () => {
+    const { servers } = await reg.resolveForRun(project(['mobile']), { ...ctx, cwd: '/work/tree' })
+    expect(servers).toEqual([
+      {
+        id: 'mobile',
+        transport: 'stdio',
+        command: '/usr/bin/node',
+        args: ['/app/mcp/thinkerer-mobile.mjs'],
+        env: { THINKERER_ARTIFACTS: '/data/runs/r1-artifacts', THINKERER_PROJECT_ROOT: '/work/tree', THINKERER_PREVIEW_URL: 'http://localhost:5174/' },
+        url: '',
+        headers: {},
+        secretEnv: []
+      }
+    ])
   })
 
   it('explains why a server is excluded', async () => {
@@ -135,4 +151,43 @@ describe('thinkerer-health MCP server', () => {
     expect(report).toMatchObject({ projectRoot: dir, git: { error: 'not a git repository' }, preview: { reachable: false } })
     expect(replies[4].error.code).toBe(-32601)
   })
+})
+
+describe('thinkerer-mobile MCP server', () => {
+  it('lists its tools, reports devices and rejects bad device ids', async () => {
+    const child = spawn(process.execPath, [resolve(__dirname, '..', 'mcp', 'thinkerer-mobile.mjs')], {
+      env: { ...process.env, THINKERER_ARTIFACTS: join(dir, 'art'), THINKERER_PROJECT_ROOT: dir }
+    })
+    const replies: Record<number, any> = {}
+    let buf = ''
+    child.stdout.on('data', (d) => {
+      buf += d
+      for (let nl; (nl = buf.indexOf('\n')) >= 0; buf = buf.slice(nl + 1)) {
+        const msg = JSON.parse(buf.slice(0, nl))
+        replies[msg.id] = msg
+      }
+    })
+    const send = (o: object) => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...o }) + '\n')
+    send({ id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } })
+    send({ id: 2, method: 'tools/list' })
+    send({ id: 3, method: 'tools/call', params: { name: 'mobile_list_devices', arguments: {} } })
+    send({ id: 4, method: 'tools/call', params: { name: 'mobile_tap', arguments: { device: 'windows:nope; rm -rf /', x: 1, y: 1 } } })
+    send({ id: 5, method: 'tools/call', params: { name: 'mobile_launch_app', arguments: { device: 'android:x', app_id: 'a;b' } } })
+    const deadline = Date.now() + 30_000
+    while (![1, 2, 3, 4, 5].every((i) => replies[i])) {
+      if (Date.now() > deadline) throw new Error('timeout')
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    child.kill()
+    expect(replies[1].result.serverInfo.name).toBe('thinkerer-mobile')
+    const names = replies[2].result.tools.map((t: { name: string }) => t.name)
+    expect(names).toEqual(expect.arrayContaining(['mobile_list_devices', 'mobile_boot', 'mobile_screenshot', 'mobile_tap', 'mobile_swipe', 'mobile_type', 'mobile_describe_ui', 'mobile_open_url', 'mobile_install_app', 'mobile_launch_app']))
+    expect(replies[2].result.tools.every((t: { inputSchema?: { type: string } }) => t.inputSchema?.type === 'object')).toBe(true)
+    const listed = JSON.parse(replies[3].result.content[0].text)
+    expect(listed.tools).toHaveProperty('android.available')
+    expect(listed.tools).toHaveProperty('ios.available')
+    expect(Array.isArray(listed.devices)).toBe(true)
+    expect(replies[4].result).toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/Invalid device id/) }] })
+    expect(replies[5].result).toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/Invalid app id/) }] })
+  }, 40_000)
 })

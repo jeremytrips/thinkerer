@@ -154,10 +154,42 @@ export interface PromptAttachment {
   /** Console errors the preview logged since that page loaded (most recent last). */
   consoleErrors: string[]
   at: string
+  /** Set when the screenshot is of an emulator/simulator screen instead of the web preview, e.g. "iPhone 17 Pro (ios:…)". */
+  device?: string
 }
 
 export interface PreviewCapture extends PromptAttachment {
   dataUrl: string
+}
+
+export type MobilePlatform = 'android' | 'ios'
+
+/** A real Android emulator/device or iOS simulator on this machine. */
+export interface MobileDevice {
+  /** `android:<AVD name or adb serial>` or `ios:<UDID>`. */
+  id: string
+  platform: MobilePlatform
+  name: string
+  kind: 'emulator' | 'simulator' | 'device'
+  state: 'booted' | 'booting' | 'shutdown'
+  /** adb serial, "AVD", or the iOS runtime. */
+  detail: string
+  /** Whether taps/typing can be sent (iOS needs idb). */
+  input: boolean
+}
+
+export interface MobileToolStatus {
+  android: { available: boolean; detail: string }
+  ios: { available: boolean; input: boolean; detail: string }
+}
+
+/** One frame of a device screen for the Emulator panel. */
+export interface MobileFrame {
+  dataUrl: string
+  /** Image pixels per logical point; tap coordinates are in points. */
+  scale: number
+  width: number
+  height: number
 }
 
 export type TaskStatus = 'todo' | 'doing' | 'done'

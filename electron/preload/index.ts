@@ -83,6 +83,19 @@ const api: ThinkererApi = {
     approve: (projectId, chatId, url) => call('preview:approve', projectId, chatId, url),
     onEvent: (cb) => subscribe<[string, string | null, PreviewEvent]>('preview:event', cb)
   },
+  mobile: {
+    status: () => call('mobile:status'),
+    list: () => call('mobile:list'),
+    boot: (id, window) => call('mobile:boot', id, window ?? false),
+    shutdown: (id) => call('mobile:shutdown', id),
+    frame: (id) => call('mobile:frame', id),
+    tap: (id, x, y, ms) => call('mobile:tap', id, x, y, ms ?? 0),
+    swipe: (id, x1, y1, x2, y2, ms) => call('mobile:swipe', id, x1, y1, x2, y2, ms ?? 300),
+    type: (id, text) => call('mobile:type', id, text),
+    key: (id, key) => call('mobile:key', id, key),
+    openPreview: (id, projectId, chatId) => call('mobile:openPreview', id, projectId, chatId),
+    capture: (projectId, id) => call('mobile:capture', projectId, id)
+  },
   agents: {
     providers: () => call('agents:providers')
   },

@@ -23,6 +23,7 @@ import { childEnv } from '../../engine/agents/detect'
 import type { McpRegistry, McpRunContext } from '../../engine/mcp'
 import { checkMcpServer } from '../../engine/mcpCheck'
 import { findClaudeMcpServers } from '../../engine/mcpImport'
+import { deviceId, mobile } from '../../engine/mobile'
 import type { ProjectService } from '../../engine/projects'
 import type { TaskStore } from '../../engine/tasks'
 import { commitsAhead, resolvePreviewUrl, worktreeEnv } from '../../engine/worktrees'
@@ -381,6 +382,51 @@ export function registerIpc(deps: Deps): void {
     if (!ok) return false
     preview.approveAndNavigate(scope, target)
     return true
+  })
+
+  // Mobile emulators and simulators (the same devices the agent's `mobile` MCP server drives)
+  const coord = (v: unknown, name: string): number => {
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 100_000) throw new Error(`Invalid ${name}`)
+    return v
+  }
+  handle('mobile:status', () => mobile.status())
+  handle('mobile:list', () => mobile.list())
+  handle('mobile:boot', (id: unknown, window: unknown) => mobile.boot(deviceId(id), window === true))
+  handle('mobile:shutdown', (id: unknown) => mobile.shutdown(deviceId(id)))
+  handle('mobile:frame', (id: unknown) => mobile.frame(deviceId(id)))
+  handle('mobile:tap', (id: unknown, x: unknown, y: unknown, ms: unknown) =>
+    mobile.tap(deviceId(id), coord(x, 'x'), coord(y, 'y'), ms === undefined || ms === null ? 0 : Math.min(coord(ms, 'duration'), 10_000))
+  )
+  handle('mobile:swipe', (id: unknown, x1: unknown, y1: unknown, x2: unknown, y2: unknown, ms: unknown) =>
+    mobile.swipe(deviceId(id), coord(x1, 'x1'), coord(y1, 'y1'), coord(x2, 'x2'), coord(y2, 'y2'), ms === undefined || ms === null ? 300 : Math.min(Math.max(coord(ms, 'duration'), 50), 10_000))
+  )
+  handle('mobile:type', (id: unknown, text: unknown) => mobile.type(deviceId(id), str(text, 'text', 5000)))
+  handle('mobile:key', (id: unknown, key: unknown) => {
+    const k = str(key, 'key', 30)
+    if (!mobile.keys.includes(k)) throw new Error('Unknown key')
+    return mobile.key(deviceId(id), k)
+  })
+  handle('mobile:openPreview', async (id: unknown, projectId: unknown, chatId: unknown) => {
+    const project = await okProject(projectId)
+    const url = (await devTarget(project, chatId)).url
+    if (!url) throw new Error('This project has no preview URL')
+    await mobile.openUrl(deviceId(id), url)
+    return url
+  })
+  handle('mobile:capture', async (projectId: unknown, id: unknown): Promise<PreviewCapture> => {
+    const project = await okProject(projectId)
+    const dev = deviceId(id)
+    const info = (await mobile.list()).find((d) => d.id === dev)
+    const png = await mobile.png(dev)
+    const attachment: PromptAttachment = {
+      id: await saveAttachment(project.path, png),
+      url: null,
+      consoleErrors: [],
+      at: new Date().toISOString(),
+      device: `${info ? `${info.name}${info.detail ? `, ${info.detail}` : ''}` : dev} [${dev}]`
+    }
+    captures.set(attachment.id, { projectId: project.id, attachment })
+    return { ...attachment, dataUrl: `data:image/png;base64,${png.toString('base64')}` }
   })
 
   // Agent runs

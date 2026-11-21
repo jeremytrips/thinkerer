@@ -134,6 +134,32 @@ For example: setup `cp "$THINKERER_PROJECT_ROOT/.env" . && npm ci && docker comp
 $THINKERER_PORT_1`, the preview beside each chat runs and shows that chat's worktree. The Website tab
 runs the project folder, which has no worktree ports.
 
+### Mobile emulators
+
+The preview panel beside a chat has three surfaces: **Web browser**, **Phone viewport** (the same
+embedded browser sized like a phone, with no device emulation) and **Emulator**, which runs a real
+Android emulator or iOS simulator on this machine:
+
+- **Android** needs the Android SDK (Android Studio, or `ANDROID_HOME`) with at least one AVD. Thinkerer
+  boots it headless (`emulator -no-window`) and drives it with `adb`: screen capture, `input`
+  tap/swipe/text/keys, `uiautomator` UI dumps. `localhost` URLs work through `adb reverse`.
+- **iOS** needs Xcode. Simulators boot headless with `xcrun simctl`, which also handles screenshots,
+  URLs, installing/launching apps and logs. simctl can't send touches, so taps and typing need
+  [idb](https://fbidb.io): `brew install facebook/fb/idb-companion && pipx install fb-idb`. Without
+  it, the iOS screen is view-only.
+
+The screen is live in the panel. Click to tap, drag to swipe, use the wheel to scroll, with Back / Home
+/ Recents and a text field for typing. **Open preview** loads the project's preview URL on the device;
+**Send to agent** attaches the device screen to your next message. Booted devices keep running until
+you shut them down.
+
+The agent controls the **same devices** through the built-in **Mobile emulators** MCP server
+(`mcp/thinkerer-mobile.mjs`; enable it in the MCP tab). Its tools: `mobile_list_devices`,
+`mobile_boot`/`shutdown`, `mobile_screenshot` (at logical-point resolution, saved with the run),
+`mobile_describe_ui`, `mobile_tap`/`swipe`/`type`/`press_key`, `mobile_open_url`,
+`mobile_install_app`/`launch_app`/`terminate_app`/`list_apps` and `mobile_logs`. All coordinates are
+logical points (iOS points, Android dp). Both use one dependency-free driver, `mcp/mobile-driver.mjs`.
+
 The embedded preview and the agent's Playwright browser are **separate browser sessions** that visit
 the same dev server. They don't share cookies or login state; per the spec, a shared live session is
 post-MVP.
@@ -199,6 +225,8 @@ npm test                   # engine integration: projects, files, git, checkpoin
 npm run test:e2e           # real Electron app: import this repo, Files/Agent, restart persistence; Website Studio
                            # with a real dev server + embedded preview, blocked navigation, Tasks, MCP, diffs;
                            # a chat in its worktree with setup/teardown hooks, /merge and /cleanup
+npm run test:live:mobile   # opt-in: the mobile driver against already-booted emulators/simulators
+                           # (tests/e2e/emulator.spec.ts also drives a booted Android emulator; skipped if none)
 npm run test:live:claude   # opt-in: REAL claude CLI on a throwaway folder (uses your quota)
 npm run test:live:codex    # opt-in: REAL codex CLI (needs `codex login`)
 ```
@@ -220,13 +248,14 @@ engine/              Privileged services, Electron-free (unit-testable)
   git.ts, checkpoints.ts  status; checkpoints, run diffs, restore
   tasks.ts             task board store
   mcp.ts               MCP registry, per-project grants, run-time resolution
+  mobile.ts            Emulator panel backend (wraps mcp/mobile-driver.mjs)
   devserver.ts         approved dev command runner (project folder, and one per chat worktree)
   approvals.ts         exact-text approvals for dev, setup and teardown commands
   chats.ts             chat records: worktree, state (active / merged / done), notes
   worktrees.ts         worktrees, ports, hooks, commits and merges
   chatCommands.ts      /merge, /cleanup, /done, /discard
   agents/              adapter interface, Claude + Codex adapters, supervisor
-mcp/                 bundled MCP: thinkerer-health (demo), Playwright launcher
+mcp/                 bundled MCP: thinkerer-health (demo), Playwright launcher, thinkerer-mobile + mobile-driver (emulators)
 shared/              Types shared by engine and renderer
 scripts/dev.mjs      dev launcher with restart loop
 vite.web.config.mts  renderer-only dev server (:5174) for self-preview
@@ -247,4 +276,6 @@ navigation lock.
   browser is blocked rather than offered for approval.
 - **Packaging:** the bundled MCP scripts are resolved from the app folder. That works from source;
   packaging would need them as extra resources.
+- **Mobile:** the Emulator panel streams screenshots (a few frames per second), not video. iOS input
+  needs idb. Only one device is shown at a time.
 - **Formatting:** agent messages are shown as plain text, not rendered Markdown.

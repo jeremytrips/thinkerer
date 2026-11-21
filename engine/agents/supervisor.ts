@@ -733,7 +733,7 @@ function missingAdapter(id: ProviderId): ProviderStatus {
 export function attachmentNote(attachments: PromptAttachment[]): string {
   if (!attachments.length) return ''
   const items = attachments.map((a, i) => {
-    const lines = [`${i + 1}. Screenshot: ${attachmentRelPath(a.id)}`, `   Page: ${a.url ?? 'unknown'}`]
+    const lines = [`${i + 1}. Screenshot: ${attachmentRelPath(a.id)}`, a.device ? `   Device screen: ${a.device} (use the mobile MCP tools to interact with it)` : `   Page: ${a.url ?? 'unknown'}`]
     if (a.consoleErrors.length) lines.push('   Console errors:', ...a.consoleErrors.map((e) => `   - ${e.slice(0, 500)}`))
     return lines.join('\n')
   })
