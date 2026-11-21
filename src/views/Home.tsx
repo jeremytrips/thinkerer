@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import type { AppInfo, Project } from '../../shared/types'
 import { api, browserPreview, errorMessage } from '../api'
+import { usePaletteSource } from '../palette'
 import { AboutDialog } from './AboutDialog'
+import { PaletteButton } from './CommandPalette'
 import { RestartButton } from './RestartButton'
 
 interface Props {
@@ -9,13 +11,23 @@ interface Props {
   info: AppInfo | null
   onOpen: (id: string) => void
   onChanged: () => Promise<void>
+  onPalette: () => void
 }
 
-export function Home({ projects, info, onOpen, onChanged }: Props) {
+export function Home({ projects, info, onOpen, onChanged, onPalette }: Props) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [newName, setNewName] = useState<string | null>(null)
   const [about, setAbout] = useState(false)
+  usePaletteSource('home', () =>
+    busy
+      ? []
+      : [
+          { id: 'home:import', section: 'Actions', title: 'Import folder…', hint: 'Add an existing folder as a project', keywords: 'add open', run: () => void act(() => api.projects.importFolder()) },
+          { id: 'home:new', section: 'Actions', title: 'New project', hint: 'Create an empty project folder', keywords: 'create', run: () => setNewName('') },
+          { id: 'home:about', section: 'Actions', title: 'About Thinkerer', hint: 'Version and source folder', run: () => setAbout(true) }
+        ]
+  )
 
   async function act(fn: () => Promise<Project | boolean | null>) {
     setBusy(true)
@@ -39,6 +51,7 @@ export function Home({ projects, info, onOpen, onChanged }: Props) {
           {info?.isDev && <span className="badge">dev build</span>}
         </div>
         <span className="row">
+          <PaletteButton onClick={onPalette} />
           <button className="small" onClick={() => setAbout(true)}>About</button>
           <RestartButton info={info} />
         </span>

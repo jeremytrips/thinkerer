@@ -94,6 +94,16 @@ The result is commit `8438cfd`; typecheck, unit and e2e tests passed when re-run
 | Settings | Name, components, target, dev command, preview URL, chat worktree hooks and ports, default provider, Claude Code model / effort / optional tools, software protocol (check command, review rounds, review model / effort), LLM providers, agent permissions |
 | Marketing | Placeholder (post-MVP) |
 
+**Command palette:** ⌘K on macOS (Ctrl+K stays delete-to-end-of-line there), Ctrl+K elsewhere, or
+**Commands** in the top bar, opens a palette from any screen, text fields and other dialogs included. Type to filter (fuzzy on titles, substring on hints), ↑/↓ to move, ↵ to
+run, esc to close. It switches project (or back to all projects) and tab, starts a **New chat** (Agent
+tab, composer focused, a draft already there is kept), and on the projects screen imports a folder,
+creates a project or opens About. On the Agent tab it lists the open chat's slash commands: `/merge`
+`/cleanup` `/done` `/discard` run on that chat right away, as from the slash menu, and leave a draft in
+its composer alone (they aren't offered while a command is already running); the agent CLI's own
+commands go in front of the draft. A leading `/` shows only slash commands. Verified by
+`tests/e2e/palette.spec.ts` (2026-11-22).
+
 **Theme:** dark by default; the app switches to light when the OS asks for light
 (`prefers-color-scheme`), and the window background follows it. All colours are tokens in
 `src/styles.css` ([`docs/DESIGN.md`](docs/DESIGN.md)); `tests/design-tokens.test.ts` and the theme e2e
@@ -347,7 +357,8 @@ npm run test:e2e           # real Electron app: import this repo, Files/Agent, r
                            # a chat in its worktree with setup/teardown hooks, /merge and /cleanup;
                            # a protocol chat through plan, checks, review and ship; the Tasks tab (plan, board,
                            # archive, an MCP write showing up live, a task going to Done when its chat is merged,
-                           # drag and drop, collapse, ↑/↓, filter, agent history)
+                           # drag and drop, collapse, ↑/↓, filter, agent history); the ⌘K palette (switch project
+                           # and tab, new chat, /done on a stand-in chat)
 npm run test:live:mobile   # opt-in: the mobile driver against already-booted emulators/simulators
                            # (THINKERER_LIVE_MOBILE=1 also runs tests/e2e/emulator.spec.ts, which copies an AVD, boots it, deletes it)
 npm run test:live:claude   # opt-in: REAL claude CLI on a throwaway folder (uses your quota)
@@ -402,4 +413,6 @@ navigation lock.
   packaging would need them as extra resources.
 - **Mobile:** the Emulator panel streams screenshots (a few frames per second), not video. iOS input
   needs idb. Only one device is shown at a time.
+- **Command palette:** ⌘K isn't seen while focus is inside the embedded website preview (a separate
+  native view); click the app first. Slash commands are listed only while the Agent tab is open.
 - **Formatting:** agent messages are shown as plain text, not rendered Markdown.

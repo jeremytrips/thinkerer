@@ -135,7 +135,7 @@ test('plan, board, archive, live agent edits, and a task that follows its chat',
     const composer = page.getByRole('textbox', { name: 'Message to the agent' })
     await expect(composer).toHaveValue(/^T-2: Order the parts/)
     await page.getByRole('button', { name: 'Preview' }).click() // no dev server in this project
-    await page.getByLabel('Software protocol').uncheck()
+    await page.getByLabel('Chat type').selectOption('chat')
     await composer.press('Enter')
     await expect(page.getByText(/Wrote made\.txt/)).toBeVisible()
     await expect(page.getByLabel('Working')).toHaveCount(0)
