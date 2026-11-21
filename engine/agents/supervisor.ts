@@ -20,6 +20,7 @@ import type {
 import { Approvals } from '../approvals'
 import { ATTACHMENT_ID, attachmentPath, attachmentRelPath, removeAttachment } from '../attachments'
 import { ChatStore, chatTitle, newChat } from '../chats'
+import { deviceScope, type ChatDevices } from '../chatDevices'
 import { createCheckpoint, diffSummary, recordAfter } from '../checkpoints'
 import { gitStatus } from '../git'
 import type { McpRegistry, McpRunContext, ResolvedMcpServer } from '../mcp'
@@ -98,6 +99,8 @@ export interface SupervisorOptions {
   mcp?: { registry: McpRegistry; context: () => Promise<Omit<McpRunContext, 'artifactsDir'>> }
   chats?: ChatStore
   approvals?: Approvals
+  /** Each chat's own emulators; without it, the mobile server is not limited to a chat. */
+  devices?: ChatDevices
 }
 
 export interface StartOptions {
@@ -289,7 +292,9 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
       })
       if (run.cancelRequested) return void (await this.finish(run, 'cancelled', null, null))
 
-      const { servers, secretEnv } = await this.resolveMcp(project, record.id, ws)
+      const devices = await this.chatDevices(project, ws)
+      for (const problem of devices?.problems ?? []) this.addEvent(run, { kind: 'status', text: problem })
+      const { servers, secretEnv } = await this.resolveMcp(project, record.id, ws, devices?.ids)
       record.mcpServers = servers.map((s) => s.id)
       this.addEvent(run, { kind: 'status', text: `MCP tools: ${record.mcpServers.join(', ') || 'none'}` })
       if (record.mode === 'plan') this.addEvent(run, { kind: 'status', text: 'Plan mode: this message runs read-only; reply to carry the plan out' })
@@ -299,7 +304,7 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
         cwd: ws.cwd,
         prompt: record.prompt + attachmentNote(record.attachments ?? []),
         resumeSessionId: run.resumeSessionId,
-        policy: { ...this.policy, appendSystemPrompt: this.instructions(servers, ws, record.mode ?? 'auto') },
+        policy: { ...this.policy, appendSystemPrompt: this.instructions(servers, ws, record.mode ?? 'auto', devices?.ids) },
         mcp: servers,
         secretEnv,
         mode: record.mode ?? 'auto',
@@ -412,14 +417,35 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     if (!ok) throw new Error(`The worktree setup command failed (${res.timedOut ? 'timed out' : `exit code ${res.code}`}); send another message to retry it`)
   }
 
-  private async resolveMcp(project: Project, runId: string, ws: Workspace): Promise<{ servers: ResolvedMcpServer[]; secretEnv: Record<string, string> }> {
+  /**
+   * The chat's own emulators, created on its first turn with the mobile server
+   * enabled (a chat with a worktree; otherwise the project folder's). Null when
+   * the mobile server is off for the project.
+   */
+  private async chatDevices(project: Project, ws: Workspace): Promise<{ ids: string[]; problems: string[] } | null> {
+    if (!this.opts.devices || !this.opts.mcp || !project.config?.agent.enabledMcpServers.includes('mobile')) return null
+    const chat = ws.chat?.worktree && !ws.chat.worktreeRemoved ? ws.chat : null
+    const scope = deviceScope(project.id, chat?.id ?? null)
+    try {
+      return await this.opts.devices.ensure(scope, chat?.title ?? project.config?.name ?? 'Project')
+    } catch (err) {
+      return { ids: await this.opts.devices.ids(scope).catch(() => []), problems: [`This chat's emulators are unavailable: ${(err as Error).message}`] }
+    }
+  }
+
+  private async resolveMcp(
+    project: Project,
+    runId: string,
+    ws: Workspace,
+    devices?: string[]
+  ): Promise<{ servers: ResolvedMcpServer[]; secretEnv: Record<string, string> }> {
     if (!this.opts.mcp) return { servers: [], secretEnv: {} }
     const ctx = await this.opts.mcp.context()
     const provider = this.active.get(runId)?.record.provider
-    return this.opts.mcp.registry.resolveForRun(project, { ...ctx, artifactsDir: this.artifactsDir(runId), cwd: ws.cwd, previewUrl: ws.previewUrl, provider })
+    return this.opts.mcp.registry.resolveForRun(project, { ...ctx, artifactsDir: this.artifactsDir(runId), cwd: ws.cwd, previewUrl: ws.previewUrl, provider, devices })
   }
 
-  private instructions(servers: ResolvedMcpServer[], ws: Workspace, mode: RunMode): string {
+  private instructions(servers: ResolvedMcpServer[], ws: Workspace, mode: RunMode, devices?: string[]): string {
     const lines = [this.policy.appendSystemPrompt]
     if (mode === 'plan') {
       lines.push(
@@ -451,7 +477,11 @@ export class AgentSupervisor extends EventEmitter<SupervisorEvents> {
     // (Simulator.app, the emulator UI) steals focus and is not what the user asked for.
     lines.push(
       servers.some((s) => s.id === 'mobile')
-        ? 'Android emulators and iOS simulators run headless and show only in Thinkerer\'s Emulator panel. Start and drive them with the mobile MCP tools (mobile_boot boots headless).'
+        ? `Android emulators and iOS simulators run headless and show only in Thinkerer's Emulator panel. Start and drive them with the mobile MCP tools (mobile_boot boots headless). ${
+            devices?.length
+              ? `This chat has its own devices, which only it uses: ${devices.join(', ')}. The tools only accept those; other chats have their own.`
+              : 'This chat has no device of its own yet; the user can create one in the Emulator panel.'
+          }`
         : 'If you start an Android emulator or iOS simulator, boot it headless so it shows only in Thinkerer\'s Emulator panel: `xcrun simctl boot <udid>` or `emulator -avd <name> -no-window`.',
       'Never open a device window yourself: no `open -a Simulator`, Xcode, Android Studio, or `emulator` without `-no-window`.'
     )

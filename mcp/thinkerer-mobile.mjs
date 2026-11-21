@@ -8,6 +8,8 @@
 // Env: THINKERER_ARTIFACTS (screenshots are saved there, with the run),
 //      THINKERER_PROJECT_ROOT (relative app paths resolve against it),
 //      THINKERER_PREVIEW_URL (default for mobile_open_url).
+//      THINKERER_DEVICES (comma-separated ids: the chat's own devices; when set,
+//      every other device is hidden and refused).
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 import { isAbsolute, join, resolve } from 'node:path'
@@ -16,6 +18,9 @@ import * as mobile from './mobile-driver.mjs'
 const artifacts = process.env.THINKERER_ARTIFACTS || ''
 const root = process.env.THINKERER_PROJECT_ROOT || process.cwd()
 const previewUrl = process.env.THINKERER_PREVIEW_URL || ''
+// Each Thinkerer chat has its own emulators; unset (outside Thinkerer) means any device.
+const allowed = process.env.THINKERER_DEVICES === undefined ? null : process.env.THINKERER_DEVICES.split(',').filter(Boolean)
+const NO_DEVICE = 'This chat has no emulator of its own yet. Ask the user to create one in the Emulator panel.'
 let shots = 0
 
 const device = { type: 'string', description: 'Device id from mobile_list_devices, e.g. "android:Pixel_8" or "ios:<UDID>"' }
@@ -25,10 +30,13 @@ const obj = (properties, required = Object.keys(properties)) => ({ type: 'object
 const TOOLS = [
   {
     name: 'mobile_list_devices',
-    description: 'List Android emulators (AVDs), connected Android devices and iOS simulators on this machine, with their state (booted/shutdown) and whether touch input is available. Also reports which platform tools are missing.',
+    description: 'List the emulators/simulators you can use (in Thinkerer: this chat\'s own devices), with their state (booted/shutdown) and whether touch input is available. Also reports which platform tools are missing.',
     inputSchema: obj({}),
     annotations: { readOnlyHint: true },
-    run: async () => ({ tools: mobile.toolStatus(), devices: await mobile.listDevices() })
+    run: async () => {
+      const devices = (await mobile.listDevices()).filter((d) => !allowed || allowed.includes(d.id))
+      return { tools: mobile.toolStatus(), devices, ...(allowed && !devices.length ? { note: NO_DEVICE } : {}) }
+    }
   },
   {
     name: 'mobile_boot',
@@ -145,6 +153,11 @@ function send(msg) {
 async function callTool(name, args) {
   const tool = TOOLS.find((t) => t.name === name)
   if (!tool) return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true }
+  const id = args?.device
+  if (allowed && id !== undefined && !allowed.includes(id)) {
+    const text = allowed.length ? `${id} is not this chat's device. Use one of: ${allowed.join(', ')}.` : NO_DEVICE
+    return { content: [{ type: 'text', text }], isError: true }
+  }
   try {
     const result = await tool.run(args ?? {})
     const content = Array.isArray(result) ? result : [{ type: 'text', text: typeof result === 'string' ? result || '(empty)' : JSON.stringify(result, null, 2) }]
